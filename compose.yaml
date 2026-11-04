@@ -1,0 +1,29 @@
+# The AskerDo board on a Docker host, built from this folder (there is no published image):
+#   docker compose up -d --build
+# While no PC is on the board, its start prints a setup code: docker compose logs board
+# Port and zone: ASKERDO_PORT and ASKERDO_TZ in the shell that runs it (default 17480, UTC).
+name: askerdo
+services:
+  board:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: askerdo
+    ports:
+      - "${ASKERDO_PORT:-17480}:${ASKERDO_PORT:-17480}"
+    environment:
+      ASKERDO_PORT: "${ASKERDO_PORT:-17480}"
+      TZ: ${ASKERDO_TZ:-UTC}
+    volumes:
+      - askerdo-data:/data
+      - askerdo-backups:/backups
+    restart: unless-stopped
+    stop_grace_period: 10s
+
+# The named volumes the guide's docker run line uses, so the data outlives this folder
+# (a plugin update replaces the plugin folder); a kit keeps host folders instead.
+volumes:
+  askerdo-data:
+    name: askerdo-data
+  askerdo-backups:
+    name: askerdo-backups

@@ -1,0 +1,77 @@
+[package]
+name = "askerdo-tray"
+version = "0.8.13"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "The AskerDo tray: one native icon, tooltip, menu and alert popup for the board server"
+build = "build.rs"
+
+[[bin]]
+name = "askerdo-tray"
+path = "src/main.rs"
+
+[dependencies]
+# The stream payloads and the alert frame. serde_json alone, read through
+# Value: the four fields the protocol adds are read once each and the rest of
+# the payload is the board page's, so a derived struct would be a second copy
+# of the server's shape to keep in step for nothing. It does NOT keep the
+# proc-macro crates out of the build: proc-macro2, quote and syn are in
+# Cargo.lock either way, through windows-implement and windows-interface.
+serde_json = "1.0.151"
+
+# Raw Win32 FFI: the window, the notify icon, the menu, the DIB compositing,
+# the registry, the DPI metrics, ShellExecuteW and the AUMID call. windows-sys
+# rather than windows for this half because it is declarations only, so it
+# costs no codegen and no COM machinery.
+[dependencies.windows-sys]
+version = "0.61.2"
+features = [
+  "Win32_Foundation",
+  # The popup: rounded corners on Windows 11, and its sound alias.
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
+  "Win32_System_Com",
+  "Win32_System_Console",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
+  "Win32_Security",
+  "Win32_System_SystemInformation",
+  # CreateProcessW and its creation flags: the --serve mode, the scheduled
+  # task's action, which creates the board server detached and exits.
+  "Win32_System_Threading",
+  "Win32_UI_HiDpi",
+  # GetLastInputInfo and SendInput, which the probe example needs to read and
+  # to reproduce the foreground lock. Declarations only, like the rest.
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+]
+
+# The Start Menu shortcut that carries the AUMID (shortcut.rs). IShellLink,
+# its property store and IPersistFile are COM, which is why this half is the
+# windows crate rather than windows-sys.
+[dependencies.windows]
+version = "0.62.2"
+default-features = false
+features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
+]
+
+[build-dependencies]
+# The version resource and the exe icon. default-features off drops the toml
+# reader (and its crate graph): every field is set here by hand.
+winresource = { version = "0.1.31", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

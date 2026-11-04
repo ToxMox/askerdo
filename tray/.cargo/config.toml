@@ -1,0 +1,5 @@
+# The C runtime rides inside the exe, so a machine with no Visual C++
+# redistributable still runs it: the whole point of a committed prebuilt
+# binary is that the runtime keeps its no-install-step promise.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

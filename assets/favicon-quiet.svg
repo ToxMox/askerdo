@@ -1,0 +1,35 @@
+<!-- The board's tab face: the mark alone, with no background tile.
+     Origin: the icon package's delivered favicon SVGs, each with its two
+     tile paths (the rounded tile and its faint rim) removed and the rest of
+     the drawing uniformly enlarged and centred to fill the 64 unit canvas.
+     That fit is the package's OWN, not one invented here: painted bounds
+     10.55 5.15 59.95 56.75, scale 1.2403100775193798, translation
+     -11.720930232558144 -6.387596899224807, which manifest.json carries as
+     framing.tray16 and which the tray faces and assets/icons/app-mark-dark.svg
+     already wear. Three files, ONE drawing, one line apart: the marker is a
+     filled azure disc waiting, the same disc in amber blocking and a hollow
+     pink ring quiet; the quiet face's drawing is app-mark-dark.svg's body
+     byte for byte, so the tab, the tray corner and the app identity are one
+     drawing at last. The tile's own gradient stays in the defs unused, as it
+     does there, so the two files stay comparable. Since 2026-09-09 no icon
+     carries a background tile: the mark alone fills the usable icon space. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" role="img" aria-label="AskerDo"><title>AskerDo</title><g transform="matrix(1.2403100775193798 0 0 1.2403100775193798 -11.720930232558144 -6.387596899224807)">
+  
+  <defs>
+    
+    <linearGradient id="linear-gradient" x1="-8.5" y1="77.3" x2="55.5" y2="13.3" gradientTransform="translate(7.8 78.8) scale(1 -1)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#28183D"/>
+      <stop offset="1" stop-color="#100C20"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient1" x1="-10.7" y1="75.2" x2="53.3" y2="11.2" gradientTransform="translate(7.8 78.8) scale(1 -1)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3ACFFF"/>
+      <stop offset=".5" stop-color="#9B91FF"/>
+      <stop offset="1" stop-color="#FF62C4"/>
+    </linearGradient>
+  </defs>
+  
+  
+  <path d="M35.6,14.5h-13.9c-5.5,0-8.3,2.8-8.3,8.3v14.5c0,5.5,2.8,8.3,8.3,8.3h2.1v8.3l11.4-8.3h7.2c5.5,0,8.3-2.8,8.3-8.3v-7.7" stroke-width="5.7" fill="none" stroke="url(#linear-gradient1)" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="50.6" cy="14.5" r="6.5" stroke="#FF6AC8" stroke-width="5.7" fill="none" stroke-miterlimit="4.1"/>
+  <path d="M22.8,30.6l6.2,6.2,11.4-12" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke="#FFF3DA" stroke-width="6"/>
+</g></svg>

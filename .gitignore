@@ -1,0 +1,7 @@
+node_modules/
+*.bak
+*.log
+.claude/
+scripts/viewer/.build/
+tray/target/
+/tsconfig.json

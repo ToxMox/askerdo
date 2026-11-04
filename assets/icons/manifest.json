@@ -1,0 +1,441 @@
+{
+  "slug": "t-ask-and-ding",
+  "design": "Pingback / C2 Candy Circuit / A / Edited Illustrator master",
+  "sharedGeometry": {
+    "reference": "Edited Illustrator master",
+    "paths": [
+      {
+        "d": "M35.6,14.5h-13.9c-5.5,0-8.3,2.8-8.3,8.3v14.5c0,5.5,2.8,8.3,8.3,8.3h2.1v8.3l11.4-8.3h7.2c5.5,0,8.3-2.8,8.3-8.3v-7.7",
+        "width": 5.7
+      },
+      {
+        "d": "M22.8,30.6l6.2,6.2,11.4-12",
+        "width": 6
+      }
+    ],
+    "checkWidth": 6,
+    "markerCenter": [
+      50.6,
+      14.5
+    ],
+    "markerOuterRadius": 9.35,
+    "tileRimOpacity": 0.2,
+    "geometryPolicy": "Exact edited paths and stroke widths at all sizes; uniform tray fit only. No automatic check adjustment.",
+    "artworkBounds": {
+      "app": [
+        0,
+        0,
+        64,
+        64
+      ],
+      "tray16": [
+        10.55,
+        5.15,
+        59.95,
+        56.75
+      ],
+      "tray20": [
+        10.55,
+        5.15,
+        59.95,
+        56.75
+      ]
+    },
+    "originalSha256": "247615f0266bed14e3cee5e4f4cd8b628b69f57523da6864c3d1e4ee6b73813f",
+    "normalizedAppearance": "Pixel-identical to the edited original at 512 px"
+  },
+  "framing": {
+    "policy": "Maximum uniform fit of painted bounds, centered; no added padding; proportions preserved.",
+    "app": {
+      "originalPaintedBounds": [
+        0,
+        0,
+        64,
+        64
+      ],
+      "scale": 1,
+      "translation": [
+        0,
+        0
+      ],
+      "fittedPaintedBounds": [
+        0,
+        0,
+        64,
+        64
+      ],
+      "addedPadding": 0,
+      "uniformScale": true
+    },
+    "tray16": {
+      "originalPaintedBounds": [
+        10.55,
+        5.15,
+        59.95,
+        56.75
+      ],
+      "scale": 1.2403100775193798,
+      "translation": [
+        -11.720930232558144,
+        -6.387596899224807
+      ],
+      "fittedPaintedBounds": [
+        1.3643410852713131,
+        0,
+        62.63565891472869,
+        64
+      ],
+      "addedPadding": 0,
+      "uniformScale": true
+    },
+    "tray20": {
+      "originalPaintedBounds": [
+        10.55,
+        5.15,
+        59.95,
+        56.75
+      ],
+      "scale": 1.2403100775193798,
+      "translation": [
+        -11.720930232558144,
+        -6.387596899224807
+      ],
+      "fittedPaintedBounds": [
+        1.3643410852713131,
+        0,
+        62.63565891472869,
+        64
+      ],
+      "addedPadding": 0,
+      "uniformScale": true
+    }
+  },
+  "colors": {
+    "bodyDark": [
+      "#3ACFFF",
+      "#9B91FF",
+      "#FF62C4"
+    ],
+    "bodyLight": [
+      "#0077B8",
+      "#7856CB",
+      "#CE238E"
+    ],
+    "tile": [
+      "#28183D",
+      "#100C20"
+    ],
+    "rim": "#FFFFFF",
+    "checkDark": "#FFF3DA",
+    "checkLight": "#E8540B",
+    "ringDark": "#FF6AC8",
+    "ringLight": "#DF1989",
+    "waiting": {
+      "dark": "#39C9FF",
+      "light": "#008AC7"
+    },
+    "blocking": {
+      "dark": "#FFB300",
+      "light": "#E68A00"
+    },
+    "quiet": null
+  },
+  "sources": [
+    "mark-quiet.svg",
+    "favicon-quiet.svg",
+    "mark-waiting.svg",
+    "favicon.svg",
+    "mark-blocking.svg",
+    "favicon-blocking.svg",
+    "mark.svg",
+    "tray-light-source-16-quiet.svg",
+    "tray-light-source-16-waiting.svg",
+    "tray-light-source-16-blocking.svg",
+    "tray-light-source-20-quiet.svg",
+    "tray-light-source-20-waiting.svg",
+    "tray-light-source-20-blocking.svg",
+    "tray-dark-source-16-quiet.svg",
+    "tray-dark-source-16-waiting.svg",
+    "tray-dark-source-16-blocking.svg",
+    "tray-dark-source-20-quiet.svg",
+    "tray-dark-source-20-waiting.svg",
+    "tray-dark-source-20-blocking.svg"
+  ],
+  "exports": [
+    {
+      "file": "tray-waiting.ico",
+      "type": "ico",
+      "frames": [
+        {
+          "size": 16,
+          "source": "tray-dark-source-16-waiting.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 20,
+          "source": "tray-dark-source-20-waiting.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 24,
+          "source": "tray-dark-source-16-waiting.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 32,
+          "source": "tray-dark-source-16-waiting.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 48,
+          "source": "tray-dark-source-16-waiting.svg",
+          "encoding": "dib"
+        }
+      ]
+    },
+    {
+      "file": "tray-quiet.ico",
+      "type": "ico",
+      "frames": [
+        {
+          "size": 16,
+          "source": "tray-dark-source-16-quiet.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 20,
+          "source": "tray-dark-source-20-quiet.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 24,
+          "source": "tray-dark-source-16-quiet.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 32,
+          "source": "tray-dark-source-16-quiet.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 48,
+          "source": "tray-dark-source-16-quiet.svg",
+          "encoding": "dib"
+        }
+      ]
+    },
+    {
+      "file": "tray-blocking.ico",
+      "type": "ico",
+      "frames": [
+        {
+          "size": 16,
+          "source": "tray-dark-source-16-blocking.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 20,
+          "source": "tray-dark-source-20-blocking.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 24,
+          "source": "tray-dark-source-16-blocking.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 32,
+          "source": "tray-dark-source-16-blocking.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 48,
+          "source": "tray-dark-source-16-blocking.svg",
+          "encoding": "dib"
+        }
+      ]
+    },
+    {
+      "file": "tray-light-waiting.ico",
+      "type": "ico",
+      "frames": [
+        {
+          "size": 16,
+          "source": "tray-light-source-16-waiting.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 20,
+          "source": "tray-light-source-20-waiting.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 24,
+          "source": "tray-light-source-16-waiting.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 32,
+          "source": "tray-light-source-16-waiting.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 48,
+          "source": "tray-light-source-16-waiting.svg",
+          "encoding": "dib"
+        }
+      ]
+    },
+    {
+      "file": "tray-light-quiet.ico",
+      "type": "ico",
+      "frames": [
+        {
+          "size": 16,
+          "source": "tray-light-source-16-quiet.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 20,
+          "source": "tray-light-source-20-quiet.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 24,
+          "source": "tray-light-source-16-quiet.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 32,
+          "source": "tray-light-source-16-quiet.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 48,
+          "source": "tray-light-source-16-quiet.svg",
+          "encoding": "dib"
+        }
+      ]
+    },
+    {
+      "file": "tray-light-blocking.ico",
+      "type": "ico",
+      "frames": [
+        {
+          "size": 16,
+          "source": "tray-light-source-16-blocking.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 20,
+          "source": "tray-light-source-20-blocking.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 24,
+          "source": "tray-light-source-16-blocking.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 32,
+          "source": "tray-light-source-16-blocking.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 48,
+          "source": "tray-light-source-16-blocking.svg",
+          "encoding": "dib"
+        }
+      ]
+    },
+    {
+      "file": "app.ico",
+      "type": "ico",
+      "frames": [
+        {
+          "size": 16,
+          "source": "mark.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 24,
+          "source": "mark.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 32,
+          "source": "mark.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 48,
+          "source": "mark.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 64,
+          "source": "mark.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 128,
+          "source": "mark.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 256,
+          "source": "mark.svg",
+          "encoding": "png"
+        }
+      ]
+    },
+    {
+      "file": "app-48.png",
+      "type": "png",
+      "size": 48,
+      "source": "mark.svg"
+    },
+    {
+      "file": "app-64.png",
+      "type": "png",
+      "size": 64,
+      "source": "mark.svg"
+    },
+    {
+      "file": "app-96.png",
+      "type": "png",
+      "size": 96,
+      "source": "mark.svg"
+    },
+    {
+      "file": "app-128.png",
+      "type": "png",
+      "size": 128,
+      "source": "mark.svg"
+    },
+    {
+      "file": "app-256.png",
+      "type": "png",
+      "size": 256,
+      "source": "mark.svg"
+    },
+    {
+      "file": "favicon-32.png",
+      "type": "png",
+      "size": 32,
+      "source": "favicon.svg"
+    },
+    {
+      "file": "favicon-quiet-32.png",
+      "type": "png",
+      "size": 32,
+      "source": "favicon-quiet.svg"
+    },
+    {
+      "file": "favicon-blocking-32.png",
+      "type": "png",
+      "size": 32,
+      "source": "favicon-blocking.svg"
+    }
+  ]
+}

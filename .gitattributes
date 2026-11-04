@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+# the committed binaries, named so checkout never has to guess: a font whose
+# bytes are hashed in its license header, and the icon package's icons and
+# rasters, committed exactly as delivered and pinned frame by frame against
+# its manifest by scripts/check-icons.mjs
+*.woff2 binary
+*.ico binary
+*.png binary
+
+# the committed prebuilt tray executable, built by scripts/build-tray.mjs
+*.exe binary

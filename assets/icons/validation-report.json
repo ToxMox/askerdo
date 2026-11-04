@@ -1,0 +1,1641 @@
+{
+  "requiredFiles": 20,
+  "svgSources": 19,
+  "stateGeometry": "Only the marker element changes across states",
+  "quiet": "Approved hollow ring retained intentionally",
+  "formatChecks": "passed",
+  "icons": [
+    {
+      "file": "tray-waiting.ico",
+      "frameCount": 5,
+      "frames": [
+        {
+          "size": 16,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 84,
+          "andMask": "verified"
+        },
+        {
+          "size": 20,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 99,
+          "andMask": "verified"
+        },
+        {
+          "size": 24,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 117,
+          "andMask": "verified"
+        },
+        {
+          "size": 32,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 141,
+          "andMask": "verified"
+        },
+        {
+          "size": 48,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 161,
+          "andMask": "verified"
+        }
+      ]
+    },
+    {
+      "file": "tray-quiet.ico",
+      "frameCount": 5,
+      "frames": [
+        {
+          "size": 16,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 87,
+          "andMask": "verified"
+        },
+        {
+          "size": 20,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 105,
+          "andMask": "verified"
+        },
+        {
+          "size": 24,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 120,
+          "andMask": "verified"
+        },
+        {
+          "size": 32,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 149,
+          "andMask": "verified"
+        },
+        {
+          "size": 48,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 171,
+          "andMask": "verified"
+        }
+      ]
+    },
+    {
+      "file": "tray-blocking.ico",
+      "frameCount": 5,
+      "frames": [
+        {
+          "size": 16,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 84,
+          "andMask": "verified"
+        },
+        {
+          "size": 20,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 99,
+          "andMask": "verified"
+        },
+        {
+          "size": 24,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 117,
+          "andMask": "verified"
+        },
+        {
+          "size": 32,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 141,
+          "andMask": "verified"
+        },
+        {
+          "size": 48,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 161,
+          "andMask": "verified"
+        }
+      ]
+    },
+    {
+      "file": "tray-light-waiting.ico",
+      "frameCount": 5,
+      "frames": [
+        {
+          "size": 16,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 84,
+          "andMask": "verified"
+        },
+        {
+          "size": 20,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 99,
+          "andMask": "verified"
+        },
+        {
+          "size": 24,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 117,
+          "andMask": "verified"
+        },
+        {
+          "size": 32,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 141,
+          "andMask": "verified"
+        },
+        {
+          "size": 48,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 161,
+          "andMask": "verified"
+        }
+      ]
+    },
+    {
+      "file": "tray-light-quiet.ico",
+      "frameCount": 5,
+      "frames": [
+        {
+          "size": 16,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 87,
+          "andMask": "verified"
+        },
+        {
+          "size": 20,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 105,
+          "andMask": "verified"
+        },
+        {
+          "size": 24,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 120,
+          "andMask": "verified"
+        },
+        {
+          "size": 32,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 149,
+          "andMask": "verified"
+        },
+        {
+          "size": 48,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 171,
+          "andMask": "verified"
+        }
+      ]
+    },
+    {
+      "file": "tray-light-blocking.ico",
+      "frameCount": 5,
+      "frames": [
+        {
+          "size": 16,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 84,
+          "andMask": "verified"
+        },
+        {
+          "size": 20,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 99,
+          "andMask": "verified"
+        },
+        {
+          "size": 24,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 117,
+          "andMask": "verified"
+        },
+        {
+          "size": 32,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 141,
+          "andMask": "verified"
+        },
+        {
+          "size": 48,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 161,
+          "andMask": "verified"
+        }
+      ]
+    },
+    {
+      "file": "app.ico",
+      "frameCount": 7,
+      "frames": [
+        {
+          "size": 16,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 9,
+          "andMask": "verified"
+        },
+        {
+          "size": 24,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 19,
+          "andMask": "verified"
+        },
+        {
+          "size": 32,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 22,
+          "andMask": "verified"
+        },
+        {
+          "size": 48,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 35,
+          "andMask": "verified"
+        },
+        {
+          "size": 64,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 41,
+          "andMask": "verified"
+        },
+        {
+          "size": 128,
+          "encoding": "DIB",
+          "bitDepth": 32,
+          "alphaLevels": 87,
+          "andMask": "verified"
+        },
+        {
+          "size": 256,
+          "encoding": "PNG"
+        }
+      ]
+    }
+  ],
+  "pngs": [
+    {
+      "file": "app-48.png",
+      "width": 48,
+      "height": 48,
+      "bitDepth": 8,
+      "colorType": "RGBA",
+      "chunks": [
+        "IHDR",
+        "pHYs",
+        "IDAT",
+        "IEND"
+      ]
+    },
+    {
+      "file": "app-64.png",
+      "width": 64,
+      "height": 64,
+      "bitDepth": 8,
+      "colorType": "RGBA",
+      "chunks": [
+        "IHDR",
+        "pHYs",
+        "IDAT",
+        "IEND"
+      ]
+    },
+    {
+      "file": "app-96.png",
+      "width": 96,
+      "height": 96,
+      "bitDepth": 8,
+      "colorType": "RGBA",
+      "chunks": [
+        "IHDR",
+        "pHYs",
+        "IDAT",
+        "IEND"
+      ]
+    },
+    {
+      "file": "app-128.png",
+      "width": 128,
+      "height": 128,
+      "bitDepth": 8,
+      "colorType": "RGBA",
+      "chunks": [
+        "IHDR",
+        "pHYs",
+        "IDAT",
+        "IEND"
+      ]
+    },
+    {
+      "file": "app-256.png",
+      "width": 256,
+      "height": 256,
+      "bitDepth": 8,
+      "colorType": "RGBA",
+      "chunks": [
+        "IHDR",
+        "pHYs",
+        "IDAT",
+        "IDAT",
+        "IEND"
+      ]
+    },
+    {
+      "file": "favicon-32.png",
+      "width": 32,
+      "height": 32,
+      "bitDepth": 8,
+      "colorType": "RGBA",
+      "chunks": [
+        "IHDR",
+        "pHYs",
+        "IDAT",
+        "IEND"
+      ]
+    },
+    {
+      "file": "favicon-quiet-32.png",
+      "width": 32,
+      "height": 32,
+      "bitDepth": 8,
+      "colorType": "RGBA",
+      "chunks": [
+        "IHDR",
+        "pHYs",
+        "IDAT",
+        "IEND"
+      ]
+    },
+    {
+      "file": "favicon-blocking-32.png",
+      "width": 32,
+      "height": 32,
+      "bitDepth": 8,
+      "colorType": "RGBA",
+      "chunks": [
+        "IHDR",
+        "pHYs",
+        "IDAT",
+        "IEND"
+      ]
+    }
+  ],
+  "metadataAndPrivacy": "No host paths, personal names or PNG text/EXIF metadata found",
+  "designExceptions": [
+    "Quiet ring retained",
+    "Approved orange check retained",
+    "Bottom-right contains approved outline; 75% count badge overlaps check and marker"
+  ],
+  "nativeWindows": {
+    "api": "CreateIconFromResourceEx",
+    "framesDecoded": 37,
+    "files": 7,
+    "checks": [
+      {
+        "file": "app.ico",
+        "size": 16,
+        "decoded": true
+      },
+      {
+        "file": "app.ico",
+        "size": 24,
+        "decoded": true
+      },
+      {
+        "file": "app.ico",
+        "size": 32,
+        "decoded": true
+      },
+      {
+        "file": "app.ico",
+        "size": 48,
+        "decoded": true
+      },
+      {
+        "file": "app.ico",
+        "size": 64,
+        "decoded": true
+      },
+      {
+        "file": "app.ico",
+        "size": 128,
+        "decoded": true
+      },
+      {
+        "file": "app.ico",
+        "size": 256,
+        "decoded": true
+      },
+      {
+        "file": "tray-blocking.ico",
+        "size": 16,
+        "decoded": true
+      },
+      {
+        "file": "tray-blocking.ico",
+        "size": 20,
+        "decoded": true
+      },
+      {
+        "file": "tray-blocking.ico",
+        "size": 24,
+        "decoded": true
+      },
+      {
+        "file": "tray-blocking.ico",
+        "size": 32,
+        "decoded": true
+      },
+      {
+        "file": "tray-blocking.ico",
+        "size": 48,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-blocking.ico",
+        "size": 16,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-blocking.ico",
+        "size": 20,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-blocking.ico",
+        "size": 24,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-blocking.ico",
+        "size": 32,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-blocking.ico",
+        "size": 48,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-quiet.ico",
+        "size": 16,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-quiet.ico",
+        "size": 20,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-quiet.ico",
+        "size": 24,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-quiet.ico",
+        "size": 32,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-quiet.ico",
+        "size": 48,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-waiting.ico",
+        "size": 16,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-waiting.ico",
+        "size": 20,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-waiting.ico",
+        "size": 24,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-waiting.ico",
+        "size": 32,
+        "decoded": true
+      },
+      {
+        "file": "tray-light-waiting.ico",
+        "size": 48,
+        "decoded": true
+      },
+      {
+        "file": "tray-quiet.ico",
+        "size": 16,
+        "decoded": true
+      },
+      {
+        "file": "tray-quiet.ico",
+        "size": 20,
+        "decoded": true
+      },
+      {
+        "file": "tray-quiet.ico",
+        "size": 24,
+        "decoded": true
+      },
+      {
+        "file": "tray-quiet.ico",
+        "size": 32,
+        "decoded": true
+      },
+      {
+        "file": "tray-quiet.ico",
+        "size": 48,
+        "decoded": true
+      },
+      {
+        "file": "tray-waiting.ico",
+        "size": 16,
+        "decoded": true
+      },
+      {
+        "file": "tray-waiting.ico",
+        "size": 20,
+        "decoded": true
+      },
+      {
+        "file": "tray-waiting.ico",
+        "size": 24,
+        "decoded": true
+      },
+      {
+        "file": "tray-waiting.ico",
+        "size": 32,
+        "decoded": true
+      },
+      {
+        "file": "tray-waiting.ico",
+        "size": 48,
+        "decoded": true
+      }
+    ],
+    "taskbarComposites": 6
+  },
+  "browsers": {
+    "chrome": {
+      "engine": "Chrome",
+      "version": "152.0.7977.76",
+      "loadedSvgImages": 38,
+      "viewport": [
+        1024,
+        768
+      ]
+    },
+    "firefox": {
+      "version": "155.0.1",
+      "renderedSvgImages": 38,
+      "viewport": [
+        1024,
+        768
+      ]
+    },
+    "comparison": {
+      "byteIdentical": false,
+      "meanChannelDifference": 0.185651,
+      "maximumChannelDifference": 88,
+      "changedChannels": 100372,
+      "totalChannels": 3145728,
+      "cells": [
+        {
+          "source": "mark-quiet.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.8747,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "mark-quiet.svg",
+          "background": "light",
+          "meanChannelDifference": 1.9706,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "favicon-quiet.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.8746,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "favicon-quiet.svg",
+          "background": "light",
+          "meanChannelDifference": 1.9706,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "mark-waiting.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.5147,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "mark-waiting.svg",
+          "background": "light",
+          "meanChannelDifference": 1.6103,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "favicon.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.5146,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "favicon.svg",
+          "background": "light",
+          "meanChannelDifference": 1.6098,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "mark-blocking.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.5147,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "mark-blocking.svg",
+          "background": "light",
+          "meanChannelDifference": 1.6107,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "favicon-blocking.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.5153,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "favicon-blocking.svg",
+          "background": "light",
+          "meanChannelDifference": 1.6098,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "mark.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.8739,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "mark.svg",
+          "background": "light",
+          "meanChannelDifference": 1.9692,
+          "maximumChannelDifference": 88
+        },
+        {
+          "source": "tray-light-source-16-quiet.svg",
+          "background": "dark",
+          "meanChannelDifference": 0.8843,
+          "maximumChannelDifference": 67
+        },
+        {
+          "source": "tray-light-source-16-quiet.svg",
+          "background": "light",
+          "meanChannelDifference": 1.076,
+          "maximumChannelDifference": 79
+        },
+        {
+          "source": "tray-light-source-16-waiting.svg",
+          "background": "dark",
+          "meanChannelDifference": 0.8754,
+          "maximumChannelDifference": 67
+        },
+        {
+          "source": "tray-light-source-16-waiting.svg",
+          "background": "light",
+          "meanChannelDifference": 1.0938,
+          "maximumChannelDifference": 79
+        },
+        {
+          "source": "tray-light-source-16-blocking.svg",
+          "background": "dark",
+          "meanChannelDifference": 0.8917,
+          "maximumChannelDifference": 67
+        },
+        {
+          "source": "tray-light-source-16-blocking.svg",
+          "background": "light",
+          "meanChannelDifference": 1.078,
+          "maximumChannelDifference": 79
+        },
+        {
+          "source": "tray-light-source-20-quiet.svg",
+          "background": "dark",
+          "meanChannelDifference": 0.8837,
+          "maximumChannelDifference": 67
+        },
+        {
+          "source": "tray-light-source-20-quiet.svg",
+          "background": "light",
+          "meanChannelDifference": 1.0771,
+          "maximumChannelDifference": 79
+        },
+        {
+          "source": "tray-light-source-20-waiting.svg",
+          "background": "dark",
+          "meanChannelDifference": 0.8754,
+          "maximumChannelDifference": 67
+        },
+        {
+          "source": "tray-light-source-20-waiting.svg",
+          "background": "light",
+          "meanChannelDifference": 1.0938,
+          "maximumChannelDifference": 79
+        },
+        {
+          "source": "tray-light-source-20-blocking.svg",
+          "background": "dark",
+          "meanChannelDifference": 0.8917,
+          "maximumChannelDifference": 67
+        },
+        {
+          "source": "tray-light-source-20-blocking.svg",
+          "background": "light",
+          "meanChannelDifference": 1.078,
+          "maximumChannelDifference": 79
+        },
+        {
+          "source": "tray-dark-source-16-quiet.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.4674,
+          "maximumChannelDifference": 75
+        },
+        {
+          "source": "tray-dark-source-16-quiet.svg",
+          "background": "light",
+          "meanChannelDifference": 0.4799,
+          "maximumChannelDifference": 38
+        },
+        {
+          "source": "tray-dark-source-16-waiting.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.4369,
+          "maximumChannelDifference": 75
+        },
+        {
+          "source": "tray-dark-source-16-waiting.svg",
+          "background": "light",
+          "meanChannelDifference": 0.4973,
+          "maximumChannelDifference": 38
+        },
+        {
+          "source": "tray-dark-source-16-blocking.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.4224,
+          "maximumChannelDifference": 75
+        },
+        {
+          "source": "tray-dark-source-16-blocking.svg",
+          "background": "light",
+          "meanChannelDifference": 0.5407,
+          "maximumChannelDifference": 50
+        },
+        {
+          "source": "tray-dark-source-20-quiet.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.4687,
+          "maximumChannelDifference": 75
+        },
+        {
+          "source": "tray-dark-source-20-quiet.svg",
+          "background": "light",
+          "meanChannelDifference": 0.4806,
+          "maximumChannelDifference": 38
+        },
+        {
+          "source": "tray-dark-source-20-waiting.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.4376,
+          "maximumChannelDifference": 75
+        },
+        {
+          "source": "tray-dark-source-20-waiting.svg",
+          "background": "light",
+          "meanChannelDifference": 0.4982,
+          "maximumChannelDifference": 38
+        },
+        {
+          "source": "tray-dark-source-20-blocking.svg",
+          "background": "dark",
+          "meanChannelDifference": 1.4235,
+          "maximumChannelDifference": 75
+        },
+        {
+          "source": "tray-dark-source-20-blocking.svg",
+          "background": "light",
+          "meanChannelDifference": 0.5412,
+          "maximumChannelDifference": 50
+        }
+      ]
+    },
+    "visualAssessment": "Matching geometry and colors in Chrome and Firefox; small raster edge-smoothing differences. Pixel-identical rendering is not claimed."
+  },
+  "artworkIntegration": "Application runtime not part of this workspace",
+  "pngAlpha": [
+    {
+      "file": "app-48.png",
+      "width": 48,
+      "height": 48,
+      "transparentCorner": true,
+      "alphaLevels": 35
+    },
+    {
+      "file": "app-64.png",
+      "width": 64,
+      "height": 64,
+      "transparentCorner": true,
+      "alphaLevels": 41
+    },
+    {
+      "file": "app-96.png",
+      "width": 96,
+      "height": 96,
+      "transparentCorner": true,
+      "alphaLevels": 71
+    },
+    {
+      "file": "app-128.png",
+      "width": 128,
+      "height": 128,
+      "transparentCorner": true,
+      "alphaLevels": 87
+    },
+    {
+      "file": "app-256.png",
+      "width": 256,
+      "height": 256,
+      "transparentCorner": true,
+      "alphaLevels": 149
+    },
+    {
+      "file": "favicon-32.png",
+      "width": 32,
+      "height": 32,
+      "transparentCorner": true,
+      "alphaLevels": 22
+    },
+    {
+      "file": "favicon-quiet-32.png",
+      "width": 32,
+      "height": 32,
+      "transparentCorner": true,
+      "alphaLevels": 22
+    },
+    {
+      "file": "favicon-blocking-32.png",
+      "width": 32,
+      "height": 32,
+      "transparentCorner": true,
+      "alphaLevels": 22
+    }
+  ],
+  "nativeCompositing": [
+    {
+      "state": "waiting",
+      "background": "dark",
+      "maximumChannelDifference": 1,
+      "meanChannelDifference": 0.056
+    },
+    {
+      "state": "waiting",
+      "background": "light",
+      "maximumChannelDifference": 1,
+      "meanChannelDifference": 0.0859
+    },
+    {
+      "state": "quiet",
+      "background": "dark",
+      "maximumChannelDifference": 1,
+      "meanChannelDifference": 0.0612
+    },
+    {
+      "state": "quiet",
+      "background": "light",
+      "maximumChannelDifference": 1,
+      "meanChannelDifference": 0.0911
+    },
+    {
+      "state": "blocking",
+      "background": "dark",
+      "maximumChannelDifference": 1,
+      "meanChannelDifference": 0.0469
+    },
+    {
+      "state": "blocking",
+      "background": "light",
+      "maximumChannelDifference": 1,
+      "meanChannelDifference": 0.0872
+    }
+  ],
+  "badge": {
+    "assumption": "Bottom-right circle, diameter 75% of the 16-pixel tray canvas",
+    "diameter": 12,
+    "center": [
+      10,
+      10
+    ],
+    "markerCenter": [
+      12.759689922480618,
+      2.89922480620155
+    ],
+    "markerRadius": 2.89922480620155,
+    "markerIntersection": true,
+    "checkObscured": true,
+    "clearBottomRightQuadrant": false,
+    "runtimeAppVerified": false
+  },
+  "visualReview": {
+    "dark16OnDark": "reviewed",
+    "light16OnLight": "reviewed",
+    "quietRing": "intentionally preserved",
+    "whiteMatte": "none"
+  },
+  "themeRouting": {
+    "dark": "tray-waiting.ico / tray-quiet.ico / tray-blocking.ico; cream check #FFF3DA",
+    "light": "tray-light-waiting.ico / tray-light-quiet.ico / tray-light-blocking.ico; orange check #E8540B"
+  },
+  "blockingPalette": {
+    "selection": "Amber",
+    "dark": "#FFB300",
+    "light": "#E68A00"
+  },
+  "approvedDesign": "Packaged app mark renders pixel-identically to the edited Illustrator original at 256 and 512 px. Tray geometry uses those exact edited paths with uniform fitting and existing theme colors. No automatic check positioning or angle adjustment is applied.",
+  "sharedGeometry": {
+    "reference": "Edited Illustrator master",
+    "paths": [
+      {
+        "d": "M35.6,14.5h-13.9c-5.5,0-8.3,2.8-8.3,8.3v14.5c0,5.5,2.8,8.3,8.3,8.3h2.1v8.3l11.4-8.3h7.2c5.5,0,8.3-2.8,8.3-8.3v-7.7",
+        "width": 5.7
+      },
+      {
+        "d": "M22.8,30.6l6.2,6.2,11.4-12",
+        "width": 6
+      }
+    ],
+    "checkWidth": 6,
+    "markerCenter": [
+      50.6,
+      14.5
+    ],
+    "markerOuterRadius": 9.35,
+    "tileRimOpacity": 0.2,
+    "geometryPolicy": "Exact edited paths and stroke widths at all sizes; uniform tray fit only. No automatic check adjustment.",
+    "artworkBounds": {
+      "app": [
+        0,
+        0,
+        64,
+        64
+      ],
+      "tray16": [
+        10.55,
+        5.15,
+        59.95,
+        56.75
+      ],
+      "tray20": [
+        10.55,
+        5.15,
+        59.95,
+        56.75
+      ]
+    },
+    "originalSha256": "247615f0266bed14e3cee5e4f4cd8b628b69f57523da6864c3d1e4ee6b73813f",
+    "normalizedAppearance": "Pixel-identical to the edited original at 512 px",
+    "allSourcePathsIdentical": true,
+    "editedCheckPreservedExactly": true
+  },
+  "framing": {
+    "policy": "Maximum uniform fit of painted bounds, centered; no added padding; proportions preserved.",
+    "app": {
+      "originalPaintedBounds": [
+        0,
+        0,
+        64,
+        64
+      ],
+      "scale": 1,
+      "translation": [
+        0,
+        0
+      ],
+      "fittedPaintedBounds": [
+        0,
+        0,
+        64,
+        64
+      ],
+      "addedPadding": 0,
+      "uniformScale": true
+    },
+    "tray16": {
+      "originalPaintedBounds": [
+        10.55,
+        5.15,
+        59.95,
+        56.75
+      ],
+      "scale": 1.2403100775193798,
+      "translation": [
+        -11.720930232558144,
+        -6.387596899224807
+      ],
+      "fittedPaintedBounds": [
+        1.3643410852713131,
+        0,
+        62.63565891472869,
+        64
+      ],
+      "addedPadding": 0,
+      "uniformScale": true
+    },
+    "tray20": {
+      "originalPaintedBounds": [
+        10.55,
+        5.15,
+        59.95,
+        56.75
+      ],
+      "scale": 1.2403100775193798,
+      "translation": [
+        -11.720930232558144,
+        -6.387596899224807
+      ],
+      "fittedPaintedBounds": [
+        1.3643410852713131,
+        0,
+        62.63565891472869,
+        64
+      ],
+      "addedPadding": 0,
+      "uniformScale": true
+    },
+    "rasterBounds": [
+      {
+        "file": "tray-waiting.ico",
+        "size": 16,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-waiting.ico",
+        "size": 20,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-waiting.ico",
+        "size": 24,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-waiting.ico",
+        "size": 32,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-waiting.ico",
+        "size": 48,
+        "fullyTransparentEdgePixels": {
+          "left": 1,
+          "top": 0,
+          "right": 1,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-quiet.ico",
+        "size": 16,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-quiet.ico",
+        "size": 20,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-quiet.ico",
+        "size": 24,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-quiet.ico",
+        "size": 32,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-quiet.ico",
+        "size": 48,
+        "fullyTransparentEdgePixels": {
+          "left": 1,
+          "top": 0,
+          "right": 1,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-blocking.ico",
+        "size": 16,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-blocking.ico",
+        "size": 20,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-blocking.ico",
+        "size": 24,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-blocking.ico",
+        "size": 32,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-blocking.ico",
+        "size": 48,
+        "fullyTransparentEdgePixels": {
+          "left": 1,
+          "top": 0,
+          "right": 1,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-waiting.ico",
+        "size": 16,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-waiting.ico",
+        "size": 20,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-waiting.ico",
+        "size": 24,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-waiting.ico",
+        "size": 32,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-waiting.ico",
+        "size": 48,
+        "fullyTransparentEdgePixels": {
+          "left": 1,
+          "top": 0,
+          "right": 1,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-quiet.ico",
+        "size": 16,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-quiet.ico",
+        "size": 20,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-quiet.ico",
+        "size": 24,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-quiet.ico",
+        "size": 32,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-quiet.ico",
+        "size": 48,
+        "fullyTransparentEdgePixels": {
+          "left": 1,
+          "top": 0,
+          "right": 1,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-blocking.ico",
+        "size": 16,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-blocking.ico",
+        "size": 20,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-blocking.ico",
+        "size": 24,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-blocking.ico",
+        "size": 32,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "tray-light-blocking.ico",
+        "size": 48,
+        "fullyTransparentEdgePixels": {
+          "left": 1,
+          "top": 0,
+          "right": 1,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app.ico",
+        "size": 16,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app.ico",
+        "size": 24,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app.ico",
+        "size": 32,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app.ico",
+        "size": 48,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app.ico",
+        "size": 64,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app.ico",
+        "size": 128,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app.ico",
+        "size": 256,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app-48.png",
+        "size": 48,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app-64.png",
+        "size": 64,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app-96.png",
+        "size": 96,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app-128.png",
+        "size": 128,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "app-256.png",
+        "size": 256,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "favicon-32.png",
+        "size": 32,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "favicon-quiet-32.png",
+        "size": 32,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      },
+      {
+        "file": "favicon-blocking-32.png",
+        "size": 32,
+        "fullyTransparentEdgePixels": {
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0
+        }
+      }
+    ],
+    "overscanChecks": [
+      {
+        "source": "mark-quiet.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "favicon-quiet.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "mark-waiting.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "favicon.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "mark-blocking.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "favicon-blocking.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "mark.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-light-source-16-quiet.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-light-source-16-waiting.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-light-source-16-blocking.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-light-source-20-quiet.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-light-source-20-waiting.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-light-source-20-blocking.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-dark-source-16-quiet.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-dark-source-16-waiting.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-dark-source-16-blocking.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-dark-source-20-quiet.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-dark-source-20-waiting.svg",
+        "paintedPixelsOutsideCanvas": 0
+      },
+      {
+        "source": "tray-dark-source-20-blocking.svg",
+        "paintedPixelsOutsideCanvas": 0
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "deep-code": {
+      "description": "deep",
+      "settings": {
+        "agent.soft": 400000
+      },
+      "created": "2026-10-25T21:06:18+00:00",
+      "updated": "2026-10-25T21:06:18+00:00"
+    }
+  },
+  "subscriptions": {}
+}

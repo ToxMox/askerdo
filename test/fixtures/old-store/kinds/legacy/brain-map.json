@@ -1,0 +1,12 @@
+{
+  "source": "test",
+  "roots": {},
+  "ids": {
+    "app:G-0001": {
+      "to": "cw6yg2cm"
+    },
+    "app:D-0002": {
+      "archive": "archive/x.md"
+    }
+  }
+}

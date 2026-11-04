@@ -1,0 +1,26 @@
+<!-- app-mark-dark.svg: the app identity's drawing, the source of app.ico's 64, 128 and 256 frames.
+     Origin: the icon package's mark.svg with its two tile paths removed and the remaining drawing
+     uniformly enlarged and centred to fill the 64 unit canvas the way the package composes its tray
+     faces, so the bytes below are identical to the package's tray-dark-source-16-quiet.svg. The dark
+     set's colours as mark.svg already carries them: the cream check #FFF3DA, the hollow pink ring
+     #FF6AC8. Since 2026-09-08 the app icon is the mark alone, no tile, in the dark colours. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" role="img" aria-label="t.ask&amp;ding"><title>t.ask&amp;ding</title><g transform="matrix(1.2403100775193798 0 0 1.2403100775193798 -11.720930232558144 -6.387596899224807)">
+  
+  <defs>
+    
+    <linearGradient id="linear-gradient" x1="-8.5" y1="77.3" x2="55.5" y2="13.3" gradientTransform="translate(7.8 78.8) scale(1 -1)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#28183D"/>
+      <stop offset="1" stop-color="#100C20"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient1" x1="-10.7" y1="75.2" x2="53.3" y2="11.2" gradientTransform="translate(7.8 78.8) scale(1 -1)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3ACFFF"/>
+      <stop offset=".5" stop-color="#9B91FF"/>
+      <stop offset="1" stop-color="#FF62C4"/>
+    </linearGradient>
+  </defs>
+  
+  
+  <path d="M35.6,14.5h-13.9c-5.5,0-8.3,2.8-8.3,8.3v14.5c0,5.5,2.8,8.3,8.3,8.3h2.1v8.3l11.4-8.3h7.2c5.5,0,8.3-2.8,8.3-8.3v-7.7" stroke-width="5.7" fill="none" stroke="url(#linear-gradient1)" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="50.6" cy="14.5" r="6.5" stroke="#FF6AC8" stroke-width="5.7" fill="none" stroke-miterlimit="4.1"/>
+  <path d="M22.8,30.6l6.2,6.2,11.4-12" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke="#FFF3DA" stroke-width="6"/>
+</g></svg>

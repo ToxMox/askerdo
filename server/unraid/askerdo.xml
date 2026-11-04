@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>@NAME@</Name>
+  <Repository>@IMAGE@</Repository>
+  <Registry>http://localhost/</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support/>
+  <Project/>
+  <Overview>The AskerDo board: the questions, work, tracks and handoffs every machine's Claude Code sessions share. The image is built on this server from the AskerDo checkout by server/unraid/install.sh, so the update check reads not available; an update is that script run again.</Overview>
+  <Category>Productivity: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:17480]/</WebUI>
+  <TemplateURL/>
+  <Icon>@ICON@</Icon>
+  <ExtraParams>--user 99:100 --restart unless-stopped --stop-timeout 10</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Board port" Target="17480" Default="17480" Mode="tcp" Description="The board's web views and API." Type="Port" Display="always" Required="true" Mask="false">@PORT@</Config>
+  <Config Name="Board data" Target="/data" Default="@DATA@" Mode="rw" Description="The board's database. Keep it on the pool path, never under /mnt/user (SQLite on the FUSE layer)." Type="Path" Display="always" Required="true" Mask="false">@DATA@</Config>
+  <Config Name="Backups" Target="/backups" Default="@BACKUPS@" Mode="rw" Description="Dated backups and the weekly export, written once and never opened live (a share the mover takes to the array keeps them off the pool)." Type="Path" Display="always" Required="true" Mask="false">@BACKUPS@</Config>
+  <Config Name="Time zone" Target="TZ" Default="UTC" Mode="{3}" Description="Stamps and day boundaries fall in this zone, an IANA name such as Europe/Berlin." Type="Variable" Display="advanced" Required="true" Mask="false">@TZ@</Config>
+</Container>

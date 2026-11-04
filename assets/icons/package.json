@@ -1,0 +1,11 @@
+{
+  "name": "t-ask-and-ding-icons",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "export": "node export.mjs"
+  },
+  "devDependencies": {
+    "sharp": "0.35.4"
+  }
+}

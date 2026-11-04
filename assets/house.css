@@ -1,0 +1,1983 @@
+/* The AskerDo house sheet, served at /assets/house.css and shared by the
+   board and every cached tier-2 page. AURORA in MOXGLOW, DARK ONLY:
+   one scheme, and three token families no rule below may invent outside of. */
+
+/* The UI face, vendored beside this sheet (assets/geist.woff2, OFL 1.1). The
+   url is RELATIVE, so the sheet and the font resolve together on every served
+   page, cached tier-2 pages included, with no markup change anywhere. */
+@font-face {
+  font-family: "Geist";
+  src: url("geist.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  /* Ground, glass, ink, edges, accents. The accents carry ROLES: pink acts, azure
+     wayfinds, and pink to purple crowns. No teal anywhere, ruled 2026-08-24. */
+  --paper: #0f0f1a;
+  --card: rgba(255, 255, 255, 0.055);
+  --card-2: rgba(255, 255, 255, 0.09);
+  --canvas: #16162a;
+  /* THE FLAT CARD'S GROUND: the same card glass resolved against
+     the canvas it floats on rather than against whatever travels underneath, so
+     the ONE difference the two looks show is the translucency and its blur. */
+  --card-flat: color-mix(in srgb, white 5.5%, var(--canvas));
+  --ink: #EAEDF5; --ink-2: #9BA3B5; --ink-3: #626B80;
+  --line: rgba(255, 255, 255, 0.12); --line-2: rgba(255, 255, 255, 0.22);
+  --violet: #EC4899; --blue-acc: #26C3FF; --teal-acc: #FF4DB8;
+  --purple-acc: #8B5CF6; --azure: #00AEEF;
+  --rose: #FF5C8A; --pink-deep: #E91E8C;
+
+  /* THE MATCH MARK'S GROUND: a soft tint of the wayfinding
+     accent, and ONE value under both looks, because the flat rig changes a card's
+     translucency and nothing about what a mark says. */
+  --mark: rgba(0, 174, 239, 0.22);
+
+  /* the consequence classes: the luminous hue, a low-alpha wash of it, and a
+     half-alpha edge of it */
+  --teal: #4CC9FF; --teal-bg: rgba(76, 201, 255, 0.08); --teal-line: rgba(76, 201, 255, 0.45);
+  --amber: #FFD966; --amber-bg: rgba(255, 217, 102, 0.08); --amber-line: rgba(255, 217, 102, 0.45);
+  --red: #FB7185; --red-bg: rgba(251, 113, 133, 0.08); --red-line: rgba(251, 113, 133, 0.5);
+  --purple: #C4B5FD; --purple-bg: rgba(196, 181, 253, 0.08); --purple-line: rgba(196, 181, 253, 0.45);
+  --blue: #9BB0D3; --blue-bg: rgba(155, 176, 211, 0.08); --blue-line: rgba(155, 176, 211, 0.45);
+
+  /* Shape. Every border-radius and every box-shadow in this sheet and in the
+     board chrome resolves through one of these, so the whole look reshapes from
+     these lines and no component can quietly round itself. Chips stay pills. */
+  --r-card: 14px; --r-tile: 10px; --r-ctl: 8px; --r-chip: 999px;
+  /* the fifth, for the ONE inline shape this sheet draws: a
+     search mark sits inside a line of type, so it wears the smallest corner the
+     house has. A token because every radius here is one. */
+  --r-mark: 2px;
+  /* the sixth, for the SMALL COUNT PILLS: a 16px pill at
+     --r-chip is a capsule whatever its ground, and 5px is a corner rather than an
+     end cap, small enough that a two digit count still reads as one figure. */
+  --r-pill: 5px;
+  --shadow-card: 0 12px 40px rgba(0, 0, 0, 0.35);
+  --shadow-modal: 0 24px 80px rgba(0, 0, 0, 0.6);
+  --shadow-bar: 0 12px 32px rgba(0, 0, 0, 0.32);
+  --shadow-sel: 0 0 0 1px var(--teal-acc), 0 0 22px rgba(255, 77, 184, 0.22);
+  --shadow-chosen: 0 0 0 1px var(--teal), 0 0 22px rgba(76, 201, 255, 0.16);
+  --shadow-dot: 0 0 12px currentColor;
+  /* the hairline edges the figure family draws: an inset ring for a track or
+     a segment, the crown's column rails, and the paper ring under a marker
+     dot. Tokens like every other shadow, so the discipline above holds. */
+  --shadow-edge: inset 0 0 0 1px var(--line);
+  --shadow-edge-teal: inset 0 0 0 1px var(--teal-line);
+  --shadow-edge-amber: inset 0 0 0 1px var(--amber-line);
+  --shadow-edge-red: inset 0 0 0 1px var(--red-line);
+  --shadow-edge-purple: inset 0 0 0 1px var(--purple-line);
+  /* the same ring with its HUE LEFT OFF, spent as `var(--shadow-edge-own)
+     <colour>`: a var() in a custom property resolves where it is DECLARED, so a
+     token reading the element's own colour name would resolve to nothing. */
+  --shadow-edge-own: inset 0 0 0 1px;
+  --shadow-crown-col: inset 1px 0 0 var(--purple-line), inset -1px 0 0 var(--purple-line);
+  --shadow-crown-end: inset 1px 0 0 var(--purple-line), inset -1px 0 0 var(--purple-line), inset 0 -1px 0 var(--purple-line);
+  --shadow-ring: 0 0 0 2px var(--paper);
+  /* the decision tree's shapes, spent as `var(--shadow-x) <colour>` with
+     the hue left off like --shadow-edge-own, since the hue is the element's own
+     family and a token cannot read it. */
+  --shadow-ring-own: 0 0 0 4px;
+  --shadow-rim-own: 0 0 0 1px;
+  --shadow-disc-own: inset 0 0 0 2px;
+  --shadow-glow-10: 0 0 10px; --shadow-glow-12: 0 0 12px; --shadow-glow-14: 0 0 14px; --shadow-glow-16: 0 0 16px;
+  --shadow-bloom-24: 0 0 24px; --shadow-bloom-36: 0 0 36px; --shadow-bloom-54: 0 0 54px; --shadow-bloom-80: 0 0 80px;
+  --shadow-preview: 0 0 12px rgba(38, 195, 255, 0.30);
+  --shadow-preview-card: 0 0 16px rgba(38, 195, 255, 0.25);
+  --shadow-take: 0 0 18px rgba(233, 30, 140, 0.35);
+  --font-ui: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  /* The second face, for the two places a string is a PATH or a LINE OF CODE
+     rather than prose. Nothing is vendored for it, unlike the UI face, because
+     every platform already ships a monospace the reader knows. */
+  --font-mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  /* The type scale. Every font-size in this sheet and in the board chrome is one
+     of these or a small calc on one, so the whole page resizes from six lines.
+     Sizes are roles, not measurements. */
+  --fs-micro: 11px; --fs-small: 12.5px; --fs-body: 15px;
+  --fs-lead: 16.5px; --fs-title: 24px; --lh-read: 1.55;
+
+  /* THE DECISION TREE'S NAMES: the board's hues under the names the device
+     uses, ALIASES and nothing new, with each derived colour's flat hex recorded
+     beside it. No rule may invent a hue outside the palette above. */
+  --yes: var(--teal);             /* sky #4CC9FF */
+  --no: var(--red);               /* rose #FB7185 */
+  --act-rose: var(--rose);        /* #FF5C8A, the act gradient's bright stop */
+  --gold: var(--amber);           /* #FFD966 */
+  --silver: var(--blue);          /* #9BB0D3 */
+  --lavender: var(--purple);      /* #C4B5FD */
+  --magenta: var(--teal-acc);     /* #FF4DB8 */
+  --violet-acc: var(--purple-acc);/* #8B5CF6, the deep partner of lavender and magenta */
+  --edge: color-mix(in srgb, var(--silver) 50%, var(--canvas));        /* #59637E: the plain edge and its head (the mix is a rounding tie; both engines derive 59) */
+  --edge-fade: color-mix(in srgb, var(--edge) 55%, var(--canvas));    /* #3B4058: the faded edge and its head after a choice; a line, never text */
+  --wire-under: color-mix(in srgb, var(--azure) 30%, var(--canvas));   /* #0F4465: the wire's under-stroke */
+  --preview: color-mix(in srgb, var(--blue-acc) 60%, var(--canvas));   /* #207EAA: the preview stroke and head */
+  --stand-1: color-mix(in srgb, var(--azure) 22%, var(--canvas));      /* #113755: the standing ground, top */
+  --stand-2: color-mix(in srgb, var(--azure) 34%, var(--canvas));      /* #0F4A6D: the standing ground, foot */
+  --glass-2: color-mix(in srgb, white 9%, var(--canvas));              /* #2B2B3D: the card-2 glass, flat on the canvas */
+  --glass-p: color-mix(in srgb, white 4%, var(--paper));               /* #191923: the chip's glass, flat on paper */
+  /* THE TWO TRANSLUCENT GROUNDS, named. A chip and a field are the two things
+     that sit ON whatever is behind them rather than on a flat colour, so both are
+     a wash of white; a renderer writing one by hand would be a second sheet. */
+  --chip-bg: rgba(255, 255, 255, 0.04);   /* the chip's and the nd-chip's wash */
+  --field: rgba(255, 255, 255, 0.05);     /* a text field's own, one step up */
+}
+
+* { box-sizing: border-box; }
+/* the aurora ground: three fixed colour fields over the night paper, attached
+   to the viewport so a long board scrolls THROUGH the light rather than
+   dragging it along */
+body {
+  background-color: var(--paper); color: var(--ink); margin: 0; padding: 26px 24px 60px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-body); line-height: var(--lh-read);
+  min-height: 100vh;
+  background-image:
+    radial-gradient(900px 600px at 12% -8%, rgba(233, 30, 140, 0.20), transparent 60%),
+    radial-gradient(1100px 700px at 88% 4%, rgba(0, 174, 239, 0.14), transparent 60%),
+    radial-gradient(800px 700px at 55% 110%, rgba(124, 58, 237, 0.16), transparent 60%);
+  background-attachment: fixed;
+}
+main { max-width: 860px; margin: 0 auto; }
+a { color: var(--azure); }
+h1 { font-size: var(--fs-title); font-weight: 650; margin: 6px 0 4px; letter-spacing: -0.01em; }
+h2 { font-size: var(--fs-body); font-weight: 650; margin: 30px 0 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); }
+.lede { font-size: calc(var(--fs-body) + 0.5px); color: var(--ink-2); margin: 0; max-width: 60ch; }
+.chip {
+  font-size: calc(var(--fs-small) + 0.5px); padding: 2px 10px; border-radius: var(--r-chip);
+  display: inline-block; font-weight: 600; color: var(--ink-2);
+  border: 1px solid var(--line); background: var(--chip-bg);
+}
+.chip.red { background: var(--red-bg); color: var(--red); border-color: var(--red-line); }
+.chip.teal { background: var(--teal-bg); color: var(--teal); border-color: var(--teal-line); }
+.chip.amber { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-line); }
+.chip.purple { background: var(--purple-bg); color: var(--purple); border-color: var(--purple-line); }
+.chip.blue { background: var(--blue-bg); color: var(--blue); border-color: var(--blue-line); }
+
+/* THE ONE MARK DEVICE. The colour and the weight are
+   INHERITED, so a marked word inside a one-line ellipsized name costs that line
+   nothing and no row reflows when a search lands. */
+mark.hl {
+  background: var(--mark); color: inherit; font-weight: inherit;
+  border-radius: var(--r-mark); padding: 0 1px;
+}
+
+/* ---- canvas ---- */
+/* The frame's ground is a quiet aurora over the canvas glass, damped, because a
+   group band is translucent and nothing patterned may read through one. The
+   viewer draws no background of its own, so react flow's ground is cleared. */
+.nd-frame, #nd-canvas {
+  height: 560px; border: 1px solid var(--line); border-radius: var(--r-card);
+  background-color: var(--canvas); overflow: hidden; margin-top: 12px;
+  background-image:
+    radial-gradient(520px 300px at 6% -6%, color-mix(in srgb, var(--pink-deep) 13%, transparent), transparent 64%),
+    radial-gradient(620px 340px at 96% 4%, color-mix(in srgb, var(--azure) 10%, transparent), transparent 64%),
+    radial-gradient(520px 320px at 54% 106%, color-mix(in srgb, var(--purple-acc) 12%, transparent), transparent 64%);
+}
+.nd-frame.mini { height: 340px; margin-top: 10px; }
+/* The WIDE frame, written only ever by the viewer's expand button. The WIDTH
+   FOLLOWS THE MARGINS rather than being declared beside them, because 100vw
+   counts a vertical scrollbar the content box never gets. */
+.nd-frame.wide, #nd-canvas.wide {
+  margin-inline: calc(50% - 50vw + 24px);
+  height: max(560px, min(72vh, 820px));
+}
+.react-flow { background: transparent; }
+/* the zoom stack, in house glass. Its own buttons are a flat gray panel, and
+   the frame's top right corner is too prominent a place to leave one. */
+.react-flow__controls { box-shadow: none; border: 1px solid var(--line); border-radius: var(--r-ctl); overflow: hidden; }
+.react-flow__controls-button { background: var(--card-2); border-bottom: 1px solid var(--line); color: var(--ink-2); }
+.react-flow__controls-button:hover { background: var(--card); color: var(--ink); }
+.react-flow__controls-button svg { fill: currentColor; }
+
+/* Node cards. A CARD MIXES ROLES, it never tints itself one colour: the TITLE
+   is always ink and the eye's anchor, the detail line is always muted, and a
+   state's hue lands only on the edges. This family is glass, not bloom. */
+/* THE BASE IS OPAQUE and it is the canvas token: an edge routed under a card read
+   through the body like a hole. background-color stays var(--canvas) in every
+   state; a state's wash is a background-image layer over it, never a replacement. */
+.nd-node {
+  /* THE EDGE IS A RING, NOT A BORDER. A canvas lands on a fractional zoom, and
+     Firefox snaps a border's sides to device pixels one at a time, so a corner
+     reads visibly heavier than the run between them (Mozilla bug 1258112). */
+  --nd-rim: var(--line-2);
+  --nd-fold: 1.5px;
+  position: relative;
+  width: 200px; min-height: 78px;
+  background-color: var(--canvas);
+  background-image: linear-gradient(168deg, var(--card-2), transparent 76%);
+  border: 0; border-radius: var(--r-card);
+  padding: calc(9px + var(--nd-fold)) calc(12px + var(--nd-fold)) calc(10px + var(--nd-fold));
+  box-shadow: var(--shadow-card), var(--shadow-edge-own) var(--nd-rim);
+  color: var(--ink); font-family: inherit;
+}
+/* the top sheen, the same hairline the glass panels elsewhere catch. It is
+   positioned against the padding box, so it takes the fold too and stays where
+   it has always sat: just inside the edge, inside the ring and never across it */
+.nd-node::before {
+  content: ""; position: absolute; inset: var(--nd-fold) var(--nd-fold) auto; height: 1px; pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--line-2), transparent);
+}
+.nd-kind { font-size: var(--fs-micro); font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); }
+.nd-title { font-size: var(--fs-body); font-weight: 650; margin: 1px 0 2px; letter-spacing: -0.005em; color: var(--ink); }
+.nd-line { font-size: var(--fs-small); color: var(--ink-2); }
+.nd-chips { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+.nd-chip { font-size: calc(var(--fs-micro) + 0.5px); padding: 1px 8px; border-radius: var(--r-chip); background: var(--chip-bg); color: var(--ink-2); border: 1px solid var(--line); font-weight: 500; }
+.nd-chip.red { background: var(--red-bg); color: var(--red); border-color: var(--red-line); }
+.nd-chip.teal { background: var(--teal-bg); color: var(--teal); border-color: var(--teal-line); }
+.nd-chip.amber { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-line); }
+.nd-chip.purple { background: var(--purple-bg); color: var(--purple); border-color: var(--purple-line); }
+.nd-handle { opacity: 0; width: 6px; height: 6px; }
+
+/* Node states an option overlay can apply: an edge, a wash and an eyebrow in
+   its own hue, and the title stays ink through all of them. A state names the
+   edge by setting --nd-rim and nothing else. */
+.nd-node.ok {
+  --nd-rim: var(--teal-line);
+  background-image: linear-gradient(168deg, var(--teal-bg), transparent 82%),
+    linear-gradient(var(--teal-bg), var(--teal-bg));
+}
+.nd-node.ok .nd-kind { color: var(--teal); }
+.nd-node.warn {
+  --nd-rim: var(--amber-line);
+  background-image: linear-gradient(168deg, var(--amber-bg), transparent 82%),
+    linear-gradient(var(--amber-bg), var(--amber-bg));
+}
+.nd-node.warn .nd-kind { color: var(--amber); }
+.nd-node.danger {
+  --nd-rim: var(--red-line);
+  background-image: linear-gradient(168deg, var(--red-bg), transparent 82%),
+    linear-gradient(var(--red-bg), var(--red-bg));
+}
+.nd-node.danger .nd-kind { color: var(--red); }
+.nd-node.target { --nd-rim: var(--teal-line); }
+/* retire dims the card's CONTENT, never the card box: an opacity on the box
+   would make the opaque base translucent again, which is what that base is for.
+   IT IS ALSO THE ONE STATE THAT KEEPS A REAL BORDER: a shadow cannot dash. */
+.nd-node.retire {
+  --nd-fold: 0px;
+  border: 1.5px dashed var(--nd-rim);
+  box-shadow: var(--shadow-card);
+}
+.nd-node.retire .nd-kind, .nd-node.retire .nd-title,
+.nd-node.retire .nd-line, .nd-node.retire .nd-chips { opacity: 0.82; }
+.nd-node.hold {
+  --nd-rim: var(--purple-line);
+  background-image: linear-gradient(168deg, var(--purple-bg), transparent 82%),
+    linear-gradient(var(--purple-bg), var(--purple-bg));
+}
+.nd-node.hold .nd-kind { color: var(--purple); }
+
+/* The group band: the boundary a canvas draws around a set of cards. The BAND
+   ALONE carries the boundary, so its members stay neutral glass and their own
+   classes go on meaning consequence rather than membership. */
+.nd-band {
+  /* the same inset ring a card's edge is drawn with, for the same fractional
+     zoom. There is no fold to spend here: the band holds no words to push, so the
+     border simply comes off and the ring lands where it sat. */
+  --nd-rim: var(--line);
+  width: 100%; height: 100%;
+  background: var(--blue-bg); border: 0;
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-edge-own) var(--nd-rim);
+  /* the band sits BEHIND its members and is never a target itself: a click
+     meant for a card must not land on the boundary drawn around it */
+  pointer-events: none;
+}
+.nd-band.ok { background: var(--teal-bg); --nd-rim: var(--teal-line); }
+.nd-band.warn { background: var(--amber-bg); --nd-rim: var(--amber-line); }
+.nd-band.danger { background: var(--red-bg); --nd-rim: var(--red-line); }
+.nd-band.hold { background: var(--purple-bg); --nd-rim: var(--purple-line); }
+.nd-band-l {
+  position: absolute; top: 7px; left: 13px;
+  font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.nd-band.ok .nd-band-l { color: var(--teal); }
+.nd-band.warn .nd-band-l { color: var(--amber); }
+.nd-band.danger .nd-band-l { color: var(--red); }
+.nd-band.hold .nd-band-l { color: var(--purple); }
+
+/* edges. THE PLAIN EDGE is 2.3 in --edge, ruled on the tree's round five for
+   every canvas: thicker than the 1.6 hairline it replaced, and FLAT so the head
+   below can be the same colour and opaque. */
+.nd-edge .react-flow__edge-path { stroke: var(--edge); stroke-width: 2.3; }
+.nd-edge.teal .react-flow__edge-path { stroke: var(--teal); stroke-width: 2; }
+.nd-edge.amber .react-flow__edge-path { stroke: var(--amber); stroke-width: 2; }
+.nd-edge.red .react-flow__edge-path { stroke: var(--red); stroke-width: 2.2; }
+.nd-edge.faint .react-flow__edge-path { stroke-dasharray: 5 5; opacity: 0.55; }
+/* THE ARROWHEADS. The viewer points every directed edge at #nd-head-<key> by
+   the same consequence walk that strokes the line, so the fill is a rule HERE
+   and the viewer holds no colour: one fill rule per stroke rule above. */
+#nd-head-mute polygon { fill: var(--edge); }
+#nd-head-teal polygon { fill: var(--teal); }
+#nd-head-amber polygon { fill: var(--amber); }
+#nd-head-red polygon { fill: var(--red); }
+.nd-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+/* THE WIRE'S UNDER-STROKE, drawn by the viewer from the same d as the visible
+   path and hidden until the tree's block shows it under a lit edge. A path with
+   no fill rule would fill its bezier black, so every canvas needs this. */
+.nd-under { display: none; fill: none; stroke-width: 7; pointer-events: none; }
+/* THE EDGE LABEL PILL, a div in react flow's label portal rather than the svg
+   text an edge draws by default: svg text does not wrap, and a pill as wide as
+   a long label covers the card behind it and swallows the arrow it names. */
+.nd-elabel {
+  position: absolute; pointer-events: none;
+  /* the ruled corner is 7, which is the control radius less a hairline: the
+     sheet's four radii are the only shapes anything here may resolve through */
+  max-width: 102px; padding: 5px 10px; border-radius: calc(var(--r-ctl) - 1px);
+  font-size: calc(var(--fs-micro) - 0.5px); line-height: 1.3;
+  text-align: center; white-space: pre-line; text-wrap: balance;
+  color: var(--ink-2);
+  background: color-mix(in srgb, var(--canvas) 86%, transparent);
+  border: 1px solid var(--line);
+}
+
+/* canvas panels */
+.nd-toggle { display: flex; gap: 6px; }
+.nd-toggle button {
+  font: inherit; font-size: calc(var(--fs-body) - 1px); font-weight: 550; padding: 6px 12px;
+  border-radius: var(--r-ctl); border: 1px solid var(--line);
+  background: var(--card-2); color: var(--ink-2); cursor: pointer;
+}
+.nd-toggle button:hover { border-color: var(--line-2); color: var(--ink); }
+.nd-toggle button.on { background: linear-gradient(120deg, var(--rose), var(--pink-deep)); color: var(--paper); border-color: transparent; }
+.nd-note {
+  max-width: 400px; font-size: var(--fs-small); color: var(--ink-2);
+  background: rgba(22, 22, 42, 0.82); backdrop-filter: blur(10px);
+  border: 1px solid var(--line); border-radius: var(--r-tile); padding: 8px 12px;
+}
+
+/* ---- below-canvas panels ---- */
+.opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+/* An option tile. On an open card the TILE IS THE CONTROL (the .act class the
+   board adds); everywhere else it is a plain panel, which is what keeps every
+   cached tier-2 page rendering exactly as it was authored. */
+.opt {
+  position: relative; background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line); border-radius: var(--r-tile); padding: 13px 15px;
+}
+.opt.act { cursor: pointer; transition: border-color 0.12s, background 0.12s, transform 0.12s; }
+/* The lift answers every live tile. The SURFACE half is scoped away from the
+   recommendation and the selection, whose whole treatment IS that border and
+   background: a hover repainting them would erase the state being acted on. */
+.opt.act:hover { transform: translateY(-1px); }
+.opt.act:not(.pick):not(.on):hover { border-color: var(--line-2); background: var(--card-2); }
+/* the tile is a role="button" the keyboard reaches, so it wears the same focus
+   ring the card header does */
+.opt.act:focus-visible { outline: 2px solid var(--blue-acc); outline-offset: 3px; }
+/* the recommendation, drawn as a gradient border: two backgrounds, one
+   clipped to the padding box and one to the border box */
+.opt.pick {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(rgba(22, 22, 42, 0.92), rgba(22, 22, 42, 0.92)) padding-box,
+    linear-gradient(120deg, var(--violet), var(--purple-acc)) border-box;
+}
+/* the same tile on a CLOSED card, where the recommendation is history: the
+   BORDER gradient dims, the tile's own text does not */
+.opt.pick.dim {
+  background:
+    linear-gradient(rgba(22, 22, 42, 0.92), rgba(22, 22, 42, 0.92)) padding-box,
+    linear-gradient(120deg, rgba(236, 72, 153, 0.38), rgba(139, 92, 246, 0.38)) border-box;
+}
+.opt.on { border: 1px solid var(--teal-acc); box-shadow: var(--shadow-sel); }
+.opt.on::after {
+  content: "\2713  selected"; position: absolute; top: 9px; right: 12px;
+  font-size: var(--fs-micro); font-weight: 700; color: var(--paper);
+  background: var(--teal-acc); border-radius: var(--r-ctl); padding: 1px 8px;
+}
+.opt.chosen { border: 1px solid var(--teal); box-shadow: var(--shadow-chosen); }
+.opt.chosen::after {
+  content: "\2713  your answer"; position: absolute; top: 9px; right: 12px;
+  font-size: var(--fs-micro); font-weight: 700; color: var(--paper);
+  background: var(--teal); border-radius: var(--r-ctl); padding: 1px 8px;
+}
+/* the room the corner tag needs: nothing in a tagged tile runs under it */
+.opt.on h3, .opt.on .tag, .opt.on .was,
+.opt.chosen h3, .opt.chosen .tag, .opt.chosen .was { padding-right: 96px; }
+.opt h3 { font-size: var(--fs-lead); font-weight: 650; margin: 0 0 2px; }
+/* THE ANSWER TOKEN: the token a reader types back into a
+   session leads the head, clear of the top right corner, which belongs to the
+   two badges. No new colour and no new token; the chip wash is the sheet's. */
+.opt h3 .tok {
+  display: inline-block; vertical-align: 1px; margin-right: 7px;
+  font-family: var(--font-mono); font-size: var(--fs-small); font-weight: 600;
+  color: var(--ink); background: var(--chip-bg);
+  border: 1px solid var(--line); border-radius: var(--r-chip); padding: 1px 9px;
+}
+/* The copy control's label reads on --ink-2:
+   at this size --ink-3 measured 2.9:1 on a plain tile and 3.3:1 on the recommended
+   one, both under the 4.5:1 floor. */
+.opt h3 .tok-copy {
+  display: inline-block; vertical-align: 1px; margin-right: 7px;
+  font-family: var(--font-mono); font-size: var(--fs-micro); font-weight: 600;
+  color: var(--ink-2); background: transparent;
+  border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 1px 8px;
+  cursor: pointer;
+}
+.opt h3 .tok-copy:hover { color: var(--ink); border-color: var(--line-2); }
+.opt h3 .tok-copy:focus-visible { outline: 2px solid var(--blue-acc); outline-offset: 2px; }
+.opt h3 .tok-copy.copied { background: var(--teal-bg); color: var(--teal); border-color: var(--teal-line); }
+/* the recommendation label, and the quiet past tense a closed card uses */
+.opt .tag {
+  display: block; font-size: var(--fs-micro); font-weight: 700;
+  letter-spacing: 0.16em; text-transform: uppercase; margin-bottom: 2px;
+  background: linear-gradient(100deg, var(--violet), var(--purple-acc));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.opt .was {
+  display: block; font-size: var(--fs-micro); font-weight: 600;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 2px;
+}
+.opt .get { font-size: calc(var(--fs-body) - 1px); color: var(--teal); margin: 6px 0 0; }
+.opt .cost { font-size: calc(var(--fs-body) - 1px); color: var(--amber); margin: 2px 0 0; }
+/* the board card's decision table, one row per option; .rows keeps the
+   cached tier-2 pages' tile grid as authored */
+.opts.rows { grid-template-columns: 1fr; gap: 8px; }
+.opts-head { display: none; }
+.opt .lbl { font-weight: 600; }
+.opt .nil { display: none; }
+.opt .star { color: var(--violet); }
+.opt-more { margin-top: 6px; font-size: calc(var(--fs-body) - 1px); color: var(--ink-2); }
+.opt-more > summary { cursor: pointer; font-size: var(--fs-small); font-weight: 600; color: var(--blue); width: max-content; }
+.opt-more .slot { margin: 4px 0 0; }
+.opt-more .slot-headline { color: var(--ink); }
+.qc-crux { font-size: calc(var(--fs-body) - 0.5px); color: var(--ink-2); margin: 0 0 6px; }
+.qc-crux .lbl { font-weight: 700; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.12em; font-size: var(--fs-micro); }
+@media (min-width: 720px) {
+  .opts-head, .opts.rows .opt { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr); column-gap: 14px; }
+  .opts-head { padding: 0 15px; font-size: var(--fs-micro); font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--ink-3); }
+  .opts.rows .opt > .tag, .opts.rows .opt > .was, .opts.rows .opt > .opt-more { grid-column: 1 / -1; }
+  .opts.rows .opt > h3 { grid-column: 1; }
+  .opts.rows .opt > .get, .opts.rows .opt > .cost { margin: 0; }
+  .opts.rows .opt > .nil { display: block; }
+  .opts.rows .opt .lbl { display: none; }
+  .opts.rows .opt-more .lbl { display: inline; }
+  /* the corner badge gets the row's right edge, not the catch cell's text */
+  .opts.rows .opt.on, .opts.rows .opt.chosen { padding-right: 112px; }
+  .opts.rows .opt.on h3, .opts.rows .opt.chosen h3 { padding-right: 0; }
+}
+.opt .horizon { font-size: var(--fs-small); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--ink-3); }
+
+/* ---- stat tile ---- */
+.stat {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-tile);
+  backdrop-filter: blur(14px); padding: 12px 15px; display: inline-block; min-width: 120px;
+}
+.stat .stat-v { font-size: calc(var(--fs-title) + 2px); font-weight: 650; letter-spacing: -0.01em; display: block; }
+.stat .stat-l { font-size: var(--fs-small); color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.06em; display: block; margin-top: 2px; }
+.stat.teal .stat-v { color: var(--teal); }
+.stat.amber .stat-v { color: var(--amber); }
+.stat.red .stat-v { color: var(--red); }
+.stat.purple .stat-v { color: var(--purple); }
+.stat.blue .stat-v { color: var(--blue); }
+
+.timeline { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 4px 0; }
+.phase { flex: 1; min-width: 130px; position: relative; padding: 10px 14px 12px; border: 1px solid var(--line); border-left: none; background: var(--card); }
+.phase:first-child { border-left: 1px solid var(--line); border-radius: var(--r-tile) 0 0 var(--r-tile); }
+.phase:last-child { border-radius: 0 var(--r-tile) var(--r-tile) 0; }
+.phase .ph-t { font-size: calc(var(--fs-body) - 0.5px); font-weight: 650; }
+.phase .ph-d { font-size: calc(var(--fs-small) + 0.5px); color: var(--ink-2); margin-top: 2px; }
+.phase .ph-n { font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.08em; color: var(--ink-3); }
+/* the one-way door keeps red, and the reversible phase keeps sky */
+.phase.door { background: var(--red-bg); border-color: var(--red-line); }
+.phase.door .ph-t, .phase.door .ph-n { color: var(--red); }
+.phase.safe { background: var(--teal-bg); border-color: var(--teal-line); }
+.phase.safe .ph-t { color: var(--teal); }
+
+.callout { border-radius: var(--r-tile); padding: 13px 16px; font-size: var(--fs-body); }
+.callout.red { background: var(--red-bg); border: 1px solid var(--red-line); color: var(--red); }
+.callout.amber { background: var(--amber-bg); border: 1px solid var(--amber-line); color: var(--amber); }
+.callout.teal { background: var(--teal-bg); border: 1px solid var(--teal-line); color: var(--teal); }
+.callout.purple { background: var(--purple-bg); border: 1px solid var(--purple-line); color: var(--purple); }
+.footnote { font-size: calc(var(--fs-small) + 0.5px); color: var(--ink-3); margin-top: 26px; }
+/* a fold on any house page, classed or not: the summary is a neutral
+   reference, and neutral reference is silver */
+details > summary { cursor: pointer; color: var(--blue); }
+
+/* ---- the time element and its tooltip ---- */
+/* EVERY date this house prints is a <time datetime="..."> carrying the raw
+   stamp, and assets/time-tip.js reads it at hover time. The rules live HERE
+   because a cached tier-2 page loads this sheet and nothing else. */
+.ndtime {
+  border-bottom: 1px dotted var(--line-2);
+  cursor: help;
+  font-variant-numeric: tabular-nums;
+}
+/* the tooltip itself: one node, reused, placed in viewport coordinates by the
+   script. Two lines, the second being the distance in words, which is why the
+   whitespace is preserved rather than collapsed. */
+.ndtip {
+  position: fixed;
+  z-index: 90;
+  max-width: 320px;
+  padding: 7px 11px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-ctl);
+  background: var(--glass-p);
+  box-shadow: var(--shadow-card);
+  color: var(--ink);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+  white-space: pre-line;
+  pointer-events: none;
+}
+.ndtip[hidden] { display: none; }
+/* THE CARD VARIANT: the same node one class wider, carrying
+   structured children instead of two lines of text. It stays GLASS, which is
+   the register every floating thing on this board keeps. */
+.ndtip-card {
+  max-width: 380px;
+  white-space: normal;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 12px;
+}
+.ndtip-h { display: flex; align-items: baseline; gap: 7px; }
+.ndtip-id {
+  flex: 0 0 auto;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  color: var(--azure);
+}
+.ndtip-n { font-weight: 650; color: var(--ink); }
+.ndtip-b { display: flex; flex-direction: column; gap: 5px; }
+.ndtip-m { font-size: var(--fs-micro); letter-spacing: 0.08em; color: var(--ink-2); }
+.ndtip-d { color: var(--ink-2); }
+/* the sub line: what the host is, on the pair `.ndtip-d` already stands on,
+   so the card gains a line and no new token or colour. */
+.ndtip-s { font-size: var(--fs-small); color: var(--ink-2); }
+.ndtip-l { display: flex; flex-wrap: wrap; gap: 4px; }
+.ndtip-w { font-size: var(--fs-micro); color: var(--ink-3); }
+/* THE CARD THAT CAN BE REACHED: only one carrying an act, so every
+   other tip stays untouchable and no date inside one hovers a second tip out of it. */
+.ndtip.ndtip-has-act { pointer-events: auto; }
+.ndtip-act {
+  align-self: flex-start;
+  font: inherit;
+  font-size: var(--fs-small);
+  color: var(--ink-2);
+  background: var(--glass-p);
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+/* the house answers a pointer target with a ground and not the cursor alone
+   (G1-10), which is what `.ndh-b`, `.side-row` and `.side-hit` already say */
+.ndtip-act:hover {
+  background: var(--card-2);
+  color: var(--ink);
+}
+
+/* ---- the progress meter ---- */
+/* the words and the thin track that draw the same number, worn by a lane header
+   and by a plan header. Both are ONE LINE while stuck, so this row never wraps
+   and never grows; --w is 0 to 100 and the ONLY per-record value. */
+.prog {
+  --w: 0;
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: var(--fs-micro); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-3); white-space: nowrap;
+}
+.prog b { font-weight: 700; color: var(--ink-2); }
+.meter {
+  position: relative; display: inline-block; width: 54px; height: 5px;
+  border-radius: var(--r-chip); background: var(--card-2); overflow: hidden;
+}
+.meter::after {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+  width: calc(var(--w) * 1%); border-radius: var(--r-chip); background: var(--teal);
+}
+
+/* ---- board question cards ---- */
+/* deliberately NOT overflow: hidden. The sheen fades out at both ends rather
+   than being clipped, and a clipping card would make its own sticky answer bar
+   a scroll container with nothing to scroll, which is not sticky at all. */
+.qcard {
+  position: relative;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-card);
+  backdrop-filter: blur(18px);
+  padding: 14px 17px 15px; margin-bottom: 12px;
+  box-shadow: var(--shadow-card);
+}
+/* THE FLAT LOOK, and the whole of what it changes.
+   EVERY CARD IS ONE RULE, because every card on both tabs is a .qcard; the
+   shell mirrors the `#look=flat` hash key as this body class and no more. */
+body.look-flat .qcard { background: var(--card-flat); backdrop-filter: none; }
+
+/* the sheen along the top edge, the one piece of chrome the glass keeps */
+.qcard::before {
+  content: ""; position: absolute; inset: 0 0 auto; height: 1px; pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+}
+.qcard.qc-broken { border-color: var(--red-line); background: var(--red-bg); }
+/* AND THE UNREADABLE CARD KEEPS ITS RED under the flat look: the flat rule
+   above outranks .qc-broken on specificity alone, and taking the red off a card
+   that says a file will not parse is more than the translucency changing. */
+body.look-flat .qcard.qc-broken { background: var(--red-bg); }
+.qcard:not(.open) .qc-body { display: none; }
+/* ---- the live change mark (the soft refresh) ----
+   `changed` is the STANDING mark and stays until something clears it; `pulse`
+   is the brief animation on what moved on THAT pass, so it never re-fires. */
+.qcard.changed { border-color: var(--blue-line); }
+@keyframes nd-lit {
+  from { box-shadow: var(--shadow-card), inset 0 0 0 1px var(--blue-line); }
+  to { box-shadow: var(--shadow-card); }
+}
+.qcard.pulse { animation: nd-lit 900ms ease-out 1; }
+@media (prefers-reduced-motion: reduce) {
+  .qcard.pulse { animation: none; }
+}
+/* no right reservation any more: the maximize control that used to sit
+   in the card's corner is gone, and the age is free to end the row */
+.qc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; }
+.qc-head:focus-visible { outline: 2px solid var(--blue-acc); outline-offset: 3px; border-radius: var(--r-ctl); }
+.qc-id { font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--azure); }
+/* the record's key: small and gray, and only while the card is hovered */
+.qc-key { display: none; font-size: var(--fs-micro); color: var(--ink-3); font-family: ui-monospace, Consolas, monospace; }
+.qcard:hover > .qc-head .qc-key, .qc-head:focus-visible .qc-key { display: inline; }
+/* a long unbroken name shrinks and breaks inside its column rather than
+   standing 12px past a 256px wide-tier column (6px of sideways scroll at
+   900x800, the re-eyeball's lens) */
+.qc-name { font-size: calc(var(--fs-lead) + 0.5px); font-weight: 650; letter-spacing: -0.005em; min-width: 0; overflow-wrap: anywhere; }
+.qc-age { font-size: var(--fs-small); color: var(--ink-3); margin-left: auto; }
+.qc-body { margin-top: 12px; }
+.qc-gist { font-size: calc(var(--fs-body) + 0.5px); margin: 0 0 6px; }
+/* THE DECK LINE: what a compact card says about itself in one line, on
+   BOTH tabs, so it belongs to the sheet. Clamped at two lines, so a long
+   description cannot turn a lane of cards back into a wall. */
+.wdeck {
+  margin: 9px 0 0; color: var(--ink-2); font-size: calc(var(--fs-body) - 1px);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  line-clamp: 2; overflow: hidden;
+}
+/* WHY THIS CARD STOOD: while a search stands, a card with no
+   mark of its own wears the line the match was in, gone the moment the box is
+   cleared. `flex: 0 0 auto` keeps that line from growing. */
+.qc-hit {
+  flex: 0 0 auto; margin: 7px 0 0; font-size: var(--fs-micro); color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.qc-session { font-size: var(--fs-small); color: var(--ink-3); margin: 0 0 10px; }
+/* one section rhythm for every body block, folds included */
+.qc-sec { margin-top: 14px; }
+.qc-h { font-size: var(--fs-small); font-weight: 700; margin: 0 0 4px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-3); }
+/* AN ANSWER THAT WAS REPLACED: every paragraph under the standing answer
+   is one an amendment replaced. --ink-2, which is the 4.5:1 readability floor;
+   never --ink-3 here, because this is body text and not a label. */
+.qc-earlier {
+  margin: 8px 0 0; padding-left: 10px; border-left: 2px solid var(--line);
+  color: var(--ink-2); font-size: calc(var(--fs-body) - 1px);
+}
+.qc-fold { margin-top: 14px; font-size: calc(var(--fs-body) - 1px); color: var(--ink-2); }
+.qc-fold > summary { cursor: pointer; font-size: calc(var(--fs-small) + 1px); font-weight: 600; color: var(--blue); }
+.qc-fold > summary:hover { color: var(--blue-acc); }
+
+/* ---- the detail pane ----
+   Its GEOMETRY lives with the shell's own layout; what is here is the surface:
+   the glass, the rim, the header row and the drag edge. */
+.dpane {
+  display: flex; flex-direction: column;
+  background: var(--glass-p); backdrop-filter: blur(18px);
+  border-left: 1px solid var(--line-2); box-shadow: var(--shadow-modal);
+}
+/* the drag edge, sitting half outside the pane so it can be grabbed without
+   aiming: a hairline lights under the pointer, and nothing else about it moves */
+.dpane-grip { position: absolute; top: 0; left: -3px; bottom: 0; width: 7px; cursor: col-resize; }
+.dpane-grip::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px;
+  background: transparent;
+}
+.dpane-grip:hover::after { background: var(--blue-acc); }
+.dpane-head {
+  display: flex; align-items: flex-start; gap: 10px; flex: 0 0 auto;
+  padding: 13px 16px 11px; border-bottom: 1px solid var(--line);
+}
+/* the card's own header row, cloned: the age loses the auto margin that pushed
+   it to the end of a card, because in here it is one more thing on the line */
+.dpane-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+.dpane-title .qc-age { margin-left: 0; }
+.dpane-acts { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.dpane-b {
+  font: inherit; font-size: var(--fs-small); font-weight: 600; padding: 3px 12px;
+  border-radius: var(--r-ctl); border: 1px solid var(--line);
+  background: var(--card-2); color: var(--ink-2); cursor: pointer; text-decoration: none;
+}
+.dpane-b:hover { border-color: var(--line-2); color: var(--ink); }
+/* THE CHAIN STOPS HERE. A wheel that reaches the end of this scroller used to
+   hand the rest of the gesture to the DOCUMENT. `contain` stops the chain and
+   keeps the browser's own overscroll gestures, which `none` would also take. */
+.dpane-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain;
+  padding: 15px 17px 30px; }
+/* the pane IS the card's surface now, so the body's own blocks stand on the
+   pane rather than on a second card inside it */
+.dpane-body > .qc-sec:first-child { margin-top: 0; }
+/* the cached visualization, embedded. Maximized it is the frame; at every
+   other width it is the chip and one line saying where the picture is. */
+.dviz { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.dviz-hint { font-size: var(--fs-small); color: var(--ink-3); }
+.dviz.on .dviz-hint { display: none; }
+.dviz-frame {
+  width: 100%; height: 72vh; border: 1px solid var(--line);
+  border-radius: var(--r-card); background: var(--canvas);
+}
+
+/* ---- the pinned bar (pinned in round 2) ----
+   ONE bar PINNED to the bottom of the content column on both tabs, and
+   everything in it is painted from the activity log. */
+.hist { border-top: 1px solid var(--line-2); background: var(--canvas); }
+/* ONE LINE at every width (the ruling): the bar keeps a constant height, so
+   nothing in it wraps and the names ellipsis inside it instead. */
+.hist-bar {
+  display: flex; align-items: center; flex-wrap: nowrap; gap: 6px 12px;
+  font-size: var(--fs-small); flex: 1 1 auto; min-width: 0;
+}
+.hist-lab {
+  font-size: var(--fs-micro); letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 700; flex: 0 0 auto;
+}
+/* the two latest, side by side, minted by the feed client. THE
+   BAR IS ONE LINE (the ruling), so the pair take whatever the label, the
+   changed group and the activity control leave and ellipsis inside it. */
+.hist-latest {
+  display: flex; align-items: center; flex-wrap: nowrap; gap: 4px 18px;
+  margin: 0; padding: 0; list-style: none; flex: 1 1 200px; min-width: 0;
+  overflow: hidden;
+}
+/* the pair share the room evenly and the name is what gives the squeeze up
+   inside a row, so a long name never takes the other ending off the line */
+.hist-latest .hist-row { flex: 1 1 0; min-width: 0; }
+.hist-latest .hist-nm { flex: 1 1 auto; }
+.hist-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.hist-row[hidden] { display: none; }
+.hist-lid {
+  font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.09em;
+  color: var(--azure); text-decoration: none; flex: 0 0 auto;
+}
+.hist-nm {
+  color: var(--ink); text-decoration: none; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.hist-nm:hover, .hist-lid:hover { text-decoration: underline; }
+/* the outcome word, in the hue the board already reads that ending as: an
+   answer and a completion are the arrival, a close is neutral reference, and a
+   drop is quiet, because deciding not to do something is not a failure. */
+.hist-out {
+  font-size: var(--fs-micro); letter-spacing: 0.08em; text-transform: uppercase;
+  font-weight: 700; color: var(--ink-3); flex: 0 0 auto;
+}
+.hist-out.o-answered, .hist-out.o-completed { color: var(--teal); }
+.hist-out.o-closed { color: var(--blue); }
+.hist-at { font-size: var(--fs-small); color: var(--ink-3); flex: 0 0 auto; }
+.hist-none { color: var(--ink-3); font-size: var(--fs-small); flex: 0 0 auto; }
+.hist-none[hidden] { display: none; }
+.hist-b {
+  font: inherit; font-size: var(--fs-small); font-weight: 600; padding: 3px 12px;
+  border-radius: var(--r-ctl); border: 1px solid var(--line);
+  background: var(--card-2); color: var(--ink-2); cursor: pointer;
+}
+.hist-b:hover { border-color: var(--line-2); color: var(--ink); }
+/* WHAT CHANGED SINCE YOU LAST LOOKED, in the same neutral reference hue the
+   change mark on a card wears: the two devices are one reading, and a count in
+   a state colour would make news look like a consequence. */
+.hist-seen { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hist-seen[hidden] { display: none; }
+.hist-n {
+  font: inherit; font-size: var(--fs-small); font-weight: 700; padding: 3px 12px;
+  border-radius: var(--r-chip); border: 1px solid var(--blue-line);
+  background: var(--blue-bg); color: var(--ink); cursor: pointer;
+}
+.hist-n:hover { border-color: var(--blue-acc); }
+/* the count is a TOGGLE, so it says out loud while it is the thing
+   narrowing the board: the same lit reading the header's own chips wear */
+.hist-n.on { border-color: var(--blue-acc); background: var(--blue-acc);
+  color: var(--paper); }
+.hist-since { color: var(--ink-3); }
+/* THE ACTIVITY CONTROL, at the right end and never squeezed: it is the way
+   into the log, so it keeps its width while the endings give up theirs. */
+.hist-act {
+  margin-left: auto; flex: 0 0 auto; font: inherit; font-size: var(--fs-small);
+  font-weight: 600; padding: 3px 12px; border-radius: var(--r-ctl);
+  border: 1px solid var(--line); background: var(--card-2); color: var(--ink-2);
+  cursor: pointer;
+}
+.hist-act:hover { border-color: var(--line-2); color: var(--ink); }
+.hist-ct { font-weight: 700; color: var(--ink); }
+.hist-ct[hidden] { display: none; }
+@media (max-width: 860px) {
+  /* ONE LINE STILL (the bar's height is a constant at every width): the label,
+     the second ending and the "since" words are what a phone gives up. Two
+     endings side by side in 390px were four wrapped lines each. */
+  .hist-lab, .hist-since { display: none; }
+  .hist-latest .hist-row + .hist-row { display: none; }
+}
+
+/* ---- the activity sheet ----
+   House glass consistent with the detail pane, its head pinned above a body
+   that scrolls. Under the flat rig it stays GLASS, as every floating chrome. */
+.asheet {
+  background: var(--glass-p); backdrop-filter: blur(18px);
+  border-top: 1px solid var(--line-2); box-shadow: var(--shadow-modal);
+}
+/* THE THREE INNER ROWS CARRY THE PAGE GUTTER: --page-gut is the ONE number the
+   pane, the bar and these rows read, so the phone width moves all three at once
+   and the step they used to differ by cannot come back. */
+.asheet-top {
+  display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
+  padding: 10px var(--page-gut, 24px); border-bottom: 1px solid var(--line);
+}
+/* the drag edge on the sheet's top rim, the pane grip's own shape turned
+   through ninety degrees: half outside the sheet so it can be grabbed without
+   aiming, and a hairline that lights under the pointer */
+.asheet-grip { position: absolute; left: 0; right: 0; top: -3px; height: 7px; cursor: row-resize; }
+.asheet-grip::after {
+  content: ""; position: absolute; left: 0; right: 0; top: 3px; height: 1px;
+  background: transparent;
+}
+.asheet-grip:hover::after { background: var(--blue-acc); }
+.asheet-h {
+  font-size: var(--fs-micro); letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--ink-2); font-weight: 700;
+}
+.asheet-note { color: var(--ink-3); font-size: var(--fs-small); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asheet-acts { display: flex; align-items: center; gap: 6px; margin-left: auto;
+  flex: 0 0 auto; }
+.asheet-b {
+  font: inherit; font-size: var(--fs-small); font-weight: 600; padding: 3px 12px;
+  border-radius: var(--r-ctl); border: 1px solid var(--line);
+  background: var(--card-2); color: var(--ink-2); cursor: pointer;
+}
+.asheet-b:hover { border-color: var(--line-2); color: var(--ink); }
+.asheet-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain;
+  padding: 12px var(--page-gut, 24px) 20px; }
+
+/* THE FILTER ROW, between the head and the body and outside the body's scroll,
+   so the controls that narrowed the log never scroll away from a reader paging
+   older months. The chips are the header's own device (lib/shell.mjs). */
+.asheet-filters {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 7px; flex: 0 0 auto;
+  padding: 8px var(--page-gut, 24px); border-bottom: 1px solid var(--line);
+}
+/* THE ROW IS ONE LINE AT 1440, which is the ruling's own
+   test, and every number in these two rules is what buys it: the column gap is
+   7px rather than 8, and the box gives before anything else does. */
+.asheet-q {
+  flex: 1 1 130px; min-width: 100px; font: inherit;
+  font-size: calc(var(--fs-body) - 1px); padding: 3px 10px;
+  border-radius: var(--r-ctl); border: 1px solid var(--line);
+  background: var(--card-2); color: var(--ink);
+}
+.asheet-q::placeholder { color: var(--ink-3); }
+
+/* THE LOG ITSELF: day groups newest first, and every row one line. It is a LOG
+   and not a feed of cards, so the register is the board's metadata one and the
+   only ink at full strength is the name and what changed. */
+.alog { margin: 0; padding: 0; list-style: none; }
+.aday { list-style: none; }
+.aday + .aday { margin-top: 16px; }
+/* the day's own line: the date in words and the count of what happened on it */
+.aday-h {
+  display: flex; align-items: baseline; gap: 8px; padding: 0 0 4px;
+  border-bottom: 1px solid var(--line); margin-bottom: 4px;
+}
+.aday-t {
+  font-size: var(--fs-micro); letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--ink-2); font-weight: 700;
+}
+.aday-n { font-size: var(--fs-micro); color: var(--ink-3); margin-left: auto; }
+.aday-rows { margin: 0; padding: 0; list-style: none; }
+/* ONE ROW, one line, six columns that line up down the whole sheet. Only the
+   name and the words flex; everything else keeps its width, so the eye can run
+   down a column rather than hunt across a row. */
+.arow {
+  display: grid; align-items: baseline; gap: 10px; padding: 3px 0;
+  grid-template-columns: 62px 76px 58px minmax(80px, 0.85fr) minmax(0, 1.7fr) auto;
+  font-size: var(--fs-small); line-height: 1.45;
+}
+.arow + .arow { border-top: 1px solid color-mix(in srgb, var(--line) 45%, transparent); }
+.arow > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arow-at { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+/* THE KIND, as the kind's own word in the metadata register: the house has no
+   icon set, and colour on this board encodes consequence class and never a
+   category, so the mark is a word and not a hue. */
+.arow-k {
+  font-size: var(--fs-micro); letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+.arow-id {
+  font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.09em;
+  color: var(--azure); text-decoration: none;
+}
+.arow-nm { color: var(--ink-2); text-decoration: none; }
+/* THE ID AND THE NAME ARE ONE LINK and two cells: `display: contents` makes its
+   two spans grid items of the row itself, which keeps the six columns lined up
+   while a reader clicks one target. */
+.arow-rec { display: contents; text-decoration: none; }
+.arow-rec > * { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.arow-rec:hover .arow-nm, .arow-rec:hover .arow-id { text-decoration: underline;
+  color: var(--ink); }
+/* what changed, the excerpt of a note and the backfilled line's quiet mark, all
+   in the one cell so the row keeps its six columns whatever a line carries */
+.arow-said { display: flex; align-items: baseline; gap: 8px; }
+.arow-w { color: var(--ink); flex: 0 0 auto; }
+.arow-note { color: var(--ink-3); min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.arow-src {
+  font-size: var(--fs-micro); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-3); flex: 0 0 auto;
+}
+.arow-by { color: var(--ink-3); font-size: var(--fs-micro); flex: 0 0 auto; }
+/* AN ENDING is tinted with the pinned bar's own outcome hues, and nothing else
+   about it is different: it is a row like every other that happens to be the
+   end of something. */
+.arow.ending .arow-w { font-weight: 700; }
+.arow-w.o-answered, .arow-w.o-completed { color: var(--teal); }
+.arow-w.o-closed { color: var(--blue); }
+.arow-w.o-dropped { color: var(--ink-2); }
+/* a line the store cannot read: reported, never hidden, and never as a change */
+.arow-bad .arow-said { color: var(--red); white-space: normal; }
+.arow-bad .arow-nm, .arow-bad .arow-k { color: var(--ink-3); }
+/* THE SENTINEL, which is also where the log says it has ended: it is watched
+   for coming into view and asks for the next page when it does. */
+.alog-end {
+  display: flex; align-items: baseline; gap: 8px; padding: 14px 0 4px;
+  font-size: var(--fs-small); color: var(--ink-3);
+}
+.alog-at { color: var(--ink-3); }
+@media (max-width: 860px) {
+  /* the phone keeps the time, the id, the name and what changed; the kind word
+     and who did it are what a 390px row gives up rather than wrapping. */
+  .asheet-filters { padding: 8px 14px; }
+  .asheet-body { padding: 12px 14px 20px; }
+  .arow { grid-template-columns: 52px 48px minmax(70px, 0.8fr) minmax(0, 1.4fr); gap: 8px; }
+  .arow-k, .arow-by { display: none; }
+}
+
+/* ---- pinned answer bar ---- */
+/* Squared, ruled: the bar and its rows are control shapes, not pills, and
+   nothing in here wears a chip radius. */
+.answer-bar {
+  position: sticky; bottom: 14px; margin-top: 20px;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  background: rgba(15, 15, 26, 0.55);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--line); border-radius: calc(var(--r-ctl) + 2px);
+  padding: 8px 12px; box-shadow: var(--shadow-bar);
+}
+.ab-label { font-size: var(--fs-micro); font-weight: 700; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.16em; margin-right: 4px; }
+.ab-btn {
+  font: inherit; font-size: calc(var(--fs-body) - 1px); font-weight: 600; padding: 5px 14px;
+  border-radius: var(--r-ctl); border: 1px solid var(--line);
+  background: var(--card-2); color: var(--ink); cursor: pointer;
+}
+.ab-btn:hover { border-color: var(--line-2); }
+/* the gradient accent: the recommended token on a tier-2 page's own bar, and
+   the board's submit, which is the one action that records */
+.ab-btn.pick, .ab-btn.submit {
+  color: var(--paper); border-color: transparent;
+  background: linear-gradient(120deg, var(--rose), var(--pink-deep));
+}
+.ab-btn.on { background: var(--card-2); border-color: var(--teal-acc); color: var(--ink); box-shadow: var(--shadow-sel); }
+.ab-btn.copied { background: var(--teal-bg); color: var(--teal); border-color: var(--teal-line); }
+.ab-btn:disabled { opacity: 0.45; cursor: default; }
+.ab-hint { font-size: var(--fs-small); color: var(--ink-3); margin-left: auto; }
+.ab-sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
+/* THE WORKSTREAM PICKER wears the bar's ROW SHAPE and none of its
+   pinning, since a second pinned bar would cover the first. Deliberately not an
+   `.answer-bar`: a closed card has no answering control and still has a lane. */
+.qc-ws {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px;
+  border: 1px solid var(--line); border-radius: calc(var(--r-ctl) + 2px); padding: 8px 12px;
+}
+/* the via line sits on --ink-2 where a house eyebrow sits on --ink-3, for the
+   measured reason .tr-l does: --ink-3 on the pane's own ground came out under
+   the 4.5 floor. */
+.qc-ws-via { font-size: var(--fs-small); color: var(--ink-2); }
+.qc-ws-hint { font-size: var(--fs-small); color: var(--rose); margin-left: auto; }
+.ab-note { font: inherit; font-size: calc(var(--fs-body) - 1px); flex: 1 1 180px; min-width: 140px; padding: 6px 12px; border-radius: var(--r-ctl); border: 1px solid var(--line); background: rgba(255, 255, 255, 0.05); color: var(--ink); }
+.ab-note::placeholder { color: var(--ink-3); }
+.ab-form {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px;
+  font-size: var(--fs-small); color: var(--ink-2);
+  border: 1px solid var(--line); background: rgba(15, 15, 26, 0.55);
+  backdrop-filter: blur(16px); border-radius: calc(var(--r-ctl) + 2px); padding: 8px 12px;
+}
+.ab-form input { font: inherit; font-size: calc(var(--fs-body) - 1px); padding: 6px 12px; border-radius: var(--r-ctl); border: 1px solid var(--line); background: rgba(255, 255, 255, 0.05); color: var(--ink); }
+/* the compose row's echo of the selected tile: the pick stays visible while
+   the note is typed, which is the whole reason the row carries it */
+.ab-echo {
+  font-size: calc(var(--fs-body) - 1px); font-weight: 700; color: var(--paper);
+  background: linear-gradient(120deg, var(--rose), var(--pink-deep));
+  border-radius: var(--r-ctl); padding: 5px 12px;
+  max-width: 45%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ab-echo:empty { display: none; }
+
+/* the sky confirmation a tier-2 page's live bar leaves behind after a
+   recorded answer (assets/viz-answer.js); sky is gain, per the colour rule */
+.ab-done { font-size: calc(var(--fs-body) - 1px); color: var(--teal); }
+.ab-done a { color: var(--teal); }
+.ab-error { font-size: var(--fs-small); color: var(--red); }
+
+/* ---- the opener row ----
+   The bar's own control vocabulary, shrunk a size: this row is a way OUT of the
+   record rather than the thing the record is for. */
+.w-ref { margin-top: 10px; }
+.w-ref:first-of-type { margin-top: 6px; }
+.w-ref .wpath { word-break: break-all; }
+.ab-open { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
+.ab-open .ab-btn { padding: 3px 10px; font-size: var(--fs-small); }
+/* the native disclosure: the browser's own keys, no focus trap, no script.
+   Open, it takes a line of its own, so the menu never widens the row it sits in. */
+.ab-more > summary { list-style: none; display: inline-block; }
+.ab-more > summary::-webkit-details-marker { display: none; }
+.ab-more[open] { flex: 1 0 100%; }
+.ab-menu { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+/* the refusal the server wrote, on its own line under the controls it answers */
+.ab-open .ab-error { flex-basis: 100%; }
+.ab-open .ab-error:empty { display: none; }
+/* the files this record's opener actually opened, at the list rhythm
+   every other body block keeps */
+.w-touched .wlist a { word-break: break-all; }
+
+/* ==== the decision vocabulary ====
+   Named devices a tier-2 page reaches for. The law binds hard: every value
+   resolves through the token families and colour encodes consequence only. */
+
+/* ---- crux band: the one difference the decision actually turns on.
+   One per page, or the device is worthless. ---- */
+.crux {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-card);
+  backdrop-filter: blur(18px); padding: 12px 16px 6px; box-shadow: var(--shadow-card);
+}
+.crux-k {
+  font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.crux-q { display: block; font-size: var(--fs-lead); font-weight: 650; margin: 2px 0 8px; letter-spacing: -0.005em; }
+.crux-s { display: flex; gap: 14px; align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line); }
+.crux-o { flex: 0 0 180px; font-size: var(--fs-small); font-weight: 650; color: var(--ink-2); }
+.crux-v { font-size: calc(var(--fs-body) - 1px); }
+.crux-v.teal { color: var(--teal); }
+.crux-v.amber { color: var(--amber); }
+.crux-v.red { color: var(--red); }
+.crux-v.purple { color: var(--purple); }
+.crux-v.blue { color: var(--blue); }
+
+/* ---- criteria matrix: the options judged on the same criteria, one table
+   instead of three essays ---- */
+.mx-wrap { overflow-x: auto; }
+.mx { width: 100%; border-collapse: collapse; font-size: calc(var(--fs-body) - 1px); }
+.mx th, .mx td { text-align: left; padding: 9px 12px; border-top: 1px solid var(--line); vertical-align: top; }
+.mx thead th {
+  border-top: none; font-size: var(--fs-small); font-weight: 700; color: var(--ink-2);
+  letter-spacing: 0.02em;
+}
+.mx tbody th { font-size: var(--fs-small); font-weight: 600; color: var(--ink-3); width: 30%; }
+.mx td.teal { color: var(--teal); background: var(--teal-bg); }
+.mx td.amber { color: var(--amber); background: var(--amber-bg); }
+.mx td.red { color: var(--red); background: var(--red-bg); }
+.mx td.purple { color: var(--purple); background: var(--purple-bg); }
+.mx td.blue { color: var(--blue); background: var(--blue-bg); }
+/* the crown: the same pink-to-purple gradient the recommended tile wears,
+   clipped to the header's text, plus a hairline down the column */
+.mx th.pick {
+  color: transparent;
+  background: linear-gradient(100deg, var(--violet), var(--purple-acc));
+  -webkit-background-clip: text; background-clip: text;
+}
+.mx .mx-crown {
+  display: block; font-size: var(--fs-micro); font-weight: 700;
+  letter-spacing: 0.16em; text-transform: uppercase;
+}
+.mx th.pick, .mx td.col { box-shadow: var(--shadow-crown-col); }
+.mx tr:last-child td.col { box-shadow: var(--shadow-crown-end); }
+
+/* ---- the option tile's grown rows, so a tile reads promise, price, proof,
+   risk: the if-wrong line, the flip trigger, and the backs line ---- */
+.opt .wrong { font-size: calc(var(--fs-body) - 1px); color: var(--red); margin: 2px 0 0; }
+.opt .flip {
+  font-size: var(--fs-small); color: var(--blue);
+  margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--line);
+}
+.opt .flip b { color: var(--azure); font-weight: 650; }
+.opt .backs { font-size: var(--fs-small); color: var(--ink-3); margin: 7px 0 0; }
+.opt .backs b {
+  font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--ink-3); margin-right: 6px;
+}
+.opt .backs a { margin-right: 8px; }
+.opt .backs.none { color: var(--ink-3); font-style: italic; }
+/* the do-nothing tile: a real drop option in a silver frame, with honest
+   lines of its own, never a greyed-out placeholder */
+.opt.none { border-style: dashed; background: var(--blue-bg); }
+.opt.none h3 { color: var(--ink-2); }
+.opt.none .kept {
+  display: block; font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--blue); margin-bottom: 2px;
+}
+
+/* ---- cost-of-waiting band: what not deciding costs. Gold, because waiting
+   is an ongoing cost and not a blockage. ---- */
+.waits {
+  display: flex; gap: 12px; align-items: baseline; margin-top: 12px;
+  background: var(--amber-bg); border: 1px solid var(--amber-line);
+  border-radius: var(--r-tile); padding: 9px 14px;
+}
+.waits b {
+  flex: 0 0 auto; font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--amber);
+}
+.waits span { font-size: calc(var(--fs-body) - 1px); color: var(--amber); }
+
+/* ---- verdict ribbon: the bottom line and the exit, in the first five
+   seconds. NOT sticky: the answer bar already owns the bottom of the
+   viewport, and two pinned bands would sandwich the page. ---- */
+.tldr {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: calc(var(--r-ctl) + 2px); padding: 9px 14px; margin: 10px 0 0;
+  backdrop-filter: blur(14px);
+}
+.tldr-l {
+  font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.tldr-t { flex: 1 1 240px; margin: 0; font-size: var(--fs-body); font-weight: 600; }
+.pill {
+  font-size: var(--fs-small); font-weight: 700; color: var(--paper);
+  border-radius: var(--r-ctl); padding: 3px 12px; white-space: nowrap;
+  background: linear-gradient(120deg, var(--rose), var(--pink-deep));
+}
+.pill.done { background: var(--teal); }
+.tldr-jump { font-size: var(--fs-small); font-weight: 600; white-space: nowrap; }
+/* the hidden attribute has to outrank the bar's own display rule: .answer-bar
+   and .ab-form both set display: flex, which beats the browser's [hidden] */
+.answer-bar[hidden], .ab-form[hidden] { display: none; }
+
+/* ---- constraints band: settled ground, each fact with the date it was
+   ruled. Silver throughout: settled ground is reference. ---- */
+.settled {
+  background: var(--blue-bg); border: 1px solid var(--blue-line);
+  border-radius: var(--r-tile); padding: 10px 14px;
+}
+.settled-k {
+  font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.settled ul { list-style: none; margin: 4px 0 0; padding: 0; }
+.settled li {
+  display: flex; gap: 14px; align-items: baseline; padding: 6px 0;
+  border-top: 1px solid var(--line); font-size: calc(var(--fs-body) - 1px); color: var(--ink-2);
+}
+.settled li:first-child { border-top: none; }
+.settled li > span b { color: var(--ink); font-weight: 650; }
+.settled .on { flex: 0 0 auto; margin-left: auto; font-size: var(--fs-small); color: var(--ink-3); }
+
+/* ---- magnitude bars: the size an argument turns on, drawn to one scale.
+   --w is 0 to 100; --cap draws the silver ceiling tick, and .over repaints
+   the run past it red. Tabular figures, the unit printed once per figure. ---- */
+.bars { display: grid; gap: 12px; }
+.bar {
+  --w: 0; --cap: -100;
+  position: relative; overflow: hidden; display: flex; justify-content: space-between;
+  gap: 14px; align-items: baseline; padding-bottom: 15px;
+}
+.bar::before { /* the track: a quiet well the fill sits in */
+  content: ""; position: absolute; left: 0; right: 0; bottom: 3px; height: 8px;
+  border-radius: calc(var(--r-ctl) - 4px); background: rgba(255, 255, 255, 0.06);
+  box-shadow: var(--shadow-edge);
+}
+.bar::after { /* the fill */
+  content: ""; position: absolute; left: 0; bottom: 3px; height: 8px;
+  width: calc(var(--w) * 1%); border-radius: calc(var(--r-ctl) - 4px); background: var(--blue);
+}
+.bar.teal::after { background: var(--teal); }
+.bar.amber::after { background: var(--amber); }
+.bar.red::after { background: var(--red); }
+.bar.purple::after { background: var(--purple); }
+.b-l { font-size: var(--fs-small); color: var(--ink-2); }
+.b-v { font-size: var(--fs-small); color: var(--ink); font-weight: 650; font-variant-numeric: tabular-nums; }
+.b-l::after { /* the declared ceiling, always silver: a ceiling is reference, not consequence */
+  content: ""; position: absolute; bottom: 0; height: 15px; width: 2px;
+  left: calc(var(--cap) * 1%); background: var(--blue);
+}
+.bar.over .b-v::after { /* the run past the ceiling repaints red */
+  content: ""; position: absolute; z-index: 1; bottom: 3px; height: 8px;
+  left: calc(var(--cap) * 1%); width: calc((var(--w) - var(--cap)) * 1%);
+  border-radius: 0 calc(var(--r-ctl) - 4px) calc(var(--r-ctl) - 4px) 0; background: var(--red);
+}
+.b-delta { font-size: var(--fs-small); font-weight: 700; }
+.b-delta.teal { color: var(--teal); }
+.b-delta.amber { color: var(--amber); }
+/* part of a whole: widths from raw weights, so an author never writes a
+   percentage and nothing has to sum to 100 */
+.split { display: flex; gap: 3px; height: 30px; }
+.split .seg {
+  flex: var(--w) 0 0; min-width: 0; display: block; text-align: center; line-height: 30px;
+  padding: 0 8px; border-radius: calc(var(--r-ctl) - 4px);
+  font-size: var(--fs-micro); font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.split .seg.teal { background: var(--teal-bg); color: var(--teal); box-shadow: var(--shadow-edge-teal); }
+.split .seg.amber { background: var(--amber-bg); color: var(--amber); box-shadow: var(--shadow-edge-amber); }
+.split .seg.red { background: var(--red-bg); color: var(--red); box-shadow: var(--shadow-edge-red); }
+.split .seg.purple { background: var(--purple-bg); color: var(--purple); box-shadow: var(--shadow-edge-purple); }
+.split-cap { font-size: var(--fs-small); color: var(--ink-3); margin: 6px 0 0; }
+
+/* ---- range rows: a bars-family mode for when the honest answer is a range,
+   and a single bar would state a precision the estimate does not have ---- */
+.ranges { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.ranges li {
+  --lo: 0; --hi: 0; --v: 0;
+  position: relative; overflow: hidden; display: flex; justify-content: space-between;
+  gap: 14px; align-items: baseline; padding-bottom: 15px;
+}
+.ranges li::before { /* the shared track */
+  content: ""; position: absolute; left: 0; right: 0; bottom: 4px; height: 7px;
+  border-radius: var(--r-ctl); background: var(--line);
+}
+.ranges li::after { /* the low-to-high band */
+  content: ""; position: absolute; bottom: 4px; height: 7px; border-radius: var(--r-ctl);
+  left: calc(var(--lo) * 1%); width: calc((var(--hi) - var(--lo)) * 1%);
+  background: var(--blue-line);
+}
+.ranges li.teal::after { background: var(--teal-line); }
+.ranges li.amber::after { background: var(--amber-line); }
+.ranges li.red::after { background: var(--red-line); }
+.ranges li > b { font-size: var(--fs-small); font-weight: 650; color: var(--ink); }
+.ranges li > b::after { /* the dot at likely */
+  content: ""; position: absolute; bottom: 1px; width: 13px; height: 13px;
+  margin-left: -6px; left: calc(var(--v) * 1%); border-radius: var(--r-chip);
+  background: var(--blue); box-shadow: var(--shadow-ring);
+}
+.ranges li.teal > b::after { background: var(--teal); }
+.ranges li.amber > b::after { background: var(--amber); }
+.ranges li.red > b::after { background: var(--red); }
+.ranges .rg-n { font-size: var(--fs-small); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.rg-axis {
+  display: flex; justify-content: space-between; font-size: var(--fs-micro);
+  text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink-3); margin-top: 2px;
+}
+
+/* ---- option cost stacks: where the work goes, not only how much. One
+   absolute scale for every row; segment hue is the COST'S consequence, never
+   the option's identity, and the pick's row wears the crown. ---- */
+.stacks { display: grid; gap: 10px; }
+.stacks .row { display: flex; gap: 12px; align-items: center; flex-wrap: nowrap; }
+.stacks .row > b { flex: 0 0 168px; font-size: var(--fs-small); font-weight: 650; color: var(--ink-2); }
+.stacks .row.pick > b {
+  background: linear-gradient(100deg, var(--violet), var(--purple-acc));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.stacks .st { flex: 1 1 auto; display: flex; height: 22px; border-radius: var(--r-ctl); overflow: hidden; background: var(--line); }
+.stacks .seg { width: calc(var(--w) * 1%); }
+.stacks .seg.teal { background: var(--teal); }
+.stacks .seg.amber { background: var(--amber); }
+.stacks .seg.red { background: var(--red); }
+.stacks .seg.purple { background: var(--purple); }
+.stacks .tot { flex: 0 0 auto; font-size: var(--fs-small); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+/* ---- provenance tags: the one device that refuses colour on purpose.
+   Four words only: measured, est, guess, as of MM-DD. Always silver, because
+   confidence is not a consequence. ---- */
+.prov {
+  display: inline-block; font-size: var(--fs-micro); font-weight: 600; font-style: normal;
+  line-height: 1.5; color: var(--ink-3); border: 1px solid var(--line);
+  border-radius: var(--r-chip); padding: 0 7px; margin-left: 7px; vertical-align: middle;
+}
+
+/* ---- milestone track: the dated rail, and the undated chain mode (the same
+   rail, a connector word in the mi-w slot instead of a date) ---- */
+.track { list-style: none; margin: 0; padding: 0 0 0 22px; position: relative; }
+.track::before {
+  content: ""; position: absolute; left: 5px; top: 10px; bottom: 10px; width: 1px; background: var(--line);
+}
+.mile {
+  position: relative; padding: 10px 14px 11px; margin-bottom: 9px;
+  border: 1px solid var(--line); border-radius: var(--r-tile); background: var(--card);
+}
+.mile:last-child { margin-bottom: 0; }
+.mile::before {
+  content: ""; position: absolute; left: -21px; top: 17px; width: 9px; height: 9px;
+  border-radius: var(--r-chip); background: var(--ink-3);
+}
+.mi-w {
+  display: block; font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.09em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.mi-t { display: block; font-size: calc(var(--fs-body) - 0.5px); font-weight: 650; margin: 1px 0 2px; }
+.mi-d { display: block; font-size: calc(var(--fs-small) + 0.5px); color: var(--ink-2); }
+.mi-because { display: block; font-size: var(--fs-small); color: var(--ink-3); margin-top: 5px; }
+.mile.safe { background: var(--teal-bg); border-color: var(--teal-line); }
+.mile.safe .mi-t { color: var(--teal); }
+.mile.safe::before { background: var(--teal); }
+.mile.door { background: var(--red-bg); border-color: var(--red-line); }
+.mile.door .mi-t, .mile.door .mi-w { color: var(--red); }
+.mile.door::before { background: var(--red); }
+.mile.hold { background: var(--purple-bg); border-color: var(--purple-line); }
+.mile.hold .mi-t { color: var(--purple); }
+.mile.hold::before { background: var(--purple); }
+.mile.risk { background: var(--amber-bg); border-color: var(--amber-line); }
+.mile.risk .mi-t { color: var(--amber); }
+.mile.risk::before { background: var(--amber); }
+/* the current milestone and the aged ones: azure wayfinds, and nothing past
+   gains a colour, it only loses saturation */
+.mile.now { border-color: var(--azure); background: var(--card-2); }
+.mile.now::before { background: var(--azure); color: var(--azure); box-shadow: var(--shadow-dot); }
+.mile.past { opacity: 0.58; }
+.mile.past .mi-t { color: var(--ink-2); }
+.now-tag {
+  display: inline-block; font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--paper); background: var(--azure);
+  border-radius: var(--r-ctl); padding: 1px 8px; margin-left: 9px;
+}
+.asof { font-size: var(--fs-small); color: var(--ink-3); margin: 10px 0 0; }
+.asof b { color: var(--ink-2); font-weight: 650; }
+
+/* ---- ruling band: what an ANSWERED question's page shows in place of its
+   answer bar. Sky, not the pink-to-purple crown: a ruling is a record of
+   what was chosen, not a recommendation being made. ---- */
+.ruling {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  background: var(--teal-bg); border: 1px solid var(--teal-line);
+  border-radius: var(--r-tile); padding: 10px 14px;
+}
+.ruling-t { flex: 1 1 240px; margin: 0; font-size: calc(var(--fs-body) - 0.5px); color: var(--teal); }
+.ruling-d { font-size: var(--fs-small); color: var(--ink-3); white-space: nowrap; }
+.ruling a { color: var(--teal); font-size: var(--fs-small); font-weight: 600; white-space: nowrap; }
+
+/* ---- cite chips: a receipt is neutral reference, so it is mono, silver,
+   and dotted-underlined, and only hover or focus paints it azure, because a
+   cite wayfinds ---- */
+.cite {
+  font-family: var(--font-mono); font-size: var(--fs-small); color: var(--ink-2);
+  text-decoration: none; border-bottom: 1px dotted var(--line-2); white-space: nowrap;
+}
+.cite:hover, .cite:focus-visible { color: var(--azure); border-bottom-color: var(--azure); }
+.c-at { color: var(--ink-3); }
+/* A cite is written TWO ways, an <a> and a peek <button>, and a button arrives
+   wearing the platform's own face, which on this ground read at about 2:1.
+   Stripping the chrome puts both spellings in one family at the sheet's 7.5:1. */
+button.cite {
+  appearance: none; background: none; border: 0;
+  border-bottom: 1px dotted var(--line-2);
+  padding: 0; font-weight: inherit; font-style: inherit;
+  line-height: inherit; cursor: pointer;
+}
+button.cite[aria-expanded="true"] { color: var(--ink); border-bottom-style: solid; }
+/* and the failure OUTRANKS the open state: a chip whose read did not land must
+   say so while its own panel is open. The rule is drawn in NOTHING rather than
+   dropped, since a border-style of none would move every word after it. */
+.cite.unread, button.cite.unread,
+.cite.unread:hover, button.cite.unread:hover {
+  color: var(--ink-2); border-bottom-style: dotted; border-bottom-color: transparent;
+}
+/* the ring is never a state's casualty: a keyboard reader must still see where
+   they are, least of all on the chip that just failed them */
+.cite.unread:focus-visible, button.cite.unread:focus-visible {
+  color: var(--azure); border-bottom-color: var(--azure);
+}
+
+/* ---- crown sweep: the crown sweeps once as the page paints, then stops, and a
+   press answers with the pink pulse. No markup: every page's pick tile gets it
+   from the sheet, a dimmed crown never sweeps, and reduced motion is a no-op. */
+@keyframes nd-sweep { to { background-position: 240% 0, 240% 0; } }
+.opt.pick { background-size: 240% 100%, 240% 100%; animation: nd-sweep 1.1s ease-out 1; }
+.opt.pick.dim { animation: none; }
+.opt.act:active { box-shadow: var(--shadow-sel); }
+@media (prefers-reduced-motion: reduce) {
+  .opt.pick { animation: none; background-position: 0 0; }
+}
+
+/* ======================================================================
+   THE SCRIPT DEVICES, drawn HERE and driven by a shared asset: no cached
+   page ever carries a style block or a script of its own. */
+
+/* ---- figures: the donut, and the waffle mode of the same asset. The
+   author writes counts in a legend, figs.js derives every angle and
+   percent, and a page with no script keeps the labelled value list ---- */
+.figrow { display: flex; gap: 30px; flex-wrap: wrap; align-items: flex-start; }
+.donut { display: flex; gap: 20px; align-items: center; margin: 0; }
+.d-wrap { position: relative; width: 142px; height: 142px; flex: none; }
+.d-ring {
+  position: absolute; inset: 0; border-radius: var(--r-chip);
+  /* the band hues are POSITIONAL in a conic gradient, so figs.js hands each stop
+     the hue of the legend item it belongs to and the ring can never contradict
+     its own dots; the fallbacks are the authored order the catalog draws. */
+  background: conic-gradient(
+    var(--c1, var(--teal))   0         var(--a1),
+    var(--c2, var(--amber))  var(--a1) var(--a2),
+    var(--c3, var(--red))    var(--a2) var(--a3),
+    var(--c4, var(--blue))   var(--a3) 360deg);
+  /* a real ring, not a hairline: the centre label is kept clear of it by
+     being short and micro-sized, never by thinning the ring */
+  -webkit-mask: radial-gradient(circle, transparent 45%, var(--ink) 46%);
+  mask: radial-gradient(circle, transparent 45%, var(--ink) 46%);
+}
+.d-mid { position: absolute; inset: 40px; display: grid; place-content: center; text-align: center; }
+.d-mid b { display: block; font-size: var(--fs-title); font-weight: 650; line-height: 1.05; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.d-mid span { display: block; font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.02em; color: var(--ink-2); }
+.fig-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; min-width: 250px; }
+.fig-legend li { display: flex; gap: 9px; align-items: baseline; font-size: var(--fs-small); color: var(--ink-2); }
+.fig-legend li::before {
+  content: ""; width: 9px; height: 9px; border-radius: var(--r-ctl);
+  background: var(--blue); flex: none; transform: translateY(1px);
+}
+.fig-legend li.teal::before { background: var(--teal); }
+.fig-legend li.amber::before { background: var(--amber); }
+.fig-legend li.red::before { background: var(--red); }
+.fig-legend li.purple::before { background: var(--purple); }
+.fig-legend b { color: var(--ink); font-weight: 650; font-variant-numeric: tabular-nums; }
+.fig-legend i { font-style: normal; color: var(--ink-3); margin-left: auto; font-variant-numeric: tabular-nums; }
+.waffle { margin: 0; }
+.w-grid { display: grid; grid-template-columns: repeat(6, 15px); gap: 5px; }
+.w-grid .cell { width: 15px; height: 15px; border-radius: var(--r-ctl); background: var(--blue-bg); box-shadow: var(--shadow-edge); }
+.w-grid .cell.red { background: var(--red); box-shadow: none; }
+.w-grid .cell.teal { background: var(--teal); box-shadow: none; }
+.w-grid .cell.amber { background: var(--amber); box-shadow: none; }
+.w-grid .cell.purple { background: var(--purple); box-shadow: none; }
+.waffle figcaption { font-size: var(--fs-small); color: var(--ink-3); margin-top: 9px; max-width: 190px; }
+
+/* ---- test the pick: the what-if premise, and its numeric variant. Every
+   branch is an authored sentence, never a recomputed score, and the crown
+   never moves. At most ONE of these on a page. ---- */
+.whatif { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.wi {
+  /* THE PREMISES HOLD STILL. A full-width paragraph opening in the MIDDLE of a
+     wrapped row shoves every later button onto another line, so flex order splits
+     the reading order a screen reader wants from the visual one. */
+  order: 0;
+  font: inherit; font-size: calc(var(--fs-body) - 1px); font-weight: 550; padding: 5px 12px;
+  border-radius: var(--r-ctl); border: 1px dashed var(--line-2);
+  background: var(--card-2); color: var(--ink-2); cursor: pointer;
+}
+.wi:hover { color: var(--ink); border-color: var(--blue); }
+.wi[aria-pressed="true"] { border-style: solid; border-color: var(--azure); color: var(--ink); }
+.wi:focus-visible { outline: 2px solid var(--blue-acc); outline-offset: 3px; }
+.wi-then {
+  /* last of the row, whichever premise opened it: only one is ever unhidden, and
+     the solid azure border on the pressed button is what names the pair. The 4px
+     rides on the flex row gap. */
+  order: 1;
+  flex: 1 0 100%; margin: 4px 0 0; font-size: calc(var(--fs-body) - 1px); color: var(--ink);
+  background: var(--blue-bg); border: 1px solid var(--blue-line);
+  border-radius: var(--r-tile); padding: 9px 13px;
+}
+.breakeven { display: grid; gap: 8px; }
+.be-scale { position: relative; height: 26px; }
+.be-scale::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 10px; height: 7px;
+  border-radius: var(--r-ctl); background: var(--line);
+}
+.be-mark { position: absolute; top: 4px; width: 2px; height: 19px; margin-left: -1px; background: var(--blue); }
+.be-mark.flip { background: var(--red); }
+.be-mark span {
+  position: absolute; top: -13px; left: 50%; transform: translateX(-50%);
+  font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ink-3); white-space: nowrap;
+}
+.be-mark.flip span { color: var(--red); }
+/* the slider, on token: the browser's own track is a flat gray, so the track
+   and thumb are drawn here in the same shapes the bars family uses */
+.breakeven input[type="range"] {
+  width: 100%; margin: 0; accent-color: var(--violet);
+  background: transparent; -webkit-appearance: none; appearance: none;
+}
+.breakeven input[type="range"]::-webkit-slider-runnable-track {
+  height: 7px; border-radius: var(--r-ctl); background: var(--line);
+}
+.breakeven input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; margin-top: -4px;
+  width: 15px; height: 15px; border-radius: var(--r-chip);
+  background: var(--violet); border: none;
+}
+.breakeven input[type="range"]:focus-visible { outline: 2px solid var(--blue-acc); outline-offset: 3px; }
+.be-verdict { margin: 0; font-size: calc(var(--fs-body) - 1px); color: var(--teal); font-weight: 600; }
+.be-verdict.over { color: var(--amber); }
+
+/* ---- the act line: the command a reader could run, always visible, with a
+   button that copies exactly what is already on screen. Named .act-line and
+   not .act, because a bare .act would also match the live option tile. ---- */
+.act-line {
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-tile); padding: 9px 13px;
+}
+.act-line code { font-family: var(--font-mono); font-size: var(--fs-small); color: var(--ink); flex: 1 1 260px; }
+
+/* ---- numbered picks, and the answer bar's escape tile. A digit selects and
+   only a click records, so the key cap is a label and never a promise that
+   the keyboard can close a question. ---- */
+.answer-bar kbd, .ab-hint kbd {
+  font-family: var(--font-mono); font-size: var(--fs-micro); font-weight: 600;
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  padding: 0 5px; margin-right: 5px; color: var(--ink-3);
+}
+.ab-btn.pick kbd { color: var(--paper); border-color: var(--paper); }
+/* the same dashed frame the card's none-of-the-above tile wears, at bar size */
+.ab-btn[data-esc] { border-style: dashed; color: var(--ink-2); }
+.ab-btn[data-esc].on { border-style: solid; }
+
+/* ---- the drift-checked excerpt, open by default and never a fold: keyboard
+   and touch read exactly what the mouse reads. Rose on the changed stamp,
+   because drift blocks trust; a missing file is silver, being a fact. ---- */
+.excerpt { border: 1px solid var(--line); border-radius: var(--r-tile); background: var(--card); padding: 11px 13px; }
+.ex-body {
+  font-family: var(--font-mono); font-size: var(--fs-small); line-height: 1.5;
+  color: var(--ink); margin: 0; white-space: pre-wrap;
+}
+.ex-src { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-size: var(--fs-small); color: var(--ink-3); margin: 9px 0 0; padding-top: 8px; border-top: 1px solid var(--line); }
+.ex-stamp {
+  font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.04em;
+  border-radius: var(--r-chip); padding: 1px 9px;
+  background: var(--blue-bg); border: 1px solid var(--blue-line); color: var(--blue);
+}
+.ex-stamp.ok { background: var(--teal-bg); border-color: var(--teal-line); color: var(--teal); }
+.ex-stamp.changed { background: var(--red-bg); border-color: var(--red-line); color: var(--red); }
+
+/* ---- the live-read footer: one clause saying what the single read of the
+   board found. Silver where the read is neutral reference, gold on the one
+   state where the reader is being told they have been overtaken. ---- */
+.footnote .live { font-weight: 650; color: var(--ink-2); }
+.footnote .live.moved { color: var(--amber); }
+
+/* ===================================================================
+   THE DECISION TREE: the walk and the map, driven by
+   assets/viz-tree.js. One canvas frame at column width is the whole device. */
+
+/* ---- the board's hues under the names this device uses: the aliases and
+   the derived colours are defined in the sheet's one :root above, beside
+   the shape tokens the device spends ---- */
+/* the tone family (an answer) and the hue family (a leaf), one custom property
+   set per class, read wherever the class is echoed. Each carries the bright
+   hue, its deep partner, its text stop and its 30 percent canvas mix. */
+.yes { --tone: var(--yes); --tone-deep: var(--azure); }
+.no { --tone: var(--no); --tone-deep: var(--act-rose); }
+.gold {
+  --leaf: var(--gold); --leaf-text: var(--gold);
+  --leaf-deep: color-mix(in srgb, var(--gold) 78%, var(--paper));   /* #CAAD55 */
+  --leaf-under: color-mix(in srgb, var(--gold) 30%, var(--canvas)); /* #5C503C */
+}
+.silver {
+  --leaf: var(--silver); --leaf-text: var(--silver);
+  --leaf-deep: color-mix(in srgb, var(--silver) 80%, var(--paper));   /* #7F90AE */
+  --leaf-under: color-mix(in srgb, var(--silver) 30%, var(--canvas)); /* #3E445D */
+}
+.lavender {
+  --leaf: var(--lavender); --leaf-text: var(--lavender);
+  --leaf-deep: color-mix(in srgb, var(--lavender) 55%, var(--violet-acc)); /* #AA8DFA */
+  --leaf-under: color-mix(in srgb, var(--lavender) 30%, var(--canvas));    /* #4A4669 */
+}
+.magenta {
+  --leaf: var(--magenta);
+  --leaf-text: color-mix(in srgb, var(--magenta) 80%, var(--ink));        /* #FB6DC4: raw magenta on its wash is 4.3 */
+  --leaf-deep: color-mix(in srgb, var(--magenta) 60%, var(--violet-acc)); /* #D153D1: paper on it 5.32, the floor */
+  --leaf-under: color-mix(in srgb, var(--magenta) 30%, var(--canvas));    /* #5C2655 */
+}
+/* a pill with no tone and a leaf with no hue (the fifth option and beyond)
+   read silver; the :not() chain keeps these defaults under the family
+   classes above */
+.nd-elabel:not(.yes):not(.no) { --tone: var(--silver); --tone-deep: color-mix(in srgb, var(--silver) 80%, var(--paper)); }
+.nd-node.leaf:not(.gold):not(.silver):not(.lavender):not(.magenta) { --leaf: var(--silver); --leaf-text: var(--silver); --leaf-deep: color-mix(in srgb, var(--silver) 80%, var(--paper)); --leaf-under: color-mix(in srgb, var(--silver) 30%, var(--canvas)); }
+
+/* ---- the switches ------------------------------------------------- */
+/* html.live is set by viz-tree.js as its first act: the trail, the frame and
+   the landing panel exist only for a reader with script, and the outline is
+   what the same tree reads as without one. html.mapped folds the outline. */
+html:not(.live) .trail, html:not(.live) .land, html:not(.live) [data-tree] [data-ndviz] { display: none; }
+html.mapped .outline { display: none; }
+
+/* ---- the device root and the frame --------------------------------- */
+/* column width, the .nd-frame default above; the height is the tree at the
+   readable floor. margin-inline is written so .nd-frame.wide can never move the
+   frame. */
+.tree { margin-top: 10px; }
+[data-tree] > [data-ndviz] { height: 440px; margin-top: 10px; margin-inline: 0; }
+/* the driven rules: a page-driven frame hides its toggle row and the viewer's
+   expand button, every card takes the pointer but the standing one, and every
+   eyebrow inside the frame sits on --ink-2, the --ink-3 above measuring 3.33 */
+[data-ndviz][data-ndviz-driven] .nd-toggle { display: none; }
+[data-ndviz][data-ndviz-driven] .nd-expand { display: none; }
+[data-ndviz][data-ndviz-driven] .react-flow__node { cursor: pointer; }
+[data-ndviz][data-ndviz-driven] .react-flow__node:has(.nd-node.stand) { cursor: default; }
+[data-ndviz][data-ndviz-driven] .nd-kind { color: var(--ink-2); }
+
+/* ---- maximize: html.max -------------------------------------------- */
+/* the device root goes fixed over the whole window, and the two backdrop blurs
+   go, because a blur under a fixed ancestor is a full-viewport blur per frame
+   in Firefox. The class lives on html so the aurora's ground does not jump. */
+html.max, html.max body { overflow: hidden; }
+html.max .tree {
+  position: fixed; inset: 0; z-index: 70; margin: 0; padding: 16px 24px;
+  display: flex; flex-direction: column; background: var(--paper);
+}
+html.max .trail, html.max .land { flex: 0 0 auto; }
+html.max [data-tree] > [data-ndviz] { flex: 1 1 0; min-height: 0; height: auto; margin-inline: 0; border-radius: 0; }
+html.max .land, html.max .answer-bar { backdrop-filter: none; }
+
+/* ---- the cards: the anatomy every state shares --------------------- */
+/* the cap goes: a leaf has no top hairline */
+.nd-node.leaf::before { display: none; }
+.nd-emoji { font-size: calc(var(--fs-body) - 1px); line-height: 1; margin-right: 5px; }
+/* THE NOW DOT, the board's own: an 8px azure disc with its 12px glow before
+   the ASK eyebrow on the standing question card */
+.nd-node.stand:not(.leaf) .nd-kind::before {
+  content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 0;
+  background: var(--azure); color: var(--azure); box-shadow: var(--shadow-dot);
+}
+/* THE RING AND THE ONE BLOOM: a paper gap, the family's bright hue, then the
+   only big bloom on screen. A little less glow on the landed
+   leaves, still the brightest object on screen. */
+.nd-node.stand {
+  --ring: var(--blue-acc);
+  box-shadow: var(--shadow-card), var(--shadow-edge-own) var(--nd-rim),
+    var(--shadow-ring), var(--shadow-ring-own) var(--ring),
+    var(--shadow-bloom-36) color-mix(in srgb, var(--ring) 55%, transparent),
+    var(--shadow-bloom-80) color-mix(in srgb, var(--ring) 25%, transparent);
+}
+.nd-node.leaf.stand {
+  --ring: var(--leaf);
+  box-shadow: var(--shadow-card), var(--shadow-edge-own) var(--nd-rim),
+    var(--shadow-ring), var(--shadow-ring-own) var(--ring),
+    var(--shadow-bloom-24) color-mix(in srgb, var(--ring) 40%, transparent),
+    var(--shadow-bloom-54) color-mix(in srgb, var(--ring) 17%, transparent);
+}
+/* .dim is written by the overlays because the page tells a remounted edge from
+   an old one by it; it carries no look of its own. The fade after a choice keys
+   on the frame's chosen state, never on .dim. */
+
+/* ---- edges --------------------------------------------------------- */
+/* THE HEADS: the viewer's opaque markers, filled HERE. The mute head and the
+   three consequence heads are filled above beside their stroke rules; these are
+   the device's seven, each beside the stroke rule that chooses it. */
+#nd-head-preview polygon { fill: var(--preview); }
+#nd-head-azure polygon { fill: var(--blue-acc); }
+#nd-head-gold polygon { fill: var(--gold); }
+#nd-head-silver polygon { fill: var(--silver); }
+#nd-head-lavender polygon { fill: var(--lavender); }
+#nd-head-magenta polygon { fill: var(--magenta); }
+#nd-head-fade polygon { fill: var(--edge-fade); }
+/* THE WIRE: the walked path is two strokes and nothing blurred, an under-stroke
+   beneath an over-stroke ending in the azure head. A ROLE, not a consequence:
+   the board's wayfinding pair. */
+.nd-edge.lit .nd-under { display: inline; stroke: var(--wire-under); }
+.nd-edge.lit .react-flow__edge-path { stroke: var(--blue-acc); stroke-width: 2.6; marker-end: url(#nd-head-azure); }
+/* THE ARRIVAL: the final lit edge into the landed leaf takes a vertical
+   gradient in user space, one def per landed edge built by the viewer; the
+   under-stroke and the head take the hue. */
+.nd-grad stop:nth-child(1) { stop-color: var(--blue-acc); }
+.nd-grad stop:nth-child(2) { stop-color: var(--azure); }
+.nd-grad stop:nth-child(3) { stop-color: var(--leaf); }
+.nd-edge.lit.arrive .nd-under { stroke: var(--leaf-under); }
+.nd-edge.lit.arrive.gold .react-flow__edge-path { marker-end: url(#nd-head-gold); }
+.nd-edge.lit.arrive.silver .react-flow__edge-path { marker-end: url(#nd-head-silver); }
+.nd-edge.lit.arrive.lavender .react-flow__edge-path { marker-end: url(#nd-head-lavender); }
+.nd-edge.lit.arrive.magenta .react-flow__edge-path { marker-end: url(#nd-head-magenta); }
+/* the preview edge: dashed 5 5 at 2.3 in the flat preview blue, its head
+   the same; no under-stroke, no opacity */
+.react-flow__edge.pv:not(.lit) .react-flow__edge-path {
+  stroke: var(--preview); stroke-width: 2.3; stroke-dasharray: 5 5; marker-end: url(#nd-head-preview);
+}
+
+/* ---- the tone disc, the proven alignment --------------------------- */
+/* the answer's tone rides a small filled disc holding the paper glyph (CSS text
+   glyphs, never emoji). It is a grid cell in a flex row, dropped a little, so
+   its centre meets the words' x-height centre in both engines within 0.5px. */
+.nd-elabel.yes::before, .nd-elabel.no::before, .chip.yes::before, .chip.no::before, .tr-dot {
+  content: ""; display: inline-grid; place-items: center; flex: none; width: 14px; height: 14px; border-radius: 50%;
+  color: var(--paper); font-size: calc(var(--fs-micro) - 1.5px); line-height: 1; font-weight: 700;
+  font-style: normal; letter-spacing: 0; transform: translateY(var(--disc-drop, 1px));
+}
+.nd-elabel.yes::before, .nd-elabel.no::before { width: 15px; height: 15px; font-size: calc(var(--fs-micro) - 1px); }
+.tr-dot { margin-right: 5px; --disc-drop: 2px; }
+.nd-elabel.yes::before, .chip.yes::before, .tr-dot.yes::before { content: "\2713"; }
+.nd-elabel.no::before, .chip.no::before, .tr-dot.no::before { content: "\2717"; }
+.tr-dot.yes { background: var(--yes); }
+.tr-dot.no { background: var(--no); }
+.chip.yes, .chip.no, .chip.tr-land, .chip.tr-kc { display: inline-flex; align-items: center; gap: 5px; }
+
+/* ---- the answer pills --------------------------------------------- */
+/* on a driven frame the pill is a control: it stands on the card its answer
+   leads to, so it takes the pointer and the preview. A measure of 170, so a
+   sentence-length answer stays on one line beside its disc. */
+[data-ndviz][data-ndviz-driven] .nd-elabel {
+  pointer-events: all; cursor: pointer; max-width: 170px;
+  display: flex; align-items: center; justify-content: center; gap: 5px; min-height: 29px;
+  font-size: var(--fs-small);
+  color: var(--ink); font-weight: 600; border-color: var(--line-2);
+}
+
+/* ---- the trail strip ---------------------------------------------- */
+/* one row; its height is reserved so a click never moves the frame */
+.trail { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 30px; margin: 10px 0 0; }
+/* the device's micro labels sit on --ink-2 where every other house eyebrow
+   sits on --ink-3: measured on their real grounds --ink-3 fell under 4.5
+   everywhere and "start over" in it read as a disabled button */
+.tr-l { font-size: var(--fs-micro); font-weight: 700; text-transform: uppercase; letter-spacing: 0.16em; color: var(--ink-2); }
+/* THE KEY IS LIVE: hovering an option chip previews its path on the map and
+   clicking it lands there. Words on --ink-2. */
+.tr-k { display: inline-flex; align-items: center; font-size: var(--fs-small); font-weight: 500; color: var(--ink-2); margin-right: 8px; }
+.tr-line { display: inline-block; width: 34px; height: 11px; margin-right: 6px; }
+.tr-line path { fill: none; }
+.tr-line .u { stroke: var(--wire-under); stroke-width: 7; }
+.tr-line .o { stroke: var(--blue-acc); stroke-width: 2.6; marker-end: url(#nd-head-azure); }
+.tr-kc { font-size: var(--fs-micro); line-height: 16px; padding: 0 7px; margin-right: 4px; gap: 4px; }
+.tr-kc + .tr-kc { margin-left: 0; }
+.tr-k .tr-kc:last-of-type { margin-right: 6px; }
+.tr-kc .tr-emoji { margin-right: 0; font-size: calc(var(--fs-micro) + 1px); }
+/* between crumbs: the azure chevron */
+.tr-s { display: inline-block; line-height: 1; }
+.tr-s::before { content: "\203A"; font-size: calc(var(--fs-body) + 2px); font-weight: 700; color: var(--azure); }
+button.chip { font-family: inherit; line-height: inherit; cursor: pointer; }
+/* the crumbs and the panel's answer chips share the tone anatomy; the look
+   paints them. An .undo crumb is one a hovered path would drop, and the newest
+   crumb wears the small ring until a leaf is landed. */
+.chip.tr-c { font-weight: 600; color: var(--ink); --disc-drop: 0.5px; }
+.chip.tr-c.said.tr-last { box-shadow: var(--shadow-rim-own) color-mix(in srgb, var(--blue-acc) 55%, transparent); }
+/* the landing chip: the landed leaf in small (emoji, token, title); a
+   .ghost is the preview's, an .undo one a hovered path would leave */
+.tr-land.gone { display: none; }
+.tr-land .tok { font-weight: 700; }
+.tr-land .tr-lt { font-weight: 700; }
+.tr-emoji { margin-right: 5px; }
+.chip.tr-land .tr-emoji, .chip.tr-kc .tr-emoji { margin-right: 0; }
+.tr-reset { color: var(--ink-2); }
+/* the copy chip keeps one width through its flash: both texts sit in the
+   same grid cell and only visibility changes; the flash is flat azure */
+.tr-copy { display: inline-grid; text-align: center; color: var(--ink); }
+.tr-copy > span { grid-area: 1 / 1; }
+.tr-copy .b { visibility: hidden; }
+.tr-copy.copied .a { visibility: hidden; }
+.tr-copy.copied .b { visibility: visible; }
+
+/* ---- the landing panel -------------------------------------------- */
+/* reserved to the tallest state it can show, so the answer bar never moves */
+.land {
+  min-height: 130px; margin-top: 14px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-card);
+  backdrop-filter: blur(18px); padding: 11px 18px 12px; box-shadow: var(--shadow-card);
+}
+.land-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; }
+/* TAKE IS THE BOARD'S SUBMIT. Pressed, a CSS animation flips it to solid sky
+   and back, and the script drops the class on animationend and schedules
+   nothing. Both texts share one grid cell, so the width holds through it. */
+.land-go {
+  font-size: var(--fs-small); padding: 3px 12px; display: inline-grid;
+  border-radius: var(--r-chip); border-color: transparent; color: var(--paper); font-weight: 700;
+  background: linear-gradient(120deg, var(--act-rose), var(--pink-deep) 240%);
+  box-shadow: var(--shadow-take);
+}
+.land-go:hover { border-color: transparent; box-shadow: var(--shadow-sel); }
+.land-go > span { grid-area: 1 / 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; }
+.land-go .b { visibility: hidden; }
+.land-go .tok { font-weight: 700; }
+.land-go .tr-emoji { margin-right: 0; }
+.land-go .tr-dot { margin-right: 0; background: var(--paper); color: var(--yes); }
+@keyframes nd-went { from { background-image: none; background-color: var(--yes); } to { background-image: none; background-color: var(--yes); } }
+.land-go.went { animation: nd-went 900ms linear both; box-shadow: none; }
+.land-go.went .a { visibility: hidden; }
+.land-go.went .b { visibility: visible; }
+/* the eyebrow is --ink-2 on a question and on a leaf alike (words are never
+   a hue); the hue rides the emoji before it */
+.land-k { font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-2); }
+.land-k .tr-emoji { font-size: calc(var(--fs-body) - 1px); letter-spacing: 0; text-transform: none; }
+.land-t { font-size: calc(var(--fs-body) + 1px); font-weight: 650; margin: 1px 0 4px; letter-spacing: -0.005em; }
+.land-why { margin: 0; color: var(--ink); }
+.land-a { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 2px 0 0; font-size: var(--fs-small); }
+
+/* ---- the outline: the script-off reading -------------------------- */
+.ol, .ol-a { list-style: none; margin: 0; padding: 0; }
+.outline { margin-top: 26px; }
+.ol-q { margin: 0 0 14px; }
+.ol-t { margin: 0; font-size: calc(var(--fs-body) + 0.5px); font-weight: 650; color: var(--ink); letter-spacing: -0.005em; }
+.ol-a { display: grid; gap: 8px; margin: 8px 0 0; }
+.ol-at {
+  display: inline-block; font-size: calc(var(--fs-body) - 1px); font-weight: 550; color: var(--ink-2);
+  background: var(--card-2); border: 1px solid var(--line-2); border-radius: var(--r-ctl); padding: 5px 12px;
+}
+.ol-ans > .ol { margin: 8px 0 0; padding-left: 14px; border-left: 1px solid var(--line); }
+.ol-leaf {
+  margin: 8px 0 0 14px; background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-tile); padding: 10px 14px;
+}
+.ol-k { display: block; font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--leaf-text, var(--ink-3)); }
+.ol-title { display: block; margin: 2px 0 2px; color: var(--ink); }
+.ol-why { margin: 0; font-size: calc(var(--fs-body) - 1px); color: var(--ink-2); }
+
+/* ===================================================================
+   THE LOOK: AURORA PAIRS. Every family is a pair of board hues,
+   bright into deep, drawn as a gradient; colour climbs with commitment. */
+/* A1 the ask card: house glass plus an azure-to-sky wash. Scoped to the DRIVEN
+   frame, as the path and the standing card below are: the tree's own words are
+   its alone, but a question card is any card. */
+[data-ndviz][data-ndviz-driven] .nd-node:not(.leaf) {
+  --nd-rim: rgba(76, 201, 255, 0.28);
+  background-image: linear-gradient(135deg, rgba(0, 174, 239, 0.10), rgba(76, 201, 255, 0.04)), linear-gradient(168deg, var(--card-2), transparent 76%);
+}
+.react-flow__node.pv .nd-node:not(.leaf):not(.path) {
+  --nd-rim: color-mix(in srgb, var(--blue-acc) 62%, transparent);
+  background-image: linear-gradient(135deg, rgba(0, 174, 239, 0.16), rgba(76, 201, 255, 0.07)), linear-gradient(168deg, var(--card-2), transparent 76%);
+  box-shadow: var(--shadow-card), var(--shadow-edge-own) var(--nd-rim), var(--shadow-preview-card);
+}
+.react-flow__node.pv .nd-node:not(.leaf):not(.path) .nd-kind { color: var(--yes); }
+[data-ndviz][data-ndviz-driven] .nd-node.path:not(.leaf) {
+  --nd-rim: color-mix(in srgb, var(--yes) 55%, transparent);
+  background-image: linear-gradient(135deg, rgba(0, 174, 239, 0.18), rgba(76, 201, 255, 0.08)), linear-gradient(168deg, var(--card-2), transparent 76%);
+}
+[data-ndviz][data-ndviz-driven] .nd-node.path:not(.leaf) .nd-kind { color: var(--yes); }
+/* standing: the veto applied, no bright fill; the dark azure ground (no
+   sheen under it: the ASK word measured 4.53 under the card-2 sheen), the
+   now dot, the ring and the bloom */
+[data-ndviz][data-ndviz-driven] .nd-node.stand:not(.leaf) {
+  --nd-rim: var(--blue-acc);
+  background-image: linear-gradient(160deg, var(--stand-1), var(--stand-2));
+}
+/* A2 the leaf card: the pair as a wash at rest, a stronger wash and a hue
+   rim when hovered or offered, the full pair fill when landed */
+.nd-node.leaf {
+  --nd-rim: color-mix(in srgb, var(--leaf) 45%, transparent);
+  background-image: linear-gradient(135deg, color-mix(in srgb, var(--leaf) 12%, transparent), color-mix(in srgb, var(--leaf-deep) 5%, transparent));
+}
+[data-ndviz][data-ndviz-driven] .nd-node.leaf .nd-kind { color: var(--leaf-text); }
+.nd-node.leaf .nd-emoji { color: var(--leaf); }
+.nd-node.leaf .nd-chip { background: linear-gradient(135deg, var(--leaf), var(--leaf-deep)); color: var(--paper); border-color: transparent; font-weight: 600; }
+.react-flow__node.offer .nd-node.leaf:not(.stand) {
+  --nd-rim: color-mix(in srgb, var(--leaf) 60%, transparent);
+  background-image: linear-gradient(135deg, color-mix(in srgb, var(--leaf) 15%, transparent), color-mix(in srgb, var(--leaf-deep) 6%, transparent));
+}
+.react-flow__node.pv .nd-node.leaf:not(.stand) {
+  --nd-rim: color-mix(in srgb, var(--leaf) 70%, transparent);
+  background-image: linear-gradient(135deg, color-mix(in srgb, var(--leaf) 18%, transparent), color-mix(in srgb, var(--leaf-deep) 8%, transparent));
+  box-shadow: var(--shadow-card), var(--shadow-edge-own) var(--nd-rim), var(--shadow-glow-16) color-mix(in srgb, var(--leaf) 25%, transparent);
+}
+.nd-node.leaf.stand {
+  --nd-rim: var(--leaf);
+  background-image: linear-gradient(135deg, var(--leaf), var(--leaf-deep));
+}
+[data-ndviz][data-ndviz-driven] .nd-node.leaf.stand .nd-kind,
+.nd-node.leaf.stand .nd-title, .nd-node.leaf.stand .nd-emoji { color: var(--paper); }
+.nd-node.leaf.stand .nd-chip { background: var(--paper); color: var(--leaf-text); }
+/* A3 the answer pill: a 90deg wash of the tone pair over the canvas at
+   rest, the full pair when walked */
+[data-ndviz][data-ndviz-driven] .nd-elabel {
+  background-color: var(--canvas);
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--tone) 16%, transparent), color-mix(in srgb, var(--tone-deep) 6%, transparent));
+  border-color: var(--line-2);
+}
+.nd-elabel::before { background: var(--tone); color: var(--paper); }
+[data-ndviz][data-ndviz-driven] .nd-elabel.offer:not(.lit) {
+  border-color: color-mix(in srgb, var(--tone) 60%, transparent);
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--tone) 22%, transparent), color-mix(in srgb, var(--tone-deep) 10%, transparent));
+}
+[data-ndviz][data-ndviz-driven] .nd-elabel.pv:not(.lit) {
+  border-color: color-mix(in srgb, var(--blue-acc) 62%, transparent);
+  box-shadow: var(--shadow-preview);
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--tone) 26%, transparent), color-mix(in srgb, var(--tone-deep) 12%, transparent));
+}
+[data-ndviz][data-ndviz-driven] .nd-elabel.lit {
+  background-image: linear-gradient(90deg, var(--tone), var(--tone-deep));
+  color: var(--paper); font-weight: 700; border-color: var(--tone);
+  box-shadow: var(--shadow-glow-10) color-mix(in srgb, var(--tone) 45%, transparent);
+}
+.nd-elabel.lit::before { background: var(--paper); color: var(--tone); }
+/* A4 the crumb: the walked pill in chip form on paper; hover a paper ring
+   and the glow; the undo preview a 20 percent wash with ink words */
+.chip.tr-c.said {
+  background: linear-gradient(90deg, var(--tone), var(--tone-deep)); color: var(--paper); font-weight: 700; border-color: transparent;
+}
+.chip.tr-c.said::before { background: var(--paper); color: var(--tone); }
+.chip.tr-c.said:hover { box-shadow: var(--shadow-rim-own) var(--paper), var(--shadow-glow-12) color-mix(in srgb, var(--tone) 45%, transparent); }
+.chip.tr-c.said.undo {
+  background: color-mix(in srgb, var(--tone) 20%, var(--paper)); color: var(--ink); font-weight: 600;
+  border-color: color-mix(in srgb, var(--tone) 45%, transparent);
+}
+.chip.tr-c.said.undo::before { background: var(--tone); color: var(--paper); }
+/* A5 the panel's answer chip: the pair as a 135deg wash over the panel, the
+   bright disc, ink words; the click flips it to the full pair for the
+   instant before the re-render */
+.land-a .chip.tr-c {
+  background-image: linear-gradient(135deg, color-mix(in srgb, var(--tone) 16%, transparent), color-mix(in srgb, var(--tone-deep) 6%, transparent));
+  border-color: color-mix(in srgb, var(--tone) 45%, transparent);
+}
+.land-a .chip.tr-c::before { background: var(--tone); color: var(--paper); }
+.land-a .chip.tr-c:hover {
+  border-color: color-mix(in srgb, var(--blue-acc) 62%, transparent);
+  box-shadow: var(--shadow-preview);
+  background-image: linear-gradient(135deg, color-mix(in srgb, var(--tone) 26%, transparent), color-mix(in srgb, var(--tone-deep) 12%, transparent));
+}
+.land-a .chip.tr-c:active { background-image: linear-gradient(135deg, var(--tone), var(--tone-deep)); color: var(--paper); font-weight: 700; border-color: var(--tone); }
+.land-a .chip.tr-c:active::before { background: var(--paper); color: var(--tone); }
+/* A6 the landing chip: the landed leaf in small, the same pair fill as the
+   card, paper words, the glow and the small ring; the ghost a 20 percent
+   wash with words in the text stop */
+.chip.tr-land {
+  background: linear-gradient(135deg, var(--leaf), var(--leaf-deep)); color: var(--paper); font-weight: 700; border-color: transparent;
+  box-shadow: var(--shadow-rim-own) color-mix(in srgb, var(--blue-acc) 55%, transparent), var(--shadow-glow-14) color-mix(in srgb, var(--leaf) 45%, transparent);
+}
+.chip.tr-land.ghost, .chip.tr-land.undo {
+  background: color-mix(in srgb, var(--leaf) 20%, var(--paper)); box-shadow: none;
+  border-color: color-mix(in srgb, var(--leaf) 45%, transparent);
+}
+.chip.tr-land.ghost { color: var(--leaf-text); }
+.chip.tr-land.undo { color: var(--ink); }
+/* A8 the key's option chips: the pair, paper text, the emoji */
+.chip.tr-kc { background: linear-gradient(135deg, var(--leaf), var(--leaf-deep)); color: var(--paper); font-weight: 700; border-color: transparent; }
+.chip.tr-kc:hover { box-shadow: var(--shadow-rim-own) var(--paper), var(--shadow-glow-10) color-mix(in srgb, var(--leaf) 45%, transparent); }
+/* A9 the copy chip: glass, ink words, a 1px sky-to-azure rim once a path
+   exists; the flash flat azure (azure at 10 percent into paper, azure ink) */
+.tr-copy {
+  border-color: transparent;
+  background: linear-gradient(var(--glass-p), var(--glass-p)) padding-box, linear-gradient(90deg, var(--yes), var(--azure)) border-box;
+}
+.tr-copy:hover { background: linear-gradient(var(--glass-2), var(--glass-2)) padding-box, linear-gradient(90deg, var(--yes), var(--azure)) border-box; }
+.tr-copy.copied { background: color-mix(in srgb, var(--azure) 10%, var(--paper)); color: var(--azure); border-color: color-mix(in srgb, var(--azure) 55%, transparent); }
+.tr-reset:hover { border-color: var(--blue-acc); color: var(--ink); }
+.land-k .tr-emoji { color: var(--leaf); }
+
+/* ===================================================================
+   THE FADE AFTER A CHOICE: every branch not on the path and not
+   in play falls back toward the canvas, never as an opacity on text. */
+/* the faded question card: the azure wash at a third of A1's, the rim white at
+   10 percent, and the title and the ASK eyebrow on ink-2, which is where they
+   measure over the floor. */
+[data-ndviz][data-ndviz-driven].chosen .react-flow__node:not(.offer):not(.pv) .nd-node:not(.leaf):not(.path):not(.stand) {
+  --nd-rim: rgba(255, 255, 255, 0.10);
+  background-image: linear-gradient(135deg, rgba(0, 174, 239, 0.035), rgba(76, 201, 255, 0.014)), linear-gradient(168deg, var(--card-2), transparent 76%);
+}
+[data-ndviz][data-ndviz-driven].chosen .react-flow__node:not(.offer):not(.pv) .nd-node:not(.leaf):not(.path):not(.stand) .nd-title { color: var(--ink-2); }
+/* the faded leaf card: the pair wash at a third of A2's, the rim the bright hue
+   at 20 percent, and the chip HOLLOW like the disc, because an 18 percent wash
+   read olive-brown on gold. */
+[data-ndviz][data-ndviz-driven].chosen .react-flow__node:not(.offer):not(.pv) .nd-node.leaf:not(.path):not(.stand) {
+  --nd-rim: color-mix(in srgb, var(--leaf) 20%, transparent);
+  background-image: linear-gradient(135deg, color-mix(in srgb, var(--leaf) 4%, transparent), color-mix(in srgb, var(--leaf-deep) 1.7%, transparent));
+}
+[data-ndviz][data-ndviz-driven].chosen .react-flow__node:not(.offer):not(.pv) .nd-node.leaf:not(.path):not(.stand) .nd-title,
+[data-ndviz][data-ndviz-driven].chosen .react-flow__node:not(.offer):not(.pv) .nd-node.leaf:not(.path):not(.stand) .nd-kind { color: var(--ink-2); }
+[data-ndviz][data-ndviz-driven].chosen .react-flow__node:not(.offer):not(.pv) .nd-node.leaf:not(.path):not(.stand) .nd-emoji { color: color-mix(in srgb, var(--leaf) 50%, var(--ink-2)); }
+[data-ndviz][data-ndviz-driven].chosen .react-flow__node:not(.offer):not(.pv) .nd-node.leaf:not(.path):not(.stand) .nd-chip {
+  background: transparent; color: var(--leaf-text); border-color: color-mix(in srgb, var(--leaf) 40%, transparent); font-weight: 600;
+}
+/* the faded answer pill: the tone wash at a third of A3's and the disc HOLLOW,
+   its ring drawn as an inset shadow so the box, the grid cell and the drop do
+   not move; at 1.5px Firefox drew it dotted at the 0.8 zoom. */
+[data-ndviz][data-ndviz-driven].chosen .nd-elabel:not(.lit):not(.offer):not(.pv) {
+  color: var(--ink-2); border-color: rgba(255, 255, 255, 0.12);
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--tone) 5%, transparent), color-mix(in srgb, var(--tone-deep) 2%, transparent));
+}
+[data-ndviz][data-ndviz-driven].chosen .nd-elabel:not(.lit):not(.offer):not(.pv)::before {
+  background: transparent; color: var(--tone);
+  box-shadow: var(--shadow-disc-own) color-mix(in srgb, var(--tone) 60%, transparent);
+}
+/* the faded edge: the stroke in --edge mixed into the canvas, the width STILL
+   2.3 (a thinner faded line would reverse the round-five call for thicker
+   lines), and the head through the eighth marker so the join holds. */
+[data-ndviz][data-ndviz-driven].chosen .nd-edge:not(.lit):not(.pv):not(.offer) .react-flow__edge-path { stroke: var(--edge-fade); stroke-width: 2.3; marker-end: url(#nd-head-fade); }
+/* nothing else fades: not the trail, the key, the panel or the frame's controls */
