@@ -14,7 +14,7 @@ describe('session start', () => {
   test('registers the typed tools in the prompt and the one command, which the typeahead offers', async ($: any, on: any) => {
     const w = world(on)
     await start($, w)
-    expect(w.tools.map((t: any) => t.name)).toEqual(['ask', 'override_request', 'note', 'answer', 'decide', 'task_update', 'handoff_write', 'handoff_update', 'depth'])
+    expect(w.tools.map((t: any) => t.name)).toEqual(['ask', 'override_request', 'note', 'answer', 'decide', 'task_update', 'handoff_write', 'handoff_update', 'review_covers', 'coverage', 'depth'])
     expect(w.tools.every((t: any) => t.isDeferred === false)).toBe(true)
     expect(w.commands).toEqual(['askerdo'])
     expect(w.markers()).toEqual(['sess-1'])
@@ -337,6 +337,9 @@ describe('one /askerdo command answers with no model turn', () => {
       expect(w.markers().length).toBe(before + 1)
       await run($, 'track capture a later idea')
       expect(w.last('track capture').args.slice(2, 4)).toEqual(['--track', 'TR-9'])
+      /* an inbox capture says why it waits on no track, or the board refuses it */
+      await run($, 'track capture inbox another idea')
+      expect(w.last('track capture').args).toContain('--unplaced')
       await run($, 'track park "waits on the release"')
       expect(w.last('track park').args.slice(0, 5)).toEqual(['track', 'park', 'TR-9', '--reason', 'waits on the release'])
       /* parked, the session holds nothing more */

@@ -500,9 +500,10 @@ describe('the band', () => {
     await ui.unmount()
   })
 
-  test('the board\'s calls draw as rows with their presses; a press runs its verb as the user and in the asking session starts its turn; several overrides fold to a count', async ($: any, on: any) => {
+  test('the board\'s calls draw as rows with their presses; a press runs its verb as the user and in the asking session starts its turn; several overrides fold to a count; a problem askerdo status lists leads them with its fix, is looked at again when local.json moves, its press runs the fix, and a clean readout draws none', async ($: any, on: any) => {
     const w = world(on)
     w.questions = []
+    w.health = { problems: [{ key: 'server', says: 'this PC\'s local server runs AskerDo 0.8.9 and this plugin is 0.8.13', fix: 'run askerdo board --restart', command: 'board --restart' }] }
     const since = '2026-10-27T10:00:00.000Z'
     const look = { kind: 'look', record: 'k5', id: 'T-5', text: 'T-5 band rows: its work landed, and it closes at your look', since,
       presses: [{ label: 'Close', verb: 'editRecord', input: { id: 'k5', kind: 'task', status: 'completed' } }, { label: 'Not yet', verb: 'lookNotYet', input: { task: 'k5' } }] }
@@ -515,8 +516,10 @@ describe('the band', () => {
     const pressKeys = async (ui: any) => (await ui.findAll({ type: 'Button' })).map((b: any) => String(b.key)).filter((k: string) => k.startsWith('callpress-'))
     for (const surface of SURFACES) {
       const ui = await mount($, surface)
-      expect((await rowKeys(ui)).filter((k: string) => k.startsWith('call-')).length).toBe(2)
-      expect((await pressKeys(ui)).length).toBe(4)
+      expect((await rowKeys(ui)).filter((k: string) => k.startsWith('call-')).length).toBe(3)
+      expect((await pressKeys(ui)).length).toBe(5)
+      expect((await ui.find({ key: (await rowKeys(ui))[0] }))!.text).toMatch(/0\.8\.9[^]*Restart/)
+      if (surface === 'desktop') expect((await ui.find({ key: 'askerdo-status' }))!.text).toContain('local server')
       /* a desktop row spans the band, its words cut before its presses;
          its tooltip is the fact card, the terminal's one line */
       const key = (await rowKeys(ui)).find((k: string) => k.startsWith('call-look'))!.slice(5)
@@ -526,6 +529,29 @@ describe('the band', () => {
       await ui.unmount()
     }
     const ui = await mount($, 'desktop')
+    /* a poll tick with board/local.json unmoved looks no sooner than the minute; once the
+       sync's new server rewrites it, the next tick looks again */
+    const healthText = async () => (await ui.find({ key: (await rowKeys(ui)).find((k: string) => k.startsWith('call-health'))! }))!.text
+    const statusRuns = () => w.runs.filter((r: any) => r.args[0] === 'status').length
+    const ran = statusRuns()
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    /* the first poll after a new problem reads its baseline and runs no second status */
+    expect(statusRuns()).toBe(ran)
+    w.health = { problems: [{ ...w.health.problems[0], says: 'the local server runs AskerDo 0.8.12' }] }
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    expect(await healthText()).toMatch(/0\.8\.9/)
+    w.serverAt(w.env.USERPROFILE + '/.claude/askerdo')
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    expect(await healthText()).toMatch(/0\.8\.12/)
+    /* the fix runs here as a process, and once the readout is clean the row goes */
+    w.health = { problems: [] }
+    await ui.press({ key: (await pressKeys(ui)).find((k: string) => k.startsWith('callpress-0-health'))! })
+    await w.clock.settle()
+    expect(w.spawns().some((r: any) => r.args.join(' ') === 'board --restart --json')).toBe(true)
+    expect((await rowKeys(ui)).some((k: string) => k.startsWith('call-health'))).toBe(false)
     const turns = w.prompts.length
     await ui.press({ key: (await pressKeys(ui)).find((k: string) => k.startsWith('callpress-0-look'))! })
     await w.clock.settle()

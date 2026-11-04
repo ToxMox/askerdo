@@ -2,12 +2,12 @@
 /* The output style is plugin-owned and regenerable, so it is rewritten whole
  * whenever it differs and no backup is kept. A SessionStart hook must never
  * break session start, so every error logs and the exit stays 0. */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, statSync, readdirSync, cpSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildOutputStyle, buildChatPreferences, STYLE_NAME } from '../lib/builder.js';
 import {
-  pluginRoot, pluginVersion, claudeHome, dataDir, envSeam, liveSeam, loadConfig, replacedCopy, sandboxHome, storeRoot,
+  MOVED_FILE, pluginRoot, pluginVersion, claudeHome, dataDir, envSeam, liveSeam, loadConfig, oldDirEdits, pcDir, pluginDataDir, replacedCopy, sandboxHome, storeRoot,
 } from '../lib/node-helpers.mjs';
 import { appendLog, writeAtomic } from '../lib/store-io.mjs';
 
@@ -48,6 +48,47 @@ function recentSync() {
   }
 }
 
+/* this PC's files leave the plugin data dir, which a marketplace remove deletes.
+   The old dir stays as it was, so a downgrade still finds it; config.json goes last,
+   so a copy that failed part way leaves the old dir in force and the next start retries. */
+function moveDataDir() {
+  const pc = pcDir();
+  const old = pluginDataDir();
+  if (!pc || !old) return;
+  const file = join(pc, 'config.json');
+  if (existsSync(file)) return foldOldEdits(file);
+  try {
+    mkdirSync(pc, { recursive: true });
+    for (const n of readdirSync(old).filter((n) => n !== 'config.json')) {
+      cpSync(join(old, n), join(pc, n), { recursive: true, force: true, preserveTimestamps: true });
+    }
+    const text = readFileSync(join(old, 'config.json'), 'utf8');
+    writeAtomic(join(pc, MOVED_FILE), JSON.stringify({ from: old, base: JSON.parse(text) }, null, 2) + '\n', 0o600);
+    /* renamed into place, so a sync starting beside this one never reads half a
+       config; the harness starts several at once, and one another moved is never overwritten */
+    if (!existsSync(file)) writeAtomic(file, text, 0o600);
+    log("moved this PC's files from " + old + ' to ' + pc + ', where a plugin remove cannot reach them');
+  } catch (e) {
+    log("moving this PC's files to " + pc + ' failed, so ' + old + ' stays in use: ' + ((e && e.message) || e));
+  }
+}
+
+/* a session still on a copy from before the move saves settings and joins into
+   the old dir; the keys it changed there since the move are taken into pc/. */
+function foldOldEdits(file) {
+  const e = oldDirEdits();
+  if (!e) return;
+  try {
+    const saved = JSON.parse(readFileSync(file, 'utf8'));
+    for (const k of e.keys) saved[k] = e.now[k];
+    writeAtomic(file, JSON.stringify(saved, null, 2) + '\n', 0o600);
+    writeAtomic(join(dirname(file), MOVED_FILE), JSON.stringify({ from: e.from, base: e.now }, null, 2) + '\n', 0o600);
+    log('took ' + e.keys.join(', ') + ' from ' + e.from + ', saved there by a session on an older AskerDo after the move');
+  } catch (err) {
+    log('taking the settings an older session saved in ' + e.from + ' failed: ' + ((err && err.message) || err));
+  }
+}
+
 /* main()'s advisory debounce verdict, so the live-seam line prints once per burst */
 let advisoryQuiet = false;
 /* the board pull's wait at session start, and whether it ran out (declared up here:
@@ -66,6 +107,7 @@ if (sandbox && sandbox.problem) {
     process.stdout.write('AskerDo: this session runs version ' + v + ', which a plugin update replaced, so nothing was synced; a new session runs the installed version.\n');
   }
 } else {
+  moveDataDir();
   /* a sandbox's own data dir is made up front, so its log and stamps have a home */
   if (sandbox) { try { mkdirSync(dataDir(), { recursive: true }); } catch {} }
   try {
@@ -125,6 +167,7 @@ async function main() {
   }
   writeStyle(buildOutputStyle(o), version);
   await writeCommand();
+  await keepPluginUpdates(cfg);
   if (args.has('--install')) selectStyle();
   /* a sandbox home has no settings of its own, so the nag would always be false there */
   else if (!quiet && !(sandbox && sandbox.home)) warnUnselected();
@@ -204,6 +247,45 @@ async function writeCommand() {
   } catch (e) {
     log('ERROR command file ' + ((e && e.message) || e));
   }
+}
+
+/* a marketplace remove and add drops the app's autoUpdate key (measured
+   2026-11-04, claude 2.1.304), so a missing key gets the saved answer back; a value the app
+   holds is the person's own /plugin choice and becomes the saved one. Fail-open, one log line. */
+async function keepPluginUpdates(cfg) {
+  const saved = cfg.pluginUpdates;
+  if (saved !== 'on' && saved !== 'off') return;
+  try {
+    const { pluginUpdates, setPluginUpdates } = await import('../lib/plugin-updates.mjs');
+    const now = pluginUpdates();
+    if (now.on === null || now.on === (saved === 'on')) return;
+    if (now.set) {
+      const to = now.on ? 'on' : 'off';
+      const why = adoptUpdates(to);
+      log(why ? "the app's auto-update for " + now.name + ' is ' + to + ' and the saved ' + saved + ' could not follow it: ' + why
+        : "the app's auto-update for " + now.name + ' was turned ' + to + ' in the app, so pluginUpdates is saved as ' + to);
+      return;
+    }
+    const r = setPluginUpdates(saved === 'on');
+    log(r.ok ? "the app's auto-update for " + r.name + ' was unset, set back to the saved ' + saved
+      : "setting the app's auto-update back to " + saved + ' failed: ' + r.why);
+  } catch (e) {
+    log("setting the app's auto-update back to " + saved + ' failed: ' + ((e && e.message) || e));
+  }
+}
+
+/* The app's value into this PC's own config.json, every other key kept; the reason it was
+   not written, or '' (a sandbox reading the real config has no file of its own to change). */
+function adoptUpdates(to) {
+  const dir = dataDir();
+  if (!dir) return 'no data folder';
+  const file = join(dir, 'config.json');
+  let saved;
+  try { saved = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch (e) { return (e && e.message) || String(e); }
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return file + ' is not a JSON object';
+  if (saved.pluginUpdates === undefined) return file + ' holds no pluginUpdates';
+  writeAtomic(file, JSON.stringify({ ...saved, pluginUpdates: to }, null, 2) + '\n', 0o600);
+  return '';
 }
 
 /* --install only. Merges one key and leaves every other setting, including

@@ -4,6 +4,7 @@
    never retells the list. */
 import { clockOf, stampNow } from '../records.mjs';
 import { loadRecord } from './graph.mjs';
+import { placeOf, whereWords } from './found.mjs';
 import { noteRead } from './history.mjs';
 import { NEWEST_FIRST, isStalled, openLeaves, projectInbox, stateOf, trackView } from './tracks.mjs';
 import { addedLine, growthLine, servesView } from './outcomes.mjs';
@@ -12,7 +13,7 @@ import { loadProfiles } from './profiles.mjs';
 import { atWords, holderWords } from '../web/feed.mjs';
 import { LEFT_WORDS } from '../web/draw.mjs';
 import { namedList, shortName, viewNameOf } from '../web/graph.mjs';
-import { CLI, inboxLines, leavesLine, waitingOf } from '../handoff-text.mjs';
+import { CLI, inboxLines, leavesLine, reviewLine, waitingOf } from '../handoff-text.mjs';
 
 export { CLI, inboxLines };
 
@@ -79,11 +80,33 @@ function ruleProfilesOf(db, wsRec) {
    outcomes they serve, as the kickoff, the CLI and the web print them. */
 export function growthLines(db, g) {
   if (!g) return [];
-  const added = String(g.added || '').split(/\s+/).filter(Boolean).map((k) => loadRecord(db, k)).filter(Boolean).map((t) => {
+  const recs = (v) => String(v || '').split(/\s+/).filter(Boolean).map((k) => loadRecord(db, k)).filter(Boolean);
+  const added = recs(g.added).map((t) => {
     const ws = t.fields.workstream ? loadRecord(db, t.fields.workstream) : null;
     return { id: t.fields.id, name: t.fields.name, view: servesView(ws && ws.fields.outcomes, t.fields.serves) };
   });
-  return [growthLine(g), addedLine(added, g.since)].filter(Boolean);
+  return [growthLine(g), addedLine(added, g.since), ...foundGrowth(db, [...recs(g.added), ...recs(g.found)])].filter(Boolean);
+}
+
+const WENT_MAX = 12;
+
+/* where each task the arc filed went now, and the unplaced ones with their reasons */
+function foundGrowth(db, tasks) {
+  if (!tasks.length) return [];
+  const placed = tasks.map((t) => ({ t, where: placeOf(db, t) }));
+  const loose = placed.filter((x) => x.where.kind !== 'track');
+  const on = placed.filter((x) => x.where.kind === 'track');
+  const out = [];
+  const more = on.length - WENT_MAX;
+  if (on.length) {
+    out.push('Where they went: ' + on.slice(0, WENT_MAX).map((x) => x.t.fields.id + ' ' + whereWords(x.where, null)).join('; ')
+      + (more > 0 ? '; and ' + more + ' more (' + CLI + ' track found TR-n lists them all)' : ''));
+  }
+  if (loose.length) {
+    out.push('Unplaced: ' + loose.map((x) => x.t.fields.id + ' ' + one(x.t.fields.name) + ' (' + (x.where.reason || 'no reason given') + ')').join('; ')
+      + '. Place each: ' + CLI + ' task edit T-n --track TR-n [--before T-n], or --unplaced "<why>".');
+  }
+  return out;
 }
 
 /* The track's questions (a question belongs to its track) and those gating one of its tasks;
@@ -248,6 +271,9 @@ export function kickoffText(k, { mode = 'show', holder = null, hand = null, who 
   lines.push('Where it stands: ' + v.text + (v.stalled ? ', stalled' : '') + ' (' + v.done + ' of ' + v.total + ' done).');
   lines.push('Now: ' + (now.length ? now.map((n) => n.id + ' ' + one(n.name) + tagOf(n, k.reader)).join('; ') : 'nothing running'));
   lines.push('Ready (' + v.readySet.length + '): ' + (v.readySet.length ? v.readySet.map((t) => t.id + ' ' + one(t.name) + runOf(k, t.id)).join('; ') : 'nothing'));
+  /* the track's review readout, after Ready */
+  const review = reviewLine(v.review, v.id);
+  if (review) lines.push(review);
   /* a held track's work is laid out before it starts; told only to its holder
      (resumed, or reading its own), never in a read-only kickoff of another's track */
   const own = mode === 'resumed' || (mode === 'show' && Boolean(holder));

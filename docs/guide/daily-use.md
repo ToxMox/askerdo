@@ -16,7 +16,9 @@ From the top, a band can hold:
 |-|-|-|
 | A question | One open question this session asked: the mark (amber when it blocks work, blue when it does not), its id in bold, its name, one chip per option with the recommended one starred, and its age. | A chip records that answer at once. No model turn starts, and the row goes. |
 | The count line | With two or more of this session's questions open, one line instead: `3 open`, and `1 blocking` in amber when any block. | Opens the pane on Questions. |
+| This PC's health | When something in AskerDo on this PC is wrong (the local server down, the board join lost, a copy an update replaced), its first problem with the fix, as `askerdo status` reports it. | **Start**, **Restart** or **Run** runs the fix here; **Copy** copies a command to run on another PC. A fix only you can make, such as starting a new session, has no press. |
 | A board call | Something only you can close: a look ("its work landed, and it closes at your look" with **Close** and **Not yet**), a judgment call (**Close it**, **Park it**, **Keep**), or an override request (**Allow**, **Keep**). Several override requests fold into one line. | Records your call on the board at once. |
+| Review due | A track whose finished code tasks wait for a review, once they reach the review size ([Review coverage](concepts.md#review-coverage)). | **Open the track** opens the Tracks tab at that track. |
 | Answers waiting | `1 answer waiting` (or `2 updates waiting`): answers and board news this session has not heard yet, with a **submit 1** chip (the count of what waits). | **submit 1** starts one turn carrying them. Nothing starts a turn by itself; a prompt you type also carries them. |
 | Answers queued | `2 answers queued` in amber, with **Send**: answers you queued on a card, kept on this PC and off the board ([Queued answers](#queued-answers)). | **Send** records them all and delivers them together. |
 | Board offline | `board offline: drawn from this PC's last copy`, when the board cannot be reached. | None. See [Troubleshooting](troubleshooting.md#the-board-is-offline). |
@@ -54,6 +56,7 @@ The status line is the band's last row. The left group is about this session's c
 | Track | The track this session holds, with a chain icon when it is a side track. | Opens the track's page on the board. |
 | Task | The newest task this session has in hand, with `+2` when it holds more. | Opens the task's page on the board. |
 | Shelf | How many tracks wait on the shelf for a session; a grey `0` when none. | Opens the pane on Tracks. |
+| Health | Only while AskerDo on this PC needs a fix: an amber monitor naming what is wrong (`local server`, `board join`, `tray`). Hover for the problem and its fix. | Runs the fix, as the band's health row does. |
 
 Hover a part of the status line for its card. The C ring's card gives how much of the context is used and where the handoff window, the wrap line and the hard limit sit; the W ring's gives the weekly window and when it resets:
 
@@ -73,7 +76,7 @@ The pane opens beside the conversation. Open it from the band (the mark, the cou
 
 - **The band's copy** at the top: the same rows and status line, at the pane's width.
 - **Agents**, while any run. Shut, it is one line: the deepest agent's depth meter, how many run and the longest running time; press the ring to unfold a row per agent with its depth meter, job, model, running time, tool calls, current tool and depth.
-- **Where we stand**: the held track drawn as a graph of its tasks, running ones lit, ready ones ringed, waiting ones joined by the edges they wait on. **My track's lines** draws your track; **Whole workstream** draws every track in it. The legend under the graph names each mark.
+- **Where we stand**: the held track drawn as a station map of its tasks, running ones lit, ready ones ringed, waiting ones joined by the edges they wait on. Finished code no review has read sits between the stations as amber beads, and each review is a diamond: press a done one for the list of what it covered, closed with its X ([Review coverage](concepts.md#review-coverage)). **My track's lines** draws your track; **Whole workstream** draws every track in it. Every name on the map opens its board page, and the legend under it names the marks.
 - **Activity**: the board's changes in this project, newest first, grouped by day. The filter takes words, a kind (`task`, `question`) or an id, and widening it reaches every project.
 - **Versions** at the foot: this PC's AskerDo version and the board's, under the line **How it all works: the Guide tab**, which opens the Guide tab. When the board runs an older one, a line at the top of Home says so.
 
@@ -90,10 +93,13 @@ The header counts the open questions. One is pinned as a full card (below): the 
 ![The pane on Tracks: the bottom line, TR-29's card, TR-30 Moon phase column ready to pick up, TR-31 Storm warnings running on the laptop, and one track parked](img/pane-tracks.png)
 
 - **The bottom line** says where this session is, which tracks wait on your answer, and the counts: how many tracks to pick up, how many running elsewhere, how many parked.
-- **The held track's card**: its workstream, how long it has been held, its progress, what runs now (and which agent runs it), what is ready next, its longest chain, the questions it waits on, and its last handoff.
+- **The held track's card**: its workstream, how long it has been held, its progress, what runs now (and which agent runs it), what is ready next, its longest chain, the questions and handoff lines it waits on you for, and its last handoff. In the progress bar, finished work no review has read shows amber with "N to review" beside the count, a finish waiting for a review shows a padlock, and the card's state reads **review due** when one is due.
+- **Found this arc**, on a track's card when its arc filed work: how many tasks it left unplaced (in amber, with their ids), how many went on other tracks and how many here, and the `askerdo track found TR-n` command that lists them with where each went.
 - **Ready to pick up**: tracks no session holds, each with its handoff's focus and age. Press **Resume** to take one here, or **Copy resume command** when this session already holds a track: each track starts in a new session.
 - **Running in other sessions**: tracks held elsewhere, with their open questions, the PC and when that session was last seen.
 - **Parked**: folded, naming the tracks inside; press the ring to unfold them and their reasons.
+
+Every track, task, question and decision name on the tab opens its board page: a card's head, its workstream, its longest chain, what it waits on, and the names in the bottom line and a folded section.
 
 ### Settings
 
@@ -113,7 +119,7 @@ The Guide tab lists the README and the guide pages of the AskerDo install the se
 
 ## The question card
 
-When a reply asks you something, the card for that question appears right under the reply, and the same card is pinned in the pane. Here Q619 waits under the reply that asked it, with the band below:
+When a reply asks you something, the card for that question appears right under the reply, and the same card is pinned in the pane. The reply's Needs you footer draws under the last card, so it stays the last thing in the reply, with one line naming the questions on the cards above. Here Q619 waits under the reply that asked it, with the band below:
 
 ![Question card Q619 under the reply that asked it: the track chip, the ask, the fact that decides it, three options with the pick starred, Why and Stakes, the note field, and the band below with 2 open and 2 blocking](../img/readme/question-card.png)
 
@@ -212,7 +218,7 @@ Most `/askerdo` commands answer in the mod and start no model turn. `park` and `
 Claude Code in a terminal shows the same band and status line, drawn in text:
 
 - **Band rows** start with a glyph: `●` a question, `✓` answers waiting, `◆` a board call, `❓` the count line. Chips are buttons with the letter on sky blue.
-- **The status line** sits under the prompt, beside Claude Code's own hint: `◔ C 32%`, `H` and `W` for the usage limits, `🛡 on` for the guard, `⁂` for agents, `▤` for the shelf, and the word `AskerDo` at the end, which opens the pane.
+- **The status line** sits under the prompt, beside Claude Code's own hint: `◔ C 32%`, `H` and `W` for the usage limits, `🛡 on` for the guard, `⁂` for agents, `▤` for the shelf, `!` and what is wrong while this PC needs a fix, and the word `AskerDo` at the end, which opens the pane.
 - Hover cards are one plain line; rings show no empty state and the shelf no grey `0`. Folds use `▸` and `▾`.
 
 Answering and `/askerdo` work the same way. The terminal look is measured less than the desktop's, so expect small differences.

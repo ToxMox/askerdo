@@ -96,8 +96,21 @@ prints nothing, write nothing, never "no open questions".
   names a checkable fact); `task edit T-13 --landed` reports a look
   task's work landed, so the user's band offers Close.
 - `task create --json < payload.json` (`name`, `description`; usual
-  `intent`, `workstream`; `track` puts it on that track). `note T-13 --body "..." --session <own-id>`
+  `intent`, `workstream`). `note T-13 --body "..." --session <own-id>`
   journals a task, workstream, track or knowledge record.
+- **Found work names its place.** A task you file mid-arc goes where it
+  belongs, judged from what the work is and what it blocks: this track,
+  another track, before or after the release, or unplaced with the reason
+  it waits on no track. `task create --track TR-4 --before T-20` (or
+  `--after T-n`), or `--unplaced "why"`; a filing with neither is refused
+  and names the board's hint, the open track whose labels, files or words
+  it shares, as one input beside your judgment, never a default.
+  `track capture` into the inbox takes `--unplaced` too. `task edit T-21
+  --track TR-5 --before T-30` (or `--unplaced "why"`) moves one later.
+  `track found TR-4` (`--since handoff`) lists what the arc filed, each
+  with where it went and the command that moves it; the handoff, the
+  kickoff and a question gating a release task (named Release..., or
+  labelled `release`) show the same, so the user reviews it at each gate.
 - **A ruling the user makes in chat** is recorded the same turn: the mod's
   `decide` tool, else `decide --session <own-id> --json < decision.json`
   (`title`, `words` (theirs, quoted), what it governs: `tasks`, `files`,
@@ -161,6 +174,15 @@ percent window, and before anything else past 40. Elsewhere:
   handoff's result and the kickoff name the open tasks nothing waits on
   but the longest chain's end: confirm each in the reply as an end on
   purpose, or wire it with `edge add`.
+- **Reviews:** name the task in every commit message (`T-13: ...`); the
+  mod links each commit to its task. A review task (labelled `review`,
+  or named "Review ...") covers, on completion, the code tasks on its
+  track finished before it started (`--review-scope project`: the
+  project's since the last project-wide review); `review covers T-30
+  T-21` sets the list, `coverage TR-4` lists what waits unreviewed, and
+  `commit move <sha> --to T-n --reason "..."` relinks a commit. At
+  `review.depth` `full` a done review reopens when work it read changes,
+  and `track finish` waits for a review (`--waive "<reason>"`).
 - **Inbox:** the kickoff lists every open task on no track in the
   project's open workstreams; put each on a track (`track capture
   --track TR-4 --task T-20`), move it (`task edit T-20 --workstream

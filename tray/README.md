@@ -509,6 +509,10 @@ and a link already carrying this AUMID beside this exe's directory is left
 alone, so every later start costs one file read. The read-back is on the BYTES
 rather than through COM, because a shell link stores the AUMID and the working
 directory as UTF-16 runs and does not store the target path verbatim at all.
+A copy run from another store's `board/tray/<build>` folder (a sandbox or a
+rehearsal, any store but `~/.claude/askerdo`) leaves the link alone at its
+start; `--register` still writes it. A server under the sandbox seam starts no
+tray at all.
 
 THE UNDO IS ONE STEP:
 

@@ -28,6 +28,8 @@ A workstream (`WS-16 Tidewatch`) is a named body of work with outcomes in your o
 
 Each project also has an inbox workstream (`tidewatch: inbox`): a question asked outside any workstream lands there, so nothing is unfiled. A workstream's inbox, in turn, holds tasks not yet on a track, and the next session to take one of its tracks is asked to place them.
 
+Work a session finds along the way is filed with its place: on its own track or another, before or after the step it belongs with, or unplaced with the reason it waits on no track. The handoff, the kickoff and the Tracks tab's **Found this arc** row list what an arc found and where each went, the unplaced first, so you see it at each gate.
+
 Use a workstream when work has a goal bigger than one sitting. Small one-off work never needs one.
 
 On the board, a workstream's page draws each track as a line of its tasks, with what needs you beside it:
@@ -71,6 +73,18 @@ The pane's Tracks tab lists each track ready to pick up with its focus and age; 
 The shelf is every track no session holds: waiting ones with their latest handoff, and parked ones with their reasons, oldest first.
 
 On screen: the shelf count on the status line, the Ready to pick up and Parked sections of the Tracks tab, and `/askerdo resume` with nothing after it, which lists it.
+
+## Review coverage
+
+The board keeps which code each task finished with and which reviews read it, so a track shows what no review has looked at yet.
+
+- **Commits link to tasks.** Every commit a session or its agents make is linked to its task: a task id in the commit message first, else the task the committing agent was dispatched for, else the task the session has in hand (the newest, marked as a guess, when it holds several). A commit no task owns counts as the project's own work. A handoff, a resume and `askerdo coverage --scan` also link commits made outside a session whose messages name a task; `askerdo commit move` relinks one by hand.
+- **Code tasks.** A task is a code task once a linked commit changed counted source: tracked code and tests, never lockfiles, generated files, Markdown, plain text, anything under `docs/` or fixtures, or binaries. The `review.ignore` setting adds a project's own files.
+- **Review tasks.** A task labelled `review`, or named "Review ...", is a review station. When it completes it covers every unreviewed code task on its track that finished before it started; `askerdo review covers` narrows the list. One made with `--review-scope project` reads every code task in the project since the last project-wide review, and the commits no task owns. A code task that gains a commit after its review is unreviewed again.
+- **Due.** Once a track's unreviewed code tasks reach the review size (`review.tasks`, 5), a review is due. Where reviews go is the session's judgment; a built-in rule line asks for one after each wave of parallel work, where work touched code another lane also touched, and before anything that ships.
+- **Depth.** `review.depth` is `light` by default: the due nudge, and nothing held. At `full`, a completed review reopens when work it read changes or a task before it finishes after it, so what waits on it waits again, and a track finishes only once a review has read its finished code (`track finish --waive "<reason>"` goes ahead and records why). At `off`, nothing is counted or shown.
+
+On screen: a **review due** row on the band, whose press opens the Tracks tab at the track; a line in the kickoff and the handoff; on the Tracks tab, amber cells for unreviewed work in the track's progress bar, "N to review" beside the count, and a padlock on a finish that waits for a review; on Home's station map, unreviewed work as amber beads between the stations and each review as a diamond: outlined while to do, grey with "N covered" once done (press it for the list, each a link), amber with "N to review" when it reopened. `askerdo coverage TR-n` prints the same as text. The settings are in [Settings and rules](settings-and-rules.md#reviews).
 
 ## The depth meter
 

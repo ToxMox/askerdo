@@ -240,18 +240,26 @@ describe('the first telling', () => {
       crux: 'Two writers at once.', options: OPTIONS, pick: 'b' })
     /* the reply pastes the block the result hands back; lines it put inside the block go with it */
     const block = String(asked.result).split('exactly, once:\n\n')[1].replace('Two writers', '- **Stakes:** a lost write\nTwo writers')
-    const full = ['Body before.', '', block, '', HAND + ' Needs you: Q512, on the card below.'].join('\n')
+    /* the block goes in the footer, under its label */
+    const full = ['Body before.', '', HAND + ' **Needs you:** ' + block].join('\n')
     await replyRow($, 'msg-9', full)
     await w.clock.settle()
-    const drawn = async (surface: string, id: string, text: string) => {
-      const ui = await mountReply($, surface, id, text)
-      const r = { text: String((await ui.find({ key: 'engine-reply' }))?.text), card: !!(await ui.find({ key: 'qhead-Q512' })) }
+    /* the footer draws under the last card, the last thing in the reply, at every width */
+    const order = async (ui: any) => (await ui.find({ key: 'askerdo-reply' }))!.children.map((c: any) => String(c.props.key).replace(/^telling-.*/, 'card'))
+    const footer = async (ui: any) => String((await ui.find({ key: 'askerdo-reply-foot-text' }))?.props.text)
+    const drawn = async (surface: string, id: string, text: string, px?: number) => {
+      const ui = await mountReply($, surface, id, text, px ? { columns: Math.floor(px / 7.8), rows: 40 } : undefined)
+      const r = { text: String((await ui.find({ key: 'engine-reply' }))?.text), card: !!(await ui.find({ key: 'qhead-Q512' })),
+        order: surface === 'desktop' ? await order(ui) : [], footer: await footer(ui) }
       await ui.unmount()
       return r
     }
-    const desk = await drawn('desktop', 'msg_09-t0', full)
-    expect(desk.card).toBe(true)
-    expect([desk.text.includes('Body before.'), desk.text.includes('Needs you'), desk.text.includes('512a'), desk.text.includes('Crux'), desk.text.includes('Stakes')]).toEqual([true, true, false, false, false])
+    for (const px of [238, 438, 900, 1400]) {
+      const desk = await drawn('desktop', 'msg_09-t0', full, px)
+      expect([desk.card, desk.order]).toEqual([true, ['engine-reply', 'card', 'askerdo-reply-foot']])
+      expect([desk.text.includes('Body before.'), desk.text.includes('Needs you'), desk.text.includes('512a'), desk.text.includes('Crux'), desk.text.includes('Stakes')]).toEqual([true, false, false, false, false])
+      expect([desk.footer.includes('Needs you'), /\bQ512\b/.test(desk.footer), desk.footer.includes('512a')]).toEqual([true, true, false])
+    }
     expect(JSON.stringify(w.appends)).toContain('|512b *|many files|')
     expect((await drawn('terminal', 'msg-9', full)).text).toBe(full)
     /* a reply whose block is not found: the card beside the text, whole */
@@ -283,6 +291,25 @@ describe('the first telling', () => {
     expect(await ovDesk.find({ key: 'ovpress-keep-3' })).toBeUndefined()
     await ovDesk.unmount()
     expect((await drawn('terminal', 'msg-11', said)).text).toBe(said)
+    /* two asks told in one footer: one line names both, under the second card */
+    await $.turn.start({ text: 'work', turnId: 't12' })
+    const pair = [] as string[]
+    for (const tu of ['tu-12', 'tu-13']) {
+      const r = await $.tool.call({ tool: ASK, tool_use_id: tu, name: 'store shape', ask: ASKED, gist: 'g', blocking: false, options: OPTIONS, pick: 'b' })
+      pair.push(String(r.result))
+    }
+    const ids = pair.map((r) => /Registered (Q\d+)/.exec(r)![1])
+    const both = ['Body.', '', HAND + ' **Needs you:**', '', ...pair.map((r) => r.split('exactly, once:\n\n')[1] + '\n'), 'Then the release.'].join('\n')
+    await replyRow($, 'msg-12', both)
+    await w.clock.settle()
+    for (const px of [238, 438, 900, 1400]) {
+      const two = await mountReply($, 'desktop', 'msg_12-t0', both, { columns: Math.floor(px / 7.8), rows: 40 })
+      const foot = await footer(two)
+      expect([await order(two), ids.map((id) => new RegExp('\\b' + id + '\\b').test(foot)), foot.includes('Then the release'),
+        /\b5\d\d[ab]\b/.test(foot), String((await two.find({ key: 'engine-reply' }))?.text)]).toEqual([['engine-reply', 'card', 'card', 'askerdo-reply-foot'], [true, true], true, false, 'Body.'])
+      expect(foot.split('\n').filter((l) => ids.some((id) => l.includes(id))).length).toBe(1)
+      await two.unmount()
+    }
   })
 
   test('a reply with no ask in its turn keeps the engine\'s own drawing', async ($: any, on: any) => {
@@ -612,12 +639,15 @@ describe('the Agent-call checks', () => {
   test('a brief file the prompt names is read, and its line against a rule in force is flagged', async ($: any, on: any) => {
     const w = checked(on)
     w.rules = RULES
-    w.fsRead = (path: string) => (path.endsWith('lane-brief.md') ? 'Write a test for each item.' : '')
+    /* the repo CLAUDE.md's golden-fixture line pins bytes by design and is no hit */
+    w.fsRead = (path: string) => (path.endsWith('lane-brief.md') ? 'Write a test for each item.'
+      + '\n- Any change to generated contract text requires regenerating the golden\n  fixtures, which pin exact bytes: use the case configs from' : '')
     on('tool.call', { tool: 'Agent' }, () => ({ result: 'spawned' }))
     await start($, w)
     await $.tool.call({ tool: 'Agent', description: 'the fixer', model: 'opus',
       prompt: 'Read docs/lane-brief.md. Keep docs/fix-state.md current. Final response under 2000 characters.' })
     expect(flags(w).join(' ')).toContain('a test per item')
+    expect(flags(w).join(' ')).not.toContain('tests.pinWording')
   })
 
   /* a lane that handed work on to another agent; its size taken at the agent's last step */
@@ -641,6 +671,35 @@ describe('the Agent-call checks', () => {
     expect(w.tasks[0].journal).toContain('455k')
     await $.tool.call({ tool: 'Agent', tool_use_id: 'tu-2', ...brief })
     expect(flags(w).join(' ')).toContain('T-7 handed its work on')
+  })
+
+  /* with no rules in force the dispatch join still holds, so a subagent's commit links to its task */
+  test("a subagent's commit with no rules in force is linked to its dispatch's task", async ($: any, on: any) => {
+    const w = world(on)
+    const SHA = 'a'.repeat(40)
+    const US = String.fromCharCode(31), RS = String.fromCharCode(30)
+    w.git = (argv: string[]) => {
+      const sub = argv.slice(3).find((a: string) => !a.startsWith('-') && !a.includes('='))
+      if (sub === 'rev-parse' && argv.includes('HEAD^{commit}')) return { exitCode: 0, stdout: 'C:/src/proj\nC:/src/proj/.git\n' + SHA + '\n', stderr: '' }
+      if (sub === 'show') return { exitCode: 0, stdout: [SHA, 'b'.repeat(40), '2026-11-04T10:00:00-05:00', 'fix the band'].join(US) + RS
+        + '\n\n12\t3\tlib/band.mjs\n40\t0\tpackage-lock.json\n', stderr: '' }
+      if (sub === 'config') return { exitCode: 0, stdout: 'remote.origin.url https://github.com/example/proj.git\n', stderr: '' }
+      return { exitCode: 1, stdout: '', stderr: '' }
+    }
+    on('tool.call', { tool: 'Agent' }, () => ({ result: 'spawned' }))
+    on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: 'no sha line here', stderr: '', interrupted: false } }))
+    on('agent.spawn', () => ({ model: 'opus', agentId: 'a1' }))
+    await start($, w)
+    const brief = { description: 'Band lane', model: 'opus', prompt: 'T-9: fix the band.' }
+    await $.tool.call({ tool: 'Agent', tool_use_id: 'tu-1', ...brief })
+    await $.agent.spawn({ ...brief, tool_use_id: 'tu-1' })
+    await $.turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 't-a1', reason: 'answer', agentId: 'a1' })
+    await $.tool.call({ tool: 'Bash', command: 'git commit -am "fix the band"', agentId: 'a1' })
+    await w.clock.settle()
+    const links = w.verbs.filter((v: any) => v.name === 'commitLink').map((v: any) => v.body.input)
+    expect(links.length).toBe(1)
+    expect([links[0].task, links[0].via, links[0].sha, links[0].repo]).toEqual(['T-9', 'agent', SHA, 'github.com/example/proj'])
+    expect([links[0].added, links[0].removed]).toEqual([12, 3])
   })
 })
 

@@ -14,6 +14,19 @@ function keptJunctions(list) {
   return [...out.values()];
 }
 
+/* a track's last completed review stays drawn, its diamond holding what it
+   covered; the same rule as layout.mjs keptReviews (the pure files import nothing). */
+export function keptReviews(list) {
+  const out = new Map();
+  for (const tv of list) {
+    if (!(tv.tasks || []).length) continue;
+    const done = (tv.finished || []).filter((f) => f && f.review && f.status === 'completed');
+    const last = done.reduce((m, f) => (!m || (f.position ?? 0) > (m.position ?? 0) ? f : m), null);
+    if (last && !out.has(last.id)) out.set(last.id, { ...last, track: tv.id });
+  }
+  return [...out.values()];
+}
+
 /* A station's short title: the name up to its first colon. */
 export function shortTitle(name) {
   const s = String(name || '');
@@ -56,6 +69,9 @@ export function graphOf(views, now, look) {
   const g = { tracks: [], tasks: [], edges: [] };
   const D = { tasks: {}, tracks: {}, critical: { len: 0, path: [], track: null } };
   const seen = new Set();
+  const reviews = keptReviews(views);
+  const keptR = new Set(reviews.map((k) => k.id));
+  for (const k of reviews) if (!trackOf.has(k.id)) trackOf.set(k.id, k.track);
   for (const tv of views) {
     const front = look.front(tv);
     const moved = look.moved(tv, front);
@@ -66,6 +82,8 @@ export function graphOf(views, now, look) {
       parent: j.track ? j.track.id : undefined, junction: j.task ? j.task.id : undefined, origin: front && front.origin,
       doneBefore: tv.done, parked: tv.parkReason || '', unpark: tv.unpark || '', last: moved.last, since: look.since ? look.since(tv) : null,
       lease: holder ? { who: holder.pc ? 'on ' + holder.pc : 'held', pc: holder.pc, since: holder.since, quiet: tv.quietSince || null } : null,
+      /* the review readout and the finished code tasks and reviews, passed through for the station map */
+      url: tv.url || null, review: tv.review || null, finished: Array.isArray(tv.finished) ? tv.finished : [],
     });
     const T = {
       state: tv.state, stalled: tv.stalled, noHandoff: tv.noHandoff, days: moved.days,
@@ -74,7 +92,7 @@ export function graphOf(views, now, look) {
     D.tracks[tv.id] = T;
     const deps = {};
     for (const e of tv.edges) {
-      if (e.done) continue;
+      if (e.done && !keptR.has(e.on)) continue;
       (deps[e.task] = deps[e.task] || []).push(e.on);
       const k = e.task + '>' + e.on;
       if (!seen.has(k)) { seen.add(k); g.edges.push([e.task, e.on]); }
@@ -101,6 +119,7 @@ export function graphOf(views, now, look) {
         promotedTo: t.pointer || undefined, agent: t.agent || null, session: t.session || null,
         checklist: t.progress && !t.pointer ? { done: t.progress.done, total: t.progress.total } : null,
         progress: t.pointer && t.progress ? { done: t.progress.done, total: t.progress.total } : null,
+        url: t.url || null, ...(t.review ? { review: true, reviewScope: t.reviewScope || 'track', ...(t.reopened ? { reopened: true } : {}) } : {}),
       });
     });
     if (tv.critical.length > D.critical.len) D.critical = { len: tv.critical.length, path: tv.critical.path, track: tv.id };
@@ -108,6 +127,12 @@ export function graphOf(views, now, look) {
   /* a finished junction stays drawn, done and dimmed, where its side line leaves */
   for (const k of keptJunctions(views)) {
     g.tasks.push({ id: k.id, key: k.key, track: k.track, pos: 0, status: 'completed', title: shortTitle(k.name), full: k.name, kept: true });
+    D.tasks[k.id] = { kind: 'done', waits: [], gates: [], needed: [] };
+  }
+  for (const k of reviews) {
+    if (D.tasks[k.id]) continue;
+    g.tasks.push({ id: k.id, key: k.key, track: k.track, pos: k.position ?? 0, status: 'completed', title: shortTitle(k.name), full: k.name, kept: true,
+      review: true, reviewScope: k.reviewScope || 'track', covers: Array.isArray(k.covers) ? k.covers : [], closed: k.closed || null, url: k.url || null });
     D.tasks[k.id] = { kind: 'done', waits: [], gates: [], needed: [] };
   }
   return { g, D };

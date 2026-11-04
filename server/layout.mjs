@@ -65,6 +65,9 @@ export function layoutGraph(g) {
     return c;
   };
   open.forEach((t) => { colOf(t.id); });
+  // a root line whose finished work comes before its first station keeps a column for its beads
+  const leads = new Set(g.tracks.filter((tr) => tr.lead && !(tr.parent && trk[tr.parent]) && open.some((t) => t.track === tr.id && col[t.id] === 0)).map((tr) => tr.id));
+  if (leads.size) open.forEach((t) => { col[t.id] += 1; });
 
   // lines in tree order: a parent, then its side tracks, the one leaving furthest right first,
   // so no branch's connector has to cross a sibling line's stations
@@ -119,9 +122,18 @@ export function layoutGraph(g) {
       const start = src !== null ? col[src] + 1 : col[h], end = col[ch[ch.length - 1]];
       let pick = null, cost = Infinity;
       const at = (r) => rails.indexOf(r);
+      // a wait climbing past another rail's work in the gap it joins by crosses that rail, so the far side of
+      // a fan-in's station is dearer than the near one
+      const past = (p, q, c) => { let n = 0; for (let k = Math.min(p, q) + 1; k < Math.max(p, q); k++) if (rails[k].ivs.some((iv) => iv[0] <= c - 1 && iv[1] >= c)) n++; return n; };
       const score = (p) => {
         let c = 0;
-        ch.forEach((id) => { inD[id].concat(inU[id]).forEach((o) => { if (where[o]) { const s = Math.abs(at(where[o]) - p); c += s + (s > 1 ? 10 : 0); } }); });
+        ch.forEach((id) => {
+          inD[id].concat(inU[id]).forEach((o) => {
+            if (!where[o]) return;
+            const q = at(where[o]), s = Math.abs(q - p);
+            c += s + (s > 1 ? 10 : 0) + 12 * past(p, q, Math.max(col[o], col[id]));
+          });
+        });
         return c;
       };
       rails.forEach((r, i) => {
@@ -150,7 +162,7 @@ export function layoutGraph(g) {
       stations[t.id] = { col: c, row: row + sub[t.id], line: tr.id, sub: sub[t.id] };
     });
     const done = g.tasks.filter((t) => t.track === tr.id && ENDED.has(t.status) && !t.kept).length + (tr.doneBefore || 0);
-    lines.push({ id: tr.id, row, rows, level, firstCol: first, lastCol: last, done });
+    lines.push({ id: tr.id, row, rows, level, firstCol: leads.has(tr.id) ? first - 1 : first, lastCol: last, done });
     row += rows;
   });
 
@@ -242,9 +254,21 @@ export function layoutInput(view) {
     kept.add(k.id);
     tasks.push({ id: k.id, track: k.track, pos: 0, status: 'completed', kept: true });
   }
+  /* a track's last completed review stays drawn (web/graph.mjs keptReviews) */
+  for (const tv of list) {
+    if (!(tv.tasks || []).length) continue;
+    const last = (tv.finished || []).filter((f) => f && f.review && f.status === 'completed')
+      .reduce((m, f) => (!m || (f.position ?? 0) > (m.position ?? 0) ? f : m), null);
+    if (!last || kept.has(last.id)) continue;
+    kept.add(last.id);
+    tasks.push({ id: last.id, track: tv.id, pos: last.position ?? 0, status: 'completed', kept: true });
+  }
   for (const tv of list) {
     const j = tv.junction || {};
     const tr = { id: tv.id, doneBefore: tv.done || 0 };
+    /* finished code work no review folded, placed before the line's first station */
+    const at = (tv.tasks || []).map((t, i) => t.position ?? i + 1).concat((tv.finished || []).filter((f) => kept.has(f.id)).map((f) => f.position ?? 0));
+    if ((tv.finished || []).some((f) => f && !f.review && !f.covered && (f.position ?? 0) < Math.min(...at))) tr.lead = true;
     if (j.track) tr.parent = j.track.id;
     if (j.task) tr.junction = j.task.id;
     tracks.push(tr);

@@ -5,7 +5,7 @@
  * AskerDo mark. Drawn from the model alone (statusModel); index.ts owns the reads. */
 import { cardText, cellWidth, chipGroups, chipHeader, rowParts, rowsText, statusPicture } from '../../lib/mod-core.mjs'
 
-type CardPart = { text: string; tone?: string; pic?: any }
+type CardPart = { text: string; tone?: string; pic?: any; href?: string; weight?: string }
 /* an agent's row in its card, its depth bar drawn on the desktop */
 type CardRow = { id: string; job: string; detail: string; tone: string; done?: boolean; meter?: any }
 export type StatusSegment = {
@@ -20,7 +20,7 @@ type CardFact = { lead: any; lines: CardPart[][] }
    desktop, a word at the line's end on the terminal; wrap, the pane's copy: two groups when it
    fits the columns, else one wrapping group;
    cards false: no hover cards (the dock pane does not lift them, so they would draw empty) */
-export type StatusOpts = { columns?: number; guard?: () => void; surface?: string; shelf?: () => void; home?: () => void; questions?: () => void; agents?: () => void; wrap?: boolean; cards?: boolean }
+export type StatusOpts = { columns?: number; guard?: () => void; surface?: string; shelf?: () => void; home?: () => void; questions?: () => void; agents?: () => void; health?: () => void; wrap?: boolean; cards?: boolean }
 
 const OPENER = 'AskerDo'
 
@@ -57,6 +57,8 @@ function pressOf(s: StatusSegment, opts: StatusOpts): { key: string; act: () => 
   /* the mark's press while questions wait elsewhere: the Questions tab */
   if (s.press === 'questions' && (opts.questions || opts.home)) return { key: 'askerdo-open', act: (opts.questions || opts.home) as () => void }
   if (s.press === 'agents' && opts.agents) return { key: 'status-agents-open', act: opts.agents }
+  /* the PC's problem runs or copies its fix */
+  if (s.press === 'health' && opts.health) return { key: 'status-health-fix', act: opts.health }
   return null
 }
 
@@ -297,7 +299,46 @@ export function factTip(els: any, key: string, card: { head: CardHead; groups: C
 /* a fact's words in its tone: the theme's ink by name, dim, or plain */
 export function factPart(els: any, p: CardPart): any {
   const { Text } = els
-  return p.tone && INK[p.tone] ? <Text color={INK[p.tone]}>{p.text}</Text> : p.tone === 'dim' ? <Text dimColor>{p.text}</Text> : p.text
+  const ink = p.tone && INK[p.tone] ? { color: INK[p.tone] } : p.tone === 'dim' ? { dimColor: true } : null
+  if (p.weight) return <Text weight={p.weight} {...(ink || {})}>{p.text}</Text>
+  return ink ? <Text {...ink}>{p.text}</Text> : p.text
+}
+
+/* a line with links. One link: on the desktop the whole line is its face. Else each run of
+   parts sharing a link is its own face (a Link on the terminal), the runs wrapping whole; null for none */
+export function linkLine(els: any, l: CardPart[], key: string, desk: boolean, whole = true): any {
+  const { Box, Text, Link } = els
+  const shown = l.filter((p) => !p.pic && p.text)
+  const hrefs = [...new Set(shown.filter((p) => p.href).map((p) => p.href))]
+  if (!hrefs.length) return null
+  const text = (ps: CardPart[]) => ps.map((p) => p.text).join('')
+  if (hrefs.length === 1 && desk && whole) {
+    const words = <Text wrap="wrap">{shown.map((p) => factPart(els, p))}</Text>
+    return <Box key={key} flexDirection="row">{pressFace(els, key + '-go', words, linkOver(els, key + '-go-link', cellWidth(text(shown)), hrefs[0] as string), { shrink: true })}</Box>
+  }
+  const runs: CardPart[][] = []
+  for (const p of shown) {
+    const last = runs[runs.length - 1]
+    if (last && (last[0].href || '') === (p.href || '')) last.push(p)
+    else runs.push([p])
+  }
+  /* a run's own edge spaces are the gaps beside it, so a Box never starts or ends in one */
+  return (
+    <Box key={key} flexDirection="row" flexWrap="wrap">
+      {runs.map((r, i) => {
+        const k = key + '-r' + i
+        const gap = { ...(i < runs.length - 1 && /\s$/.test(text(r)) ? { marginRight: 1 } : {}), ...(i && /^\s/.test(text(r)) ? { marginLeft: 1 } : {}) }
+        const parts = r.map((p, j) => {
+          const t = j === r.length - 1 ? p.text.replace(/\s+$/, '') : p.text
+          return { ...p, text: j === 0 ? t.replace(/^\s+/, '') : t }
+        })
+        const href = r[0].href
+        if (!href) return <Box key={k} flexShrink={1} minWidth={0} {...gap}><Text wrap="wrap">{parts.map((p) => factPart(els, p))}</Text></Box>
+        if (!desk) return <Box key={k} flexShrink={1} minWidth={0} {...gap}><Link href={href} label={text(parts)} /></Box>
+        return <Box key={k} flexShrink={1} minWidth={0} {...gap}>{pressFace(els, k + '-face', <Text wrap="wrap">{parts.map((p) => factPart(els, p))}</Text>, linkOver(els, k + '-link', cellWidth(text(parts)), href), { shrink: true })}</Box>
+      })}
+    </Box>
+  )
 }
 
 /* how a site other than the tooltip draws a fact: `lead` its own lead (the terminal has no
@@ -315,7 +356,7 @@ export function factGroup(els: any, g: CardFact[], k: string, gi: number, o: Fac
   const { Box, Text } = els
   const lead = o.lead || ((p: any, key: string) => leadPic(els, p, key))
   const line = (l: CardPart[], key: string) => {
-    const own = o.line ? o.line(l, key) : null
+    const own = o.line ? o.line(l, key) : linkLine(els, l, key, true)
     if (own) return own
     const bar = l.find((p) => p.pic)
     const words = <Text key={key + 'w'} wrap="wrap">{l.filter((p) => !p.pic && p.text).map((p) => factPart(els, p))}</Text>
@@ -363,7 +404,7 @@ const ROW_TONE: Record<string, string> = { sky: 'bright', amber: 'warning', red:
    task's and the track's icons, then the rate rings (the pane's copy wraps instead); the mark with its
    count and the context ring always stay. `over`: a segment's label cut (a string) or dropped (null);
    `gone`: a segment not drawn. */
-const SHRINK = ['task', 'hour', 'week', 'agents']
+const SHRINK = ['task', 'hour', 'week', 'agents', 'health']
 const LAST = ['shelf', 'task', 'thread', 'week', 'hour']
 const TRACK_MIN = 4
 const TASK_MIN = 6
@@ -371,7 +412,7 @@ const ELLIPSIS = '\u2026'
 /* the task's label: its id, its name, the count of the rest */
 const TASK_PARTS = /^(\S+)(?: (.*?))?( \+\d+)?$/
 /* the terminal's face for a segment drawn as its icon alone */
-const TERM_ICON: Record<string, string> = { thread: '\u2263', task: '\u25a3' }
+const TERM_ICON: Record<string, string> = { thread: '\u2263', task: '\u25a3', health: '!' }
 type Plan = { gap: number; over: Map<string, string | null>; gone: Set<string> }
 
 /* A segment as drawn under the plan: the desktop's picture label, the terminal's text */

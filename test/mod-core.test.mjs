@@ -89,6 +89,8 @@ test('handoff: the tool refuses what the CLI refuses (one shared check), and rul
   assert.deepEqual(validateHandoff(handoff({ track: 'TR-3', rulings })), { track: 'TR-3', workstream: undefined, payload: handoff({ rulings }) });
   /* a track's tasks carry where it stands, so the step and the task in hand are refused */
   assert.match(validateHandoff(handoff({ step: 'P-10/s3' })).error, /unknown field "step"/);
+  /* a session resumed across an update sends its old names; the refusal says start a new one */
+  assert.match(validateHandoff(handoff({ waitingOnOld: [] }), { version: '0.8.13' }).error, /AskerDo 0\.8\.13 does not take.*start a new session/);
   assert.match(validateHandoff(handoff({ track: 'T-3' })).error, /track is a TR-n id/);
   assert.match(validateHandoff(handoff({ state: 'x'.repeat(401) })).error, /state lines over 400 characters: line 1 \(401\)/);
   /* bytes, not characters: a two-byte letter counts twice */
@@ -431,6 +433,14 @@ test('Tracks tab: the held card, the user\'s tracks first to pick up, the quiet 
     shelfRows: [{ track: 'TR-4', workstream: 'WS-1', state: 'waiting', done: 2, total: 4 }, { track: 'TR-20', workstream: 'WS-2', state: 'waiting', done: 1, total: 3 }] });
   assert.deepEqual(held.pickup.map((x) => [x.id, x.readySet.length]), [['TR-4', 1], ['TR-20', 2]]);
   assert.deepEqual([tracksView({}).total, !!tracksView({}).bottom.note], [0, true]);
+  /* the held tile's workstream row and each id of its longest chain open their board pages */
+  const local = 'http://127.0.0.1:5/' + 'a'.repeat(32) + '/local/';
+  const chain = { workstream: 'WS-1', view: { tracks: [{ id: 'TR-2', state: 'active', done: 0, total: 3, now: [], readySet: [], critical: ['T-1', 'T-2', 'T-3'],
+    tasks: [{ id: 'T-1', name: 'one' }, { id: 'T-2', name: 'two' }, { id: 'T-3', name: 'three' }] }] } };
+  const tile = tracksView({ mine: { held: true, track: 'TR-2', workstream: 'WS-1', tracks: [] }, graph: chain, local }).held;
+  const links = (lead) => tile.groups.flat().filter((r) => r.lead.icon === lead).flatMap((r) => r.lines.flat()).filter((p) => p.href).map((p) => p.href.split('/r/')[1]);
+  assert.deepEqual([...new Set(links('ldFolder'))], ['WS-1']);
+  assert.deepEqual(links('ldFlag'), ['T-1', 'T-2', 'T-3']);
 });
 
 test('pane: a focus wraps at spaces into two rows, then ends on a whole word with an ellipsis', () => {
@@ -849,6 +859,37 @@ test("Home with no track held draws the project's workstream the band carries, w
   assert.deepEqual([gm.scope, gm.lines.map((l) => l.id)], ['all', [line.id]]);
   assert.ok(gm.picture && /WS-2/.test(gm.why), 'drawn, the note naming the other workstream');
   assert.equal(homeGraph({ graph: { ...graph, unheld: false }, mine, local: true }).lines.length, 0, "a held track's graph is never drawn for a session without one");
+});
+
+test('a completed review folds the code it covered into its diamond, and the legend lists a review mark only where the map draws it', async () => {
+  const { runVerb } = await import('../server/verbs/index.mjs');
+  const { putRecord } = await import('../server/records.mjs');
+  const { graphLegend } = await import('../lib/mod-core.mjs');
+  const t = await import('../server/verbs/tracks.mjs');
+  const db = freshBoard();
+  putRecord(db, { key: 'ws000001', kind: 'workstream', fields: { id: 'WS-1', key: 'ws000001', name: 'Board', status: 'open', labelHistory: ['WS-1 2026-10-25'] }, body: '' });
+  const line = t.newTrack(db, { workstream: 'WS-1', name: 'Export' }, 'cli');
+  const make = (name) => runVerb(db, 'createRecord', { name, description: 'd', track: line.id }, 'cli');
+  const at = (h) => ({ session: 's1', now: new Date(2026, 10, 4, h) });
+  const code = ['Export a file', 'Import it'].map(make);
+  const review = make('Review the export');
+  make('Release');
+  code.forEach((c, i) => {
+    runVerb(db, 'commitLink', { repo: 'r', sha: String(i + 1).repeat(40), task: c.id, via: 'message', at: at(8).now.toISOString(), added: 3, removed: 0 }, at(8));
+    runVerb(db, 'editRecord', { id: c.id, status: 'completed' }, at(9));
+  });
+  const draw = () => homeGraph({ graph: { workstream: 'WS-1', view: t.workstreamView(db, { workstream: 'WS-1' }), layout: null },
+    mine: { held: true, track: line.id, workstream: 'WS-1', tracks: [] }, local: true, columns: 52, pressed: review.id });
+  const before = draw();
+  assert.equal((before.picture.source.match(/class="bead"/g) || []).length, 2, 'two finished code tasks wait as beads');
+  assert.ok(graphLegend(before.marks).some((m) => m.key === 'bead') && !graphLegend(before.marks).some((m) => m.key === 'reviewed'));
+  runVerb(db, 'editRecord', { id: review.id, status: 'completed' }, at(11));
+  const after = draw();
+  assert.ok(!/class="bead"/.test(after.picture.source), 'what the review covered draws no bead');
+  assert.deepEqual(after.pressed.covers.map((c) => c.id), code.map((c) => c.id), 'its press lists what it covered');
+  assert.ok(after.picture.hits.some((h) => h.kind === 'review' && h.id === review.id), 'its diamond takes a press');
+  const keys = graphLegend(after.marks).map((m) => m.key);
+  assert.ok(keys.includes('reviewed') && !keys.includes('bead'), keys.join(','));
 });
 
 test("Home's strips each close their own card, and a wait on another line ends at each card's edge (in-app run 3)", async () => {

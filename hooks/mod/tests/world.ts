@@ -128,6 +128,11 @@ export function world(on: any, opts: { store?: Record<string, unknown>; server?:
       w.serverAt((env && env.ASKERDO_ROOT) || String(w.env.USERPROFILE || HOME) + '/.claude/askerdo')
       return json({ status: 'started', url: LOCAL_ROOT, port: 7777 })
     }
+    /* the PC's readout; a test sets w.health's problems */
+    if (verb === 'status') {
+      const problems = (w.health && w.health.problems) || []
+      return { exitCode: problems.length ? 1 : 0, stdout: JSON.stringify({ ok: !problems.length, checks: [], problems }) + '\n', stderr: '' }
+    }
     if (verb === 'list') {
       const sess = flag('session')
       /* the CLI matches a project by remote, else by path; the world has no remotes,
@@ -343,6 +348,14 @@ export function world(on: any, opts: { store?: Record<string, unknown>; server?:
     /* the plugin's own manifest: the version the route's calls carry */
     if (/[\\/]\.claude-plugin[\\/]plugin\.json$/.test(e.path)) return { value: JSON.stringify({ name: 'askerdo', version: '0.7.0', repository: 'https://github.com/ToxMox/askerdo' }) }
     return w.fsRead ? { value: w.fsRead(e.path) } : next(e)
+  })
+  /* a stat of a file the world holds; its text stands in for the mtime, so a rewrite moves it */
+  on('fs.stat', ($: any, e: any) => {
+    const file = w.files[String(e.path).replace(/\\/g, '/')]
+    if (file === undefined) return { deny: 'ENOENT: ' + e.path }
+    let h = 0
+    for (const c of file) h = (h * 31 + c.charCodeAt(0)) | 0
+    return { value: { kind: 'file', size: file.length, mtimeMs: h, isLink: false } }
   })
   on('env.set', ($: any, e: any) => { w.env[e.name] = e.value; w.events.push('env.set ' + e.name + '=' + e.value); return { value: undefined } })
   on('env.get', ($: any, e: any) => ({ value: w.env[e.name] }))

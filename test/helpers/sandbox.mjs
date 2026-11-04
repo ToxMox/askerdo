@@ -41,6 +41,8 @@ import { join } from 'node:path';
    unregistered prefix throws at the mint rather than quietly minting a shape
    the guard test does not know. Grouped by the file that spends it. */
 export const SANDBOX_PREFIXES = Object.freeze([
+  /* test/commit-capture.test.mjs */
+  'askerdo-commits-',
   /* test/run-tests.test.mjs: the fixture test files the script is run on */
   'askerdo-run-tests-',
   /* test/onboard-survey.test.mjs */
@@ -118,6 +120,8 @@ export const SANDBOX_PREFIXES = Object.freeze([
   'askerdo-prof-cli-',
   /* test/handoff-check.test.mjs */
   'ttd-handoff-check-',
+  /* test/pc-health.test.mjs: a Claude home the auto-update switch is set in */
+  'askerdo-pc-health-',
   /* test/sandbox.test.mjs, which proves this file */
   'nd-sandbox-',
 ]);

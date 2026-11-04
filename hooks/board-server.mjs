@@ -30,7 +30,7 @@ import { isFullStamp, stampNow } from '../lib/stamps.mjs';
 import { isKey } from '../lib/record-ids.mjs';
 import { answerToken } from '../lib/answer-token.mjs';
 import { BoardCallError, boardJoinCode, boardLoginLink, boardToken, boardUrl as boardServerUrl, joinLine, reachableUrl } from '../lib/board-call.mjs';
-import { boardIdentity, boardUrl, ensureRoot } from '../lib/board-ensure.mjs';
+import { boardIdentity, boardUrl, ensureRoot, probe } from '../lib/board-ensure.mjs';
 import { HOST_ONLY, hostedHere, readHost, superviseHost } from '../lib/board-host.mjs';
 import { WEB } from '../server/paths.mjs';
 import { BoardOffline, createLocalBoard } from '../lib/local-board.mjs';
@@ -89,6 +89,8 @@ let stopping = false;
 let dotCache = 'quiet';
 /* the tooltip's number beside the corner's word, set with it so the pair cannot disagree */
 let blockingCache = 0;
+/* the notification channel switched off, read each tick, so the ping can say off rather than down */
+let trayOff = false;
 /* the menu's counts, set at that same place */
 let waitingCache = 0;
 let cardsCache = [];
@@ -198,7 +200,11 @@ function listenWithHandshake() {
   server.once('error', (e) => {
     if (!e || e.code !== 'EADDRINUSE') return fatal(e);
     probeBoard(port).then(async (p) => {
-      if (p.mine && p.version === version()) {
+      /* a newer build is adopted too, never replaced; no header reads as older.
+         Loaded here only: the takeover is rare and mod-core is large */
+      const newer = p.mine && p.version !== version() && (await import('../lib/mod-core.mjs')).versionBehind(version(), p.version);
+      if (p.mine && (p.version === version() || newer)) {
+        if (newer) appendLog(root, 'board: a newer server (' + p.version + ') runs on port ' + port + '; this one (' + version() + ') left it running');
         process.stdout.write(boardUrl(root, 'root') + '\n');
         process.stdout.write('AskerDo board: adopted the instance already running on port ' + port + '\n');
         process.exit(0);
@@ -214,6 +220,10 @@ function listenWithHandshake() {
            start two trays and two watch timers on the replace path. */
         server.listen(port, '127.0.0.1');
         return;
+      }
+      if (p.busy) {
+        process.stderr.write('AskerDo board: port ' + port + ' did not answer within the wait (a busy server or another program); the board did not start\n');
+        process.exit(1);
       }
       process.stderr.write('AskerDo board: port ' + port + ' is held by another process; '
         + 'the board did not start (the port is permanent; free it, or remove board/ to '
@@ -404,6 +414,7 @@ function startChannel() {
   if (!notifier.available) return;
   notifier.ensureSettings();
   const settings = notifier.loadSettings();
+  trayOff = !settings.enabled;
   /* The faces are compiled into the exe, so this half resolves no icon path. */
   tray = createTray({
     root,
@@ -429,9 +440,26 @@ function spawnTray(settings, dot) {
   tray.start(settings, dot, { blocking: blockingCache });
 }
 
+/* a store folder deleted or re-minted under this server would leave it serving a
+   secret no link knows beside the next ensure's server; { why, deleted }, or null to stay.
+   Only a missing file or another valid secret counts, never a read that failed. */
+function storeGone() {
+  let now;
+  try { now = readFileSync(join(root, 'board', 'secret'), 'utf8').trim(); } catch (e) {
+    return e && e.code === 'ENOENT' ? { why: 'the store folder ' + root + ' or its board/secret is gone', deleted: true } : null;
+  }
+  return /^[0-9a-f]{32}$/.test(now) && now !== secret ? { why: 'board/secret in ' + root + ' was minted again' } : null;
+}
+
 /* One watcher. The settings are re-read every tick, so a hand edit takes effect
    within one period; the FIRST fan-out records the baseline and sends nothing. */
 function watchTick() {
+  if (stopping) return;
+  const gone = storeGone();
+  if (gone) {
+    process.stderr.write('AskerDo board: ' + gone.why + '\n');
+    return shutdown(gone.why, { log: !gone.deleted });
+  }
   /* A DROPPED TICK IS A QUEUED ONE: the flag says one more run is owed and the
      finally below pays it, so a change inside a tick fans out at once. */
   if (watchBusy) { kickAgain = true; return; }
@@ -470,6 +498,7 @@ function kickTick() {
    pause is not a fact about the store: it lapses on a clock. */
 function trayPayload() {
   const settings = loadSettings(root);
+  trayOff = !settings.enabled;
   const at = notifyNow();
   return {
     instance,
@@ -591,7 +620,7 @@ async function relayTray(frame) {
       if (!tray || demanded) return refused('no tray attached');
       demanded = true;
       if (tray.exited() === 'byPerson') {
-        appendLog(root, 'tray: the tray was exited by the person; alerts wait for the next server start');
+        appendLog(root, 'tray: the tray was exited by the person; alerts wait for the next session start');
         return refused('the tray was exited by the person', true);
       }
       const up = await tray.ensureRunning(notifier ? notifier.loadSettings() : null);
@@ -886,22 +915,8 @@ function fatal(e) {
   process.exit(1);
 }
 
-/* Ours answers the secret ping with a 204 AND names its version in the
-   header; a squatter can do neither. */
-function probeBoard(p) {
-  return new Promise((done) => {
-    const req = httpRequest({
-      host: '127.0.0.1', port: p, method: 'POST', path: '/' + secret + '/ping', timeout: 1500,
-    }, (res) => {
-      res.resume();
-      const header = res.headers['x-askerdo-board'];
-      done({ mine: res.statusCode === 204 && typeof header === 'string', version: header });
-    });
-    req.on('timeout', () => { req.destroy(); done({ mine: false, version: undefined }); });
-    req.on('error', () => done({ mine: false, version: undefined }));
-    req.end();
-  });
-}
+/* the ensure's rule: a 204 on the secret ping is ours, of any version */
+const probeBoard = (p) => probe(p, secret);
 
 function postStop(p) {
   return new Promise((done) => {
@@ -1007,7 +1022,13 @@ function handle(req, res) {
   if (rest === 'local/mod') return modRoute(req, res);
   if (rest.startsWith('local/')) return handleLocal(localBoard, req, res, rest.slice('local/'.length), localTiming);
   if (req.method === 'POST' && rest === 'ping') return ping(res);
+  /* the ensure's call at a session start, which brings back a tray the person closed */
+  if (req.method === 'POST' && rest === 'api/tray') return trayApi(res);
   if (req.method === 'POST' && rest === 'stop') {
+    /* an ensure replacing the version it saw stops only that one, so a session
+       start racing another never stops the server the other just started */
+    const seen = req.headers['x-askerdo-if-version'];
+    if (typeof seen === 'string' && seen !== version()) return sendJson(res, 409, { error: 'this server runs ' + version() + ', not ' + seen });
     /* THE TRAY GOES FIRST, before the stream it is reading is closed: stdin
        EOF is what makes the exe remove its own icon, and a tray told to stop by the
        closing of its stream would exit through the reconnect path instead. */
@@ -1036,10 +1057,30 @@ function ping(res) {
     'x-askerdo-board': version(),
     'x-askerdo-instance': instance,
     'x-askerdo-dot': dotCache,
+    'x-askerdo-tray-state': trayState(),
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
   });
   res.end();
+}
+
+/* up: a tray is on the stream; closed: the person chose Exit; off: the channel is
+   switched off; down: no tray */
+function trayState() {
+  if (trayStream) return 'up';
+  if (tray && tray.exited() === 'byPerson') return 'closed';
+  return tray && trayOff ? 'off' : 'down';
+}
+
+/* A tray already running is left alone; enabled false in the settings still spawns none. */
+function trayApi(res) {
+  if (!tray || !notifier) return sendJson(res, 200, { tray: trayState(), started: false });
+  const was = trayState();
+  const running = !!tray.running();
+  if (!running) spawnTray(notifier.loadSettings(), dotCache);
+  const started = !running && !!tray.running();
+  if (started && was === 'closed') appendLog(root, 'tray: started again by a session start after the person chose Exit');
+  return sendJson(res, 200, { tray: trayState(), started });
 }
 
 /* ---- the links to the board's pages ------------------------------------ */
@@ -1998,7 +2039,8 @@ function sendHtml(res, code, html) {
   res.end(html);
 }
 
-function shutdown(why) {
+/* `log: false` for a store being deleted: a line there would land in a folder half gone */
+function shutdown(why, { log = true } = {}) {
   stopping = true;
   if (watchTimer) clearInterval(watchTimer);
   if (configTimer) clearInterval(configTimer);
@@ -2013,7 +2055,7 @@ function shutdown(why) {
   /* no stream outlives a --root: they are ended here as well as on the stop
      route, because SIGINT and SIGTERM reach this without going through it */
   endStreams();
-  appendLog(root, 'board: shutting down (' + why + ')');
+  if (log) appendLog(root, 'board: shutting down (' + why + ')');
   if (server.closeAllConnections) server.closeAllConnections();
   server.close(() => process.exit(0));
   /* a socket that somehow outlives close() must not keep this alive */

@@ -6,7 +6,9 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { splitFile } from './frontmatter.mjs';
 import { tx } from './db.mjs';
-import { RECORD_DIRS, ANSWER_PLACEHOLDER, WHERE_HEAD, ITEMS_HEAD, INBOX_FILE, HISTORY_DIR, READS_FILE, READS_SINCE, OVERRIDES_FILE, SETTINGS, SETTINGS_FILE } from './render.mjs';
+import {
+  RECORD_DIRS, ANSWER_PLACEHOLDER, WHERE_HEAD, ITEMS_HEAD, INBOX_FILE, HISTORY_DIR, READS_FILE, READS_SINCE, OVERRIDES_FILE, SETTINGS, SETTINGS_FILE, COMMITS_FILE, COVERS_FILE,
+} from './render.mjs';
 import { KEY_LISTS, KEY_MAPS, KEY_ORDERS, addActivity, isKey, labelTops, putHandoff, putNotes, putRecord, setMeta, stampNow } from './records.mjs';
 import { createHash } from 'node:crypto';
 
@@ -259,6 +261,19 @@ function importFrom(db, src) {
         for (const x of r.rows || []) add.run(x.record, x.session, x.site, x.at);
       } catch (e) { problems.push(READS_FILE + ': ' + e.message); }
     } else if (db.prepare('SELECT 1 FROM records LIMIT 1').get()) setMeta(db, READS_SINCE, stampNow());
+    /* every commit link and cover comes back as it was */
+    const rows = (file, sql, args) => {
+      if (!src.has(file)) return;
+      const put = db.prepare(sql);
+      read(file).split('\n').forEach((text, i) => {
+        if (!text) return;
+        try { put.run(...args(JSON.parse(text))); count('coverage'); } catch (e) { problems.push(file + ' line ' + (i + 1) + ': ' + e.message); }
+      });
+    };
+    rows(COMMITS_FILE, 'INSERT INTO commits (repo, sha, task, at, via, session, agent_job, files, added, removed, linked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      (r) => [r.repo, r.sha, r.task ?? '', r.at, r.via, r.session ?? null, r.agent_job ?? null, JSON.stringify(r.files || []), r.added ?? 0, r.removed ?? 0, r.linked]);
+    rows(COVERS_FILE, 'INSERT INTO covers (review, task, at, through, through_at) VALUES (?, ?, ?, ?, ?)',
+      (r) => [r.review, r.task, r.at, r.through ?? null, r.through_at ?? null]);
     if (src.has(SETTINGS_FILE)) {
       try {
         const set = JSON.parse(read(SETTINGS_FILE));

@@ -10,7 +10,7 @@
       "name": "askerdo",
       "source": "./",
       "description": "Questions, tracks and handoffs for Claude Code sessions on one board for every PC, with a glanceable reply contract, a band and pane in the app, and a tray for notifications",
-      "version": "0.8.13"
+      "version": "0.8.14"
     }
   ]
 }

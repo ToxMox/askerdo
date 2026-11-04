@@ -15,6 +15,8 @@ const { tempDir } = await import('./helpers/sandbox.mjs');
 const u = await import('../server/verbs/upkeep.mjs');
 const q = await import('../server/verbs/questions.mjs');
 const { graphOf, viewLook } = await import('../server/web/graph.mjs');
+const { reviewPlan } = await import('../server/web/draw.mjs');
+const { runVerb } = await import('../server/verbs/index.mjs');
 
 function board() {
   const db = freshBoard();
@@ -286,4 +288,132 @@ test('task create with a track puts the task on that track, never in the inbox',
   const row = db.prepare('SELECT track FROM track_items WHERE task = ?').get(made.key);
   assert.equal(row && row.track, line.key);
   assert.throws(() => w.createRecord(db, { name: 'x', description: 'd', track: 'TR-99' }, 'cli'));
+
+  /* a session's filing names its place; the hint rides the refusal; the found list and a release gate say where each went */
+  const S = { session: 's9' };
+  const mine = t.newTrack(db, { workstream: 'WS-1', name: 'Release lane', session: 's9' }, S);
+  const rel = runVerb(db, 'createRecord', { name: 'Release 1.0', description: 'd', track: mine.id }, S);
+  assert.throws(() => runVerb(db, 'createRecord', { name: 'Fix the release notes', description: 'd', workstream: 'WS-1' }, S),
+    (e) => e.message.includes('unplaced') && e.message.includes(mine.id));
+  const before = runVerb(db, 'createRecord', { name: 'Notes', description: 'd', track: mine.id, before: [rel.id] }, S);
+  const there = runVerb(db, 'createRecord', { name: 'Elsewhere', description: 'd', track: line.id }, S);
+  const loose = runVerb(db, 'createRecord', { name: 'Someday', description: 'd', workstream: 'WS-1', unplaced: 'waits on the next design pass' }, S);
+  const f = runVerb(db, 'trackFound', { track: mine.id }, null);
+  const at = (id) => f.tasks.find((x) => x.id === id).where;
+  assert.deepEqual([at(before.id).track, at(before.id).before], [mine.id, [rel.id]]);
+  assert.equal(at(there.id).track, line.id);
+  assert.equal(at(loose.id).reason, 'waits on the next design pass');
+  const go = q.register(db, { name: 'release go', gist: 'Ready?', projectDir: 'C:/repo', session: 's9', blocking: true, ask: 'Ship (a) or wait (b)?', gates: [rel.id],
+    options: [{ type: 'a', option: 'ship' }, { type: 'b', option: 'wait' }] }, null);
+  assert.match(q.show(db, { id: go.id }).gist, new RegExp('Found this arc.*' + loose.id));
+});
+
+test('a review covers the code finished before it started; a fix finished after it, or a commit after its cover, reads uncovered', () => {
+  const db = board();
+  const at = (h) => ({ session: 's1', now: new Date(2026, 10, 4, h) });
+  const line = t.newTrack(db, { workstream: 'WS-1', name: 'Coverage' }, 'cli');
+  const [one, fix, review] = ['The schema', 'A fix', 'Review the schema'].map((name) => runVerb(db, 'createRecord', { name, description: 'd', track: line.id }, 'cli'));
+  const link = (task, sha, h, n = 10) => runVerb(db, 'commitLink', { repo: 'r', sha: sha.repeat(40), task, via: 'message', at: at(h).now.toISOString(), added: n, removed: 0 }, at(h));
+  link(one.id, 'a', 9);
+  /* the PC retries a link: the row stays one and the log moves once */
+  const lines = () => db.prepare("SELECT count(*) AS n FROM activity WHERE verb = 'commit'").get().n;
+  assert.equal(link(one.id, 'a', 9).created, false);
+  assert.equal(lines(), 1);
+  assert.throws(() => link('T-404', 'b', 9), (e) => e.message.startsWith('no such task'));
+  runVerb(db, 'editRecord', { id: one.id, status: 'completed' }, at(10));
+  runVerb(db, 'editRecord', { id: review.id, status: 'in_progress', reason: 'reads the schema' }, at(11));
+  link(fix.id, 'c', 12);
+  runVerb(db, 'editRecord', { id: fix.id, status: 'completed' }, at(12));
+  const done = runVerb(db, 'editRecord', { id: review.id, status: 'completed' }, at(13));
+  assert.deepEqual(done.covers, [one.id], 'the default covers only what finished before the review started');
+  const covered = () => Object.fromEntries(runVerb(db, 'coverage', { scope: line.id }, null).tasks.map((x) => [x.id, x.covered]));
+  assert.deepEqual(covered(), { [one.id]: true, [fix.id]: false });
+  link(one.id, 'd', 14);
+  assert.equal(covered()[one.id], false, 'a commit after the cover uncovers it');
+  /* at light nothing reopens: the map draws it as a bead again and the diamond no longer counts it */
+  const v = t.trackView(db, { track: line.id });
+  assert.ok(v.finished.some((f) => f.id === one.id && !f.review));
+  assert.deepEqual(v.finished.find((f) => f.id === review.id).covers, []);
+});
+
+test('a review is due once review.tasks finished code tasks wait on a track; review.ignore files are no code, and off shows nothing', () => {
+  const db = board();
+  const at = (h) => ({ session: 's1', now: new Date(2026, 10, 4, h) });
+  const line = t.newTrack(db, { workstream: 'WS-1', name: 'Due' }, 'cli');
+  const set = (key, value) => runVerb(db, 'settingsSet', { key, value, at: 'track', record: line.id }, 'cli');
+  set('review.tasks', 2);
+  const [a, b] = ['The parser', 'The writer'].map((name, i) => {
+    const r = runVerb(db, 'createRecord', { name, description: 'd', track: line.id }, 'cli');
+    const path = i ? 'server/version.json' : 'lib/parse.mjs';
+    runVerb(db, 'commitLink', { repo: 'r', sha: String(i + 1).repeat(40), task: r.id, via: 'message', at: at(9).now.toISOString(), added: 5, removed: 0,
+      files: [{ path, added: 5, removed: 0, counted: true }] }, at(9));
+    runVerb(db, 'editRecord', { id: r.id, status: 'completed' }, at(10));
+    return r;
+  });
+  const view = () => t.trackView(db, { track: line.id });
+  const band = () => u.bandCalls(db, {}, null).rows.filter((r) => r.kind === 'review' && r.id === line.id);
+  assert.equal(view().review.due, true);
+  assert.deepEqual(view().finished.map((f) => f.id), [a.id, b.id]);
+  assert.equal(band().length, 1, 'the band shows the due row, with a press');
+  assert.ok(band()[0].presses[0].url);
+  const kick = runVerb(db, 'trackKickoff', { track: line.id }, 'cli').kickoff;
+  assert.ok(kick.split('\n').some((l) => /due/i.test(l) && l.includes(a.id) && l.includes(b.id)), 'the kickoff names the uncovered tasks');
+  set('review.ignore', ['server/version.json']);
+  assert.equal(view().review.due, false, 'a commit of ignored files only is no code');
+  assert.deepEqual(view().finished.map((f) => f.id), [a.id]);
+  set('review.depth', 'off');
+  assert.equal(view().review, null);
+  assert.deepEqual(view().finished, []);
+  assert.equal(band().length, 0);
+});
+
+test('at full depth a review reopens when work it read changes, upkeep completion included, and a finish waits for one or a waiver', () => {
+  const db = board();
+  const at = (h) => ({ session: 's1', now: new Date(2026, 10, 4, h) });
+  runVerb(db, 'upkeepSwitch', { on: true }, 'cli');
+  const line = t.newTrack(db, { workstream: 'WS-1', name: 'Gate' }, 'cli');
+  runVerb(db, 'settingsSet', { key: 'review.depth', value: 'full', at: 'track', record: line.id }, 'cli');
+  const make = (name) => runVerb(db, 'createRecord', { name, description: 'd', track: line.id }, 'cli');
+  const link = (task, sha, h) => runVerb(db, 'commitLink', { repo: 'r', sha: sha.repeat(40), task, via: 'message', at: at(h).now.toISOString(), added: 3, removed: 0 }, at(h));
+  const [one, two, three, four, review] = ['The store', 'The reader', 'The index', 'The cache', 'Review the store'].map(make);
+  const elsewhere = runVerb(db, 'createRecord', { name: 'Off the track', description: 'd', workstream: 'WS-1' }, 'cli');
+  runVerb(db, 'editRecord', { id: two.id, close: 'with ' + elsewhere.id }, at(8));
+  link(two.id, 'b', 9);
+  for (const [x, sha] of [[one, 'a'], [three, 'e'], [four, 'f']]) {
+    link(x.id, sha, 9);
+    runVerb(db, 'editRecord', { id: x.id, status: 'completed' }, at(10));
+  }
+  const status = (id) => db.prepare('SELECT status FROM records WHERE label = ?').get(id).status;
+  const covers = () => runVerb(db, 'coverage', { scope: line.id }, null).reviews.find((r) => r.id === review.id).covers.map((c) => c.id);
+  const view = () => t.trackView(db, { track: line.id });
+  runVerb(db, 'editRecord', { id: review.id, status: 'completed' }, at(11));
+  link(one.id, 'c', 12);
+  assert.equal(status(review.id), 'open', 'a commit after its cover reopens the review');
+  /* the reopen drops only the outdated cover: one task to review, and the planned review draws no padlock */
+  assert.deepEqual(covers(), [three.id, four.id]);
+  assert.deepEqual(view().review.uncovered.map((x) => x.id), [one.id]);
+  assert.equal(view().review.planned, review.id);
+  const plan = reviewPlan(graphOf([view()], Date.now(), viewLook()).g);
+  assert.equal(plan.count[review.id], 1);
+  assert.deepEqual(plan.lock, {});
+  /* a list narrowed while it is open survives its next completion, which adds the new work */
+  runVerb(db, 'reviewCovers', { review: review.id, tasks: [three.id] }, at(12));
+  runVerb(db, 'editRecord', { id: review.id, status: 'completed' }, at(13));
+  assert.deepEqual(covers(), [one.id, three.id]);
+  /* upkeep closes the task that closes with another, past editRecord */
+  runVerb(db, 'editRecord', { id: elsewhere.id, status: 'completed' }, at(14));
+  assert.equal(status(two.id), 'completed');
+  assert.equal(status(review.id), 'open', 'a task before it completing after it reopens it');
+  assert.match(db.prepare('SELECT body FROM notes WHERE record = (SELECT key FROM records WHERE label = ?) ORDER BY position DESC LIMIT 1').get(review.id).body, new RegExp(two.id));
+  runVerb(db, 'editRecord', { id: review.id, status: 'completed' }, at(15));
+  const late = make('A late fix');
+  link(late.id, 'd', 16);
+  runVerb(db, 'editRecord', { id: late.id, status: 'completed' }, at(16));
+  assert.throws(() => runVerb(db, 'finishTrack', { track: line.id }, at(17)), (e) => e.message.includes(late.id) && !e.message.includes(one.id));
+  const done = runVerb(db, 'finishTrack', { track: line.id, waive: 'a one-line fix' }, at(17));
+  assert.equal(done.state, 'done');
+  assert.match(lastLine(db, db.prepare('SELECT key FROM records WHERE label = ?').get(line.id).key).note, /waived: a one-line fix/);
+  /* a hotfix on a finished track reopens nothing there */
+  link(one.id, '9', 18);
+  assert.equal(status(review.id), 'completed');
 });

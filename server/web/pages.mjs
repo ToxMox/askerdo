@@ -1,7 +1,7 @@
 /* The board's web pages: the three views, written
    on the server as plain HTML, plus record pages, search, the open set and sign in.
    The drawn graph alone is painted by the page's script, which knows the box's width. */
-import { esc, farText, legendHtml, lineCounts, lineWords, mark, parkedWords, shortDate } from './draw.mjs';
+import { esc, farText, legendHtml, lineCounts, lineWords, mark, parkedWords, reviewPlan, shortDate } from './draw.mjs';
 import { shortTitle } from './data.mjs';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -248,7 +248,7 @@ export function workstreamPage(kit, m) {
       + (T.stalled ? ', <span class="amber">nothing moved for ' + T.days + ' days</span>' : '') + '</a></div>';
   });
   const graph = g.tracks.length && m.L.lines.length
-    ? '<div class="gbox" id="gbox" data-graph="' + esc(ws.id) + '"></div>' + legendHtml()
+    ? '<div class="gbox" id="gbox" data-graph="' + esc(ws.id) + '"></div>' + legendHtml(reviewPlan(g).marks)
     : '<p class="empty">' + (g.tracks.length ? 'Every line here is finished: nothing left to draw.' : 'No tracks in this workstream yet.') + '</p>';
   return bar + '<h1>' + esc(ws.name) + '</h1>'
     + '<p class="chain"><a class="link sky" href="/rulings?ws=' + encodeURIComponent(ws.id) + '">Rulings</a><a class="link sky" href="/activity?ws=' + encodeURIComponent(ws.id) + '">Activity</a></p>'
@@ -374,7 +374,10 @@ export function trackPage(kit, m) {
   const cp = T.path.map((id) => idLink(id) + (trackOf.has(id) && trackOf.get(id) !== tv.id ? ' <span class="dim">on ' + esc(trackOf.get(id)) + '</span>' : '')).join(' &rarr; ');
   const doneN = tv.done;
   // this line, its parents, its side lines and the lines it waits on or holds
-  const graph = L.lines.length ? '<div class="gbox" id="gbox" data-graph="' + esc(tv.id) + '"></div>' + legendHtml() : '';
+  // under the map, what the drawn review covered, each a link to its page
+  const covered = g.tasks.filter((t) => t.track === tv.id && t.review && t.kept).map((t) => '<div class="r">' + mark('reviewed') + '<span>' + idLink(t.id, 'id', t.key) + ' ' + esc(shortTitle(t.full || t.title))
+    + ' covered ' + ((t.covers || []).map((c) => idLink(c.id, 'id', c.key) + ' ' + esc(shortTitle(c.name))).join(', ') || 'nothing') + '</span></div>').join('');
+  const graph = L.lines.length ? '<div class="gbox" id="gbox" data-graph="' + esc(tv.id) + '"></div>' + covered + legendHtml(reviewPlan(g).marks) : '';
 
   return pick
     + '<div class="thead"><span class="id" style="font-size:15px">' + esc(tv.id) + '</span><h1 style="margin:0">' + esc(tv.name) + '</h1>' + stateChip(T) + '</div>'

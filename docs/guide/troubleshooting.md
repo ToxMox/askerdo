@@ -4,6 +4,18 @@ What to check when AskerDo stops answering the way it should: the board is offli
 
 The commands below use the launcher every PC on a board has, `node ~/.claude/askerdo/cli.mjs`. Setting up is covered in [Set up a board](board-setup.md) and [Add a PC](add-a-pc.md).
 
+## Start with `askerdo status`
+
+One command checks AskerDo on this PC and prints a line for each part: the store, the saved settings and the board join, the board, this PC's local server, the tray (on Windows) and whether this session runs a copy a plugin update replaced. Every problem comes with the one command or step that fixes it, the most telling one first.
+
+```sh
+node ~/.claude/askerdo/cli.mjs status
+```
+
+In the desktop app you rarely need to type it: while something is wrong, the band shows the first problem with its fix and the status row an amber monitor naming the part, and a press runs the fix where one command does it ([The band](daily-use.md#the-band)).
+
+When it says nothing is wrong and AskerDo still misbehaves, the sections below go further. `--json` gives the same readout as data.
+
 ## The board is offline
 
 **What you see.** The band and the Tracks tab say `Board offline: drawn from this PC's last copy`; a CLI read ends with `the board is offline: this read came from this PC's cache`; a write fails with `the board at http://<server>:17480 is unreachable (ECONNREFUSED)`.
@@ -137,7 +149,7 @@ Alerts on Windows go through the tray's popup. They pass four gates in order, an
    ```
 
    Open `http://askerdo.localhost:17435/<secret>/notifications`. The page shows the master switch, quiet hours, the pause, and each kind of alert with its switch and sound. Its test button sends a card that skips every gate, which tells a gate apart from a broken popup.
-3. **No tray icon.** The tray runs only while the local server runs. If you chose **Exit** in its menu, it stays away until the local server next starts (`~/.claude/askerdo/log` says `tray: the tray was exited by the person`): restart the local server (below). A log line `tray: no exe at <path>` means the plugin's `assets/askerdo-tray.exe` is missing; reinstall the plugin.
+3. **No tray icon.** The tray runs only while the local server runs. If you chose **Exit** in its menu, it stays away until the local server next starts (`~/.claude/askerdo/log` says `tray: the tray was exited by the person`): restart the local server (below). A log line `tray: no exe at <path>` means the plugin's `assets/askerdo-tray.exe` is missing, and `askerdo status` says the tray program is missing from this AskerDo copy: update AskerDo (`claude plugin update askerdo@askerdo`) and start a new session. The tray runs from a copy of that exe in `~/.claude/askerdo/board/tray/`, so a plugin remove or reinstall never meets a running exe in the plugin's folder.
 
 The settings live in `~/.claude/askerdo/board/notify.json`; `pausedUntil` is the pause. On macOS and Linux there is no tray and every alert is dropped with one log line (`notify: unavailable on this platform`).
 
@@ -153,6 +165,19 @@ A track is held by one session at a time. Resuming one that another session hold
 
 A holder that has done nothing on the track for 12 hours reads `quiet since <time>` on the shelf, and the shelf's resume for it is the take-over. Take over a live holder only when that session is gone or you mean to move the work: both sessions writing the same track's handoff is what the hold prevents.
 
+## A track will not finish: a review is due
+
+At the full review depth, `track finish` is refused while finished code on the track sits after its last completed review, or the track has no review at all; the refusal names the tasks. A completed review also reopens when a task it read gains a commit, so the tasks after it wait again.
+
+|Move|Command|What happens|
+|-|-|-|
+|Review it|a review task on the track (labelled `review`, or named "Review ..."), then complete it|It covers the unreviewed code tasks before it, and the finish goes ahead.|
+|See what waits|`askerdo coverage TR-12`|Each code task with the review that covers it, and why a review is due.|
+|A commit on the wrong task|`askerdo commit move <sha> --to T-n --reason "..."`|The commit counts for the task it belongs to.|
+|Finish anyway|`askerdo track finish TR-12 --waive "<reason>"`|The track finishes; the reason goes to its journal and the activity log.|
+
+`review.depth` at `light` (the default) never holds a finish; [Settings and rules](settings-and-rules.md#reviews) has the settings.
+
 ## A stuck local server
 
 Each PC's local server serves the CLI, the mod and the tray. Start it, or see why it will not start:
@@ -164,31 +189,23 @@ node ~/.claude/askerdo/cli.mjs board
 |It says|Meaning|Fix|
 |-|-|-|
 |`board running at ...`|It answers and runs this plugin version.|Nothing to fix here.|
-|`board started at ...` or `board replaced at ...`|It was down, or an older version was running, and a fresh one started: on Windows through the scheduled task, on macOS and Linux as a detached process.|Nothing to fix.|
+|`board started at ...` or `board replaced at ...`|It was down, or an older version was running, and a fresh one started: on Windows through the scheduled task, on macOS and Linux as a detached process. An older version that does not stop when asked is ended by its process id.|Nothing to fix.|
 |`port <n> is held by another process`|Another program listens on this PC's AskerDo port (in `~/.claude/askerdo/board/port`).|Stop that program. Or delete `~/.claude/askerdo/board/` so a new port and secret are picked; links minted before then stop working.|
 |`a live update holds the board until it finishes`|A plugin update is swapping files.|Wait; the hold lapses on its own.|
 |`the scheduled task "AskerDo board" could not be registered` or `could not be run`|`schtasks` refused; its own words follow.|Check the task: `schtasks /query /tn "AskerDo board"`. Run it by hand: `schtasks /run /tn "AskerDo board"`.|
 |`the server did not answer within 3000ms`|The task ran, but no server came up.|Most often Node is missing from the `PATH` a logon task sees: `where.exe node` should name the installer's `node.exe`, not a version manager's. Then `board` again.|
 
-**It answers but misbehaves** (the band stays stale, answers stop arriving): stop it through its own route, then start it again.
+**It answers but misbehaves** (the band stays stale, answers stop arriving): restart it.
 
 ```sh
-port=$(cat ~/.claude/askerdo/board/port)
-secret=$(cat ~/.claude/askerdo/board/secret)
-curl -s -X POST "http://127.0.0.1:$port/$secret/stop"
-node ~/.claude/askerdo/cli.mjs board
+node ~/.claude/askerdo/cli.mjs board --restart
 ```
 
-In PowerShell:
+It says `board restarted at ...`. The restart asks the running server to stop through its own route, which closes the tray and every stream first and stops a board this PC hosts with it; a server that does not stop within a few seconds is ended by the process id in `~/.claude/askerdo/board/local.json`, once that process is Node running `board-server.mjs`. Then a fresh one starts on the same port, so links keep working, and it starts the board again within a second. On Windows, ending the scheduled task (`schtasks /end`) stops nothing: the task only launches the server and is over at once. In a session a plugin update replaced, `board --restart` refuses with `this copy was replaced by an update`: start a new session, which runs the installed copy, and run it there.
 
-```powershell
-$port = (Get-Content ~/.claude/askerdo/board/port -Raw).Trim()
-$secret = (Get-Content ~/.claude/askerdo/board/secret -Raw).Trim()
-curl.exe -s -X POST "http://127.0.0.1:$port/$secret/stop"
-node ~/.claude/askerdo/cli.mjs board
-```
+**The tray is gone.** A tray closed with Exit comes back at the next session start, or at `board`; alerts raised before then are not shown.
 
-The stop closes the tray and every stream first, and stops a board this PC hosts with it. The next `board` (or the next session start, or the mod's next command) starts a fresh one on the same port, so links keep working, and that one starts the board again within a second.
+**The store folder was deleted.** A local server whose `~/.claude/askerdo` (or its `board/secret`) is gone stops within a second, tray included; the next session start or `board` starts one with a new secret, so links minted before then stop working.
 
 On macOS and Linux, `board` and the session start launch the local server as a detached process instead of a scheduled task; that path has no measured run.
 
@@ -197,7 +214,7 @@ On macOS and Linux, `board` and the session start launch the local server as a d
 |Log|Where|What writes it|Read it with|
 |-|-|-|-|
 |The PC's log|`~/.claude/askerdo/log`|The local server (online, offline, restored, tray and alert lines, and `board host:` lines for a board on this PC), the session-start ensure (`board ensure: ...`), the daily copy (`board backup: ...`), the notifier|Any text viewer; newest at the end|
-|The sync log|`sync.log` in the plugin's data folder (`~/.claude/plugins/data/askerdo-askerdo/` or its sibling holding `config.json`)|The session-start sync: the output style, the launcher, settings|Any text viewer|
+|The sync log|`sync.log` in this PC's folder `~/.claude/askerdo/pc/` (on a PC not yet moved there, the plugin's data folder `~/.claude/plugins/data/askerdo-askerdo/`, under `CLAUDE_CONFIG_DIR` when that is set, or its sibling holding `config.json`)|The session-start sync: the output style, the launcher, settings, and the line naming the move of this PC's files into `pc/`. A PC whose `config.json` is gone everywhere lost its board join (a marketplace remove deletes the plugin data folder; never remove the marketplace to update): mint a code on a PC on the board with `join-code --device <this PC's name>` and join again|Any text viewer|
 |Local call timings|`~/.claude/askerdo/board/timings-local.log`|The local server, per call|`node ~/.claude/askerdo/cli.mjs timings`, which also shows the board's timings and its last integrity check|
 |The tray's state|`~/.claude/askerdo/board/tray.json`|The local server, for each tray it starts|For diagnosis only|
 |A board on this PC: its output|`~/.claude/askerdo/board-host/board.log`|The board server the local server runs|Any text viewer; `node ~/.claude/askerdo/cli.mjs board` names it when the board does not answer|

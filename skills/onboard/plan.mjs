@@ -144,12 +144,14 @@ export function buildPlan(doc, choices, { readVersion, session } = {}) {
     const ws = wsOf(r);
     if (!ws) { pend(r, 'its workstream is left out'); continue; }
     made.push(r);
+    const t = f.track && keptIds.has(f.track) ? f.track : null;
+    /* an import's task says where it goes; a later layout places the ones on a track */
     add({ id: r.id, row: r.id, op: 'task create', args: ['task', 'create'], stdin: {
+      unplaced: t ? 'imported; this plan lays it on its track next' : 'imported from a list that put it on no track',
       name: clip(f.name || r.title, 200), description: (f.text || r.title) + '\n\n' + fromLine(r), ...(f.intent ? { intent: f.intent } : {}),
       workstream: ws, status: f.status === 'completed' ? 'completed' : f.status === 'dropped' ? 'dropped' : 'open', priority: f.priority || 'medium',
       labels: [label], refs: ['onboard:' + r.id], ...(r.date ? { created: r.date } : {}), ...bySession,
     } });
-    const t = f.track && keptIds.has(f.track) ? f.track : null;
     if (t) { if (!taskRefs.has(t)) taskRefs.set(t, []); taskRefs.get(t).push({ ref: ref(r.id), open: f.status !== 'completed' && f.status !== 'dropped' }); }
   }
 

@@ -571,6 +571,16 @@ test('there is no idle timer and no heartbeat: only /stop ends it', { timeout: 2
   assert.equal(await srv.closed, 0);
 });
 
+test('a server whose store folder is deleted shuts down', { timeout: 20000 }, async (t) => {
+  const sb = await mint();
+  const srv = start(t, sb, { ASKERDO_WATCH_MS: '100' });
+  await srv.line;
+  /* retried, as a delete by hand is: the starting server may still be writing a file */
+  rmSync(sb.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+  assert.equal(await srv.closed, 0);
+  assert.match(srv.stderr(), /gone/);
+});
+
 test('the secret ping answers 204 and names the version it serves', async (t) => {
   const sb = await mint();
   const srv = start(t, sb);
@@ -609,6 +619,10 @@ test('a second start on the identity port adopts the running instance', { timeou
   assert.equal(lines[0], 'http://askerdo.localhost:' + sb.port + '/' + sb.secret + '/');
   assert.match(lines[1], /adopted the instance already running on port /);
   assert.equal((await fetch(sb.base + '/')).status, 200, 'the first instance still serves');
+  /* an older build's start adopts a newer server rather than replacing it */
+  const older = start(t, sb, { ASKERDO_BOARD_VERSION: '0.0.1' });
+  assert.equal(await older.closed, 0);
+  assert.match(older.stdout(), /adopted/);
   assert.equal(first.proc.exitCode, null);
 });
 
@@ -667,6 +681,7 @@ test('a second SERVER start replaces its own stale build', { timeout: 20000 }, a
   const ping = await raw(sb.port, '/' + sb.secret + '/ping', { method: 'POST' });
   assert.equal(ping.status, 204);
   assert.equal(ping.headers['x-askerdo-board'], version);
+  assert.equal(ping.headers['x-askerdo-tray-state'], process.platform === 'win32' ? 'off' : 'down', 'the channel is off in a sandbox, so no tray');
   /* a REPLACEMENT is a new instance at the same address, which is exactly what
      the tray helper reaps against */
   assert.match(before.headers['x-askerdo-instance'], /^[0-9a-f]{16}$/);
@@ -735,6 +750,12 @@ test('a manifest edited under a running server does not move the version it repo
     assert.deepEqual(idle.verbs(), [], 'a replaced copy plans, registers and runs nothing');
     const still = await raw(sb.port, '/' + sb.secret + '/ping', { method: 'POST' });
     assert.equal(still.headers['x-askerdo-instance'], now.headers['x-askerdo-instance'], 'the newer board kept serving');
+    /* its board --restart is refused, so it never starts its own old server */
+    const refused = await ensureFromOld(sb.root, { run: idle.run, sid: idle.sid, home: () => sb.home, platform: 'linux', restart: true });
+    assert.equal(refused.status, 'refused');
+    assert.deepEqual(idle.verbs(), []);
+    const kept2 = await raw(sb.port, '/' + sb.secret + '/ping', { method: 'POST' });
+    assert.equal(kept2.headers['x-askerdo-instance'], now.headers['x-askerdo-instance'], 'the installed board still serves');
   });
 
 test('ensureBoardServer starts, adopts, and refuses', async (t) => {
@@ -766,6 +787,78 @@ test('ensureBoardServer starts, adopts, and refuses', async (t) => {
   assert.equal(foreign.port, held.port);
   assert.deepEqual(other.verbs(), [],
     'a stranger on the identity port is refused before anything is registered or run');
+});
+
+/* a stand-in local server on the identity port. `header` is the version it
+   names on the ping (none, as every server before 0.8.13 did), `stops` whether it
+   obeys /stop, and `hits` the secret routes it was posted. `later` is the version
+   it names after its first ping, as a server another session start just put there,
+   and that server refuses a stop naming another version. */
+function fakeServer(t, sb, { header, stops = true, later } = {}) {
+  const hits = [];
+  const srv = createServer((req, res) => {
+    hits.push(req.url.slice(sb.secret.length + 2));
+    if (req.url === '/' + sb.secret + '/ping') {
+      const named = later && hits.filter((h) => h === 'ping').length > 1 ? later : header;
+      res.writeHead(204, named ? { 'x-askerdo-board': named } : {});
+      return res.end();
+    }
+    const seen = req.headers['x-askerdo-if-version'];
+    if (later && req.url === '/' + sb.secret + '/stop' && seen && seen !== later) {
+      res.writeHead(409);
+      return res.end('{}');
+    }
+    if (stops && req.url === '/' + sb.secret + '/stop') res.on('finish', () => { srv.close(); srv.closeAllConnections(); });
+    res.writeHead(200);
+    res.end('{}');
+  });
+  t.after(() => { try { srv.close(); srv.closeAllConnections(); } catch {} });
+  return new Promise((r) => srv.listen(sb.port, '127.0.0.1', () => r({ srv, hits })));
+}
+
+test('an older server that names no version on the ping is replaced, and an adopt brings the tray back', async (t) => {
+  const sb = await mint();
+  const old = await fakeServer(t, sb);
+  let fresh = null;
+  const r = await ensureBoardServer(sb.root, {
+    platform: 'linux', waitMs: 1000, start: () => { fakeServer(t, sb, { header: version }).then((f) => { fresh = f; }); return { ok: true }; },
+  });
+  assert.equal(r.status, 'replaced', 'a 204 on the secret ping is ours whatever header it sends: ' + r.detail);
+  assert.ok(old.hits.includes('stop'));
+  const again = await ensureBoardServer(sb.root, { platform: 'linux', waitMs: 1000 });
+  assert.equal(again.status, 'running');
+  assert.ok(fresh.hits.includes('api/tray'), 'the adopt asks the server to bring a closed tray back');
+  /* board --restart takes the replace path with the version current */
+  const restarted = await ensureBoardServer(sb.root, {
+    platform: 'linux', waitMs: 1000, restart: true, start: () => { fakeServer(t, sb, { header: version }); return { ok: true }; },
+  });
+  assert.equal(restarted.status, 'restarted');
+  assert.ok(fresh.hits.includes('stop'));
+});
+
+test('a session start that finds the old server already replaced adopts the new one', async (t) => {
+  const sb = await mint();
+  const now = await fakeServer(t, sb, { later: version });
+  let started = 0;
+  const r = await ensureBoardServer(sb.root, { platform: 'linux', waitMs: 300, start: () => { started += 1; return { ok: true }; } });
+  assert.equal(r.status, 'running', r.detail);
+  assert.equal(started, 0, 'nothing else is started');
+  assert.ok(now.srv.listening, 'the server the other session start put there keeps running');
+});
+
+test('a server that ignores /stop is ended by the pid in local.json', async (t) => {
+  const sb = await mint();
+  const old = await fakeServer(t, sb, { stops: false });
+  writeFileSync(join(sb.root, 'board', 'local.json'), JSON.stringify({ board: null, pid: 4242 }));
+  const ended = [];
+  const r = await ensureBoardServer(sb.root, {
+    platform: 'linux', waitMs: 300,
+    endPid: (pid) => { ended.push(pid); old.srv.close(); old.srv.closeAllConnections(); return { ok: true }; },
+    start: () => { fakeServer(t, sb, { header: version }); return { ok: true }; },
+  });
+  assert.equal(r.status, 'replaced');
+  assert.deepEqual(ended, [4242]);
+  assert.match(readFileSync(join(sb.root, 'log'), 'utf8'), /ended by pid 4242/);
 });
 
 /* ---- the decision sequence, the document, and the refusals -------- */
@@ -1179,7 +1272,7 @@ test('a successful replace writes the register before the stop and runs the task
 test('nothing on the board path spawns a server any more', () => {
   const src = readFileSync(join(pluginRoot, 'lib', 'board-ensure.mjs'), 'utf8');
   const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  assert.ok(!code.includes('board-server'), 'the ensure still names the server script');
+  assert.ok(!/hooks[^\n]{0,8}board-server/.test(code), 'the ensure still names the server script by its path');
   assert.ok(!/[^A-Za-z]spawn\s*\(/.test(code), 'the ensure still spawns something itself');
   assert.ok(!code.includes('detached'), 'nothing here is detached any more: the task is');
   assert.ok(code.includes('spawnSync('), 'the one runner it does have is synchronous');
@@ -2765,7 +2858,7 @@ test('a board row reaches the stream as a line with its author, changes, sequenc
   assert.deepEqual(hello.activity, [], 'the hello carries no lines of its own');
 
   const ws = await verb('createRecord', { kind: 'workstream', name: 'work system build', description: 'One board.' }, { session: 'sess-a' });
-  const task = await verb('createRecord', { kind: 'task', name: 'counter rebuild', description: 'A step.', workstream: ws.id }, { session: 'sess-a' });
+  const task = await verb('createRecord', { kind: 'task', name: 'counter rebuild', description: 'A step.', workstream: ws.id, unplaced: 'not laid out yet' }, { session: 'sess-a' });
   await verb('editRecord', { kind: 'task', id: task.id, priority: 'high' }, { session: 'sess-a' });
   const line = await es.waitFor(() => es.of('change').flatMap((e) => e.activity)
     .find((l) => l.verb === 'edit' && l.id === task.id));
@@ -2794,7 +2887,7 @@ test('api/activity pages the board rows with their place, follows the board, and
   const board = await onBoard(t);
   const { verb } = board;
   const ws = await verb('createRecord', { kind: 'workstream', name: 'work system build', description: 'One board.', projects: ['C:/repos/my-app'] }, { session: 'sess-a' });
-  const task = await verb('createRecord', { kind: 'task', name: 'counter rebuild', description: 'A step.', workstream: ws.id }, { session: 'sess-a' });
+  const task = await verb('createRecord', { kind: 'task', name: 'counter rebuild', description: 'A step.', workstream: ws.id, unplaced: 'not laid out yet' }, { session: 'sess-a' });
   await verb('noteRecord', { id: task.id, text: 'a note the search can find' }, { session: 'sess-a' });
   const q = await verb('register', asked({ projectDir: 'C:/repos/other-app' }), { session: 'sess-a' });
   const sb = await mint();

@@ -69,7 +69,7 @@ The first prompt added the marketplace: its clone is `~/.claude/plugins/marketpl
 "${CLAUDE_CODE_EXECPATH:-claude}" plugin list
 ```
 
-`plugin list` shows `askerdo@askerdo` enabled. Later releases reach this PC with `plugin marketplace update askerdo`, then `plugin update askerdo@askerdo`, then a new session.
+`plugin list` shows `askerdo@askerdo` enabled. A later release reaches this PC with `plugin update askerdo@askerdo`, which fetches the marketplace first, then a new session. Never remove the marketplace to update: the remove uninstalls the plugin.
 
 ### 3. Start a new session
 
@@ -92,7 +92,7 @@ node "$HOME/.claude/askerdo/cli.mjs" join-code
 Configure saves the board address, this PC's own token, the hub queue and the options from the profile, and runs the sync again. Check the saved options without printing the token:
 
 ```sh
-node -e "const c=require(require('os').homedir()+'/.claude/plugins/data/askerdo-askerdo/config.json');console.log(c.name, c.queue, c.boardUrl, c.boardToken ? 'token saved' : 'no token')"
+node -e "const c=require(require('os').homedir()+'/.claude/askerdo/pc/config.json');console.log(c.queue, c.boardUrl, c.boardToken ? 'token saved' : 'no token')"
 ```
 
 ### 5. Check the board from here
@@ -124,7 +124,7 @@ The run teaches the card: record it clean, or deviated with a note whose first s
 ```sh
 node ~/.claude/askerdo/cli.mjs proc ran join-a-pc clean --note "<notes>"
 node ~/.claude/askerdo/cli.mjs proc ran join-a-pc deviated --note "<step-that-differed-and-how>. <notes>"
-echo '{"name":"<one-line-fault>","workstream":"<ws-n>","labels":["field-bug"],"description":"<what-happened-the-cause-a-fix>"}' | node ~/.claude/askerdo/cli.mjs task create
+echo '{"name":"<one-line-fault>","workstream":"<ws-n>","labels":["field-bug"],"description":"<what-happened-the-cause-a-fix>"}' | node ~/.claude/askerdo/cli.mjs task create --unplaced "found by a join-a-pc run"
 ```
 
 ## Verify

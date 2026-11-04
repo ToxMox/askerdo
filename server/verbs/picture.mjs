@@ -1,6 +1,7 @@
 /* The board picture: the proposal files onto a
    board in one transaction, refused whole with nothing written. A dry run rolls back; a rerun
    of corrected files writes only what changed, undoing the picture's own earlier writes. */
+import { afterTask } from './coverage.mjs';
 import { tx } from '../db.mjs';
 import { actorOf, addNote, guardHeadings, isKey, labelOf } from '../records.mjs';
 import {
@@ -420,6 +421,7 @@ function writePicture(db, pic, actor) {
     const diff = writeFront(db, rec, change, TASK_KEYS);
     logLine(db, { at: c.at, verb: want === 'dropped' ? 'drop' : 'edit', kind: 'task', rec: headOf(rec), changes: diff, by: c.by, pc: c.pc, note: CAUSE + (t.evidence || t.verdict) });
     if (t.evidence) addNote(db, rec.key, { at: c.at, actor: c.by, body: guardHeadings('Board picture, ' + t.verdict + ': ' + t.evidence) });
+    if (want === 'completed') afterTask(db, rec.key, { completed: true }, { by: c.by, pc: c.pc, now: c.date });
     if (want !== 'open') wakeLinked(db, { ...rec.fields, key: rec.key }, want, c);
     add(want === 'open' ? 'reopen' : t.verdict, wsOf(t, rec), lineName(t), id + (want === 'open' ? ' back to open from ' + st : ' ' + want));
   }

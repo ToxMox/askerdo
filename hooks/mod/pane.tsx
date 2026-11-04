@@ -3,7 +3,7 @@
  * sessions hold and the parked ones under a fold. The facts are the track tooltip's rows
  * (status.tsx factGroup); drawn from mod-core tracksView alone; index.ts owns the writes. */
 import { cardHref, cellWidth, clampWords, statusPicture } from '../../lib/mod-core.mjs'
-import { factGroup, factPart, linkOver, pressFace, pressOver, tileLook } from './status.tsx'
+import { factGroup, factPart, linkLine, linkOver, pressFace, pressOver, tileLook } from './status.tsx'
 import { FOLD_CELLS, fitWords, foldHead, paneCells } from './fold.tsx'
 
 export type PaneActions = {
@@ -56,8 +56,17 @@ export function paneTree(els: any, m: any, view: PaneView, act: PaneActions, col
    all; the offline line while the board is away. */
 function bottomRows(d: Draw, b: any): any {
   const { Box, Text } = d.els
-  const lines: any[] = [<Box key="tracks-lead"><Text weight="semibold" wrap="wrap">{b.lead}</Text></Box>]
-  if (b.parts.length) {
+  /* the held name and the waiting tracks open their pages */
+  const lead = b.leadParts ? linkLine(d.els, b.leadParts.map((p: any) => ({ ...p, weight: 'semibold' })), 'tracks-lead', d.desk, false) : null
+  const lines: any[] = [lead || <Box key="tracks-lead"><Text weight="semibold" wrap="wrap">{b.lead}</Text></Box>]
+  const all: any[] = []
+  b.parts.forEach((p: any, i: number) => {
+    if (i) all.push({ text: MID, tone: 'dim' })
+    all.push(...(p.pieces ? p.pieces.map((x: any) => ({ ...x, tone: p.tone })) : [p]))
+  })
+  const counts = all.length ? linkLine(d.els, all, 'tracks-counts', d.desk, false) : null
+  if (counts) lines.push(counts)
+  else if (b.parts.length) {
     const parts: any[] = []
     b.parts.forEach((p: any, i: number) => {
       if (i) parts.push(<Text dimColor>{MID}</Text>)
@@ -90,9 +99,42 @@ function heldCard(d: Draw, t: any): any {
     : [group(g1, 0), group(g2, 1), group(g3, 2)]
   return (
     <Box key={'trk-held-' + t.id} flexDirection="column" rowGap={0.5} borderStyle="round" borderDimColor paddingX={1}>
-      {[head(d, t, inner - 3), ...body]}
+      {[head(d, t, inner - 3), ...body, foundRow(d, t)].filter(Boolean)}
     </Box>
   )
+}
+
+/* what the track's arc found, the unplaced first in amber, and the verb that lists
+   each with the command that moves it; nothing when the arc found nothing */
+function foundRow(d: Draw, t: any): any {
+  const f = t.found
+  if (!f || !(f.total > 0)) return null
+  const { Box, Text } = d.els
+  const ids: string[] = Array.isArray(f.unplacedIds) ? f.unplacedIds : []
+  const urls: string[] = Array.isArray(f.unplacedUrls) ? f.unplacedUrls : []
+  const parts: any[] = [{ text: 'Found this arc: ', tone: 'dim' }]
+  /* each unplaced id opens its page */
+  if (f.unplaced) {
+    const shown = ids.slice(0, 4)
+    parts.push({ text: f.unplaced + ' unplaced' + (shown.length ? ' (' : ''), tone: 'amber' })
+    shown.forEach((id, i) => parts.push({ text: id, tone: 'amber', href: urls[i] || undefined }, { text: i < shown.length - 1 ? ', ' : (ids.length > 4 ? ', ...' : '') + ')', tone: 'amber' }))
+    parts.push({ text: MID, tone: 'dim' })
+  }
+  parts.push({ text: f.elsewhere + ' on other tracks' + MID + f.here + ' here' + MID + 'askerdo track found ' + t.id, tone: 'dim' })
+  const line = linkLine(d.els, parts, 'trk-found-line-' + t.id, d.desk)
+  return <Box key={'trk-found-' + t.id} paddingLeft={d.desk ? LEAD : 2}>{line || <Text wrap="wrap">{parts.map((p) => factPart(d.els, p))}</Text>}</Box>
+}
+
+/* a shut section's names as links, as many whole as fit `room`, then "and N more" */
+function shutNames(d: Draw, tracks: any[], room: number): any {
+  const w = (s: string) => (d.desk ? paneCells(s) : cellWidth(s))
+  const more = (n: number) => (n ? ' and ' + n + ' more' : '')
+  let k = tracks.length
+  const size = (n: number) => w(tracks.slice(0, n).map((t: any) => t.name).join(', ') + more(tracks.length - n))
+  while (k > 1 && size(k) > room) k--
+  const parts: any[] = tracks.slice(0, k).flatMap((t: any, i: number) => [{ text: t.name, tone: 'dim', href: t.url || undefined }, ...(i < k - 1 ? [{ text: ', ', tone: 'dim' }] : [])])
+  if (k < tracks.length) parts.push({ text: more(tracks.length - k), tone: 'dim' })
+  return linkLine(d.els, parts, 'parked-names-line', d.desk, false)
 }
 
 /* A section: its heading the fold's press, the count whole and a note or, shut, the names cut
@@ -106,7 +148,10 @@ function section(d: Draw, key: string, title: string, tracks: any[], open: boole
   const room = d.desk ? d.cols - FOLD_CELLS - paneCells(title, 600) - paneCells(count) - 2 : d.cols - cellWidth(title) - cellWidth(String(tracks.length)) - 10
   const rest = [<Box key={'sect-count-' + key} flexShrink={0}><Text dimColor>{count}</Text></Box>]
   const cut = !after || room <= 0 ? after : d.desk ? fitWords(after, room) : clampWords(after, letters(room), 1)
-  if (after) rest.push(<Box key={parked ? 'parked-names' : 'sect-note-' + key} flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{cut}</Text></Box>)
+  /* shut, the whole names that fit open their pages, the rest counted; drawn after the fold's press, so they take the pointer */
+  const names = !open && named && room > 0 && tracks.some((t: any) => t.url) ? shutNames(d, tracks, room) : null
+  if (names) rest.push(<Box key="parked-names" flexShrink={1} minWidth={0}>{names}{d.desk ? <Box position="absolute" top={0} left={0} /> : null}</Box>)
+  else if (after) rest.push(<Box key={parked ? 'parked-names' : 'sect-note-' + key} flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{cut}</Text></Box>)
   const head = foldHead(d.els, { key: parked ? 'parked-row' : 'sect-head-' + key, press: parked ? 'parked-fold' : 'fold-' + key, open, toggle: () => d.act.fold(key),
     desk: d.desk, cols: d.cols, title: <Text weight="semibold">{title}</Text>, rest })
   return (
@@ -139,6 +184,8 @@ function tile(d: Draw, t: any, tileCols: number, i: number): any {
   const { Box } = d.els
   const room = tileCols - 5
   const parts: any[] = [head(d, t, room), factGroup(d.els, fitGroup(t.groups[0] || [], room, d.cols >= WIDE), 'tf-' + t.id + '-', 0, factDraw(d))]
+  const found = foundRow(d, t)
+  if (found) parts.push(found)
   if (t.press) parts.push(pressRow(d, t))
   const look = d.desk ? { ...tileLook(false, false), paddingX: 1 } : {}
   return <Box key={'trk-tile-' + t.id} flexDirection="column" rowGap={0.3} {...look}>{parts}</Box>
@@ -210,7 +257,8 @@ function factDraw(d: Draw): any {
     lead: (p: any, key: string) => leadOf(d, p, key),
     line: (l: any[], key: string) => {
       const q = l.find((p) => p.ask)
-      if (!q) return null
+      /* a name opens its page (status.tsx linkLine) */
+      if (!q) return linkLine(d.els, l, 'trk-go-' + key, d.desk)
       const all = l.filter((p) => p.text)
       const rest = all.filter((p) => p !== q)
       if (d.desk) {
@@ -237,6 +285,7 @@ function fitGroup(g: any[], room: number, wide: boolean): any[] {
   return g.map((r) => ({
     ...r,
     lines: r.lines.map((l: any[]) => {
+      if (l.some((p) => p.pack)) return packLine(l, room, wide)
       let before = ''
       return l.map((p) => {
         const rows = wide ? p.clampWide || p.clamp : p.clamp
@@ -251,6 +300,30 @@ function fitGroup(g: any[], room: number, wide: boolean): any[] {
       })
     }),
   }))
+}
+
+/* a line of linked names (`pack` rows, `packWide` from 80 cells) wraps whole names, each cut
+   to one row; the names past its rows join the counted rest, "and N more" (`more`) */
+function packLine(l: any[], room: number, wide: boolean): any[] {
+  const w = letters(room)
+  const rows = Math.max(1, ...l.map((p) => (wide ? p.packWide || p.pack : p.pack) || 0))
+  const lead = l.filter((p) => !p.pack && !p.more)
+  /* the separator after a name stays whole when the name is cut */
+  const names = l.filter((p) => p.pack).map((p) => {
+    const sep = (/[;,]?\s*$/.exec(p.text) as RegExpExecArray)[0]
+    return { ...p, text: clampWords(p.text.slice(0, p.text.length - sep.length), w - sep.length, 1) + sep }
+  })
+  const counted = l.reduce((n, p) => n + (Number(p.more) || 0), 0)
+  const fits = (ps: any[]) => {
+    let row = 1, x = 0
+    for (const p of ps) { const n = String(p.text).length; if (x && x + n > w) { row++; x = 0 } x += n }
+    return row <= rows
+  }
+  for (let k = names.length; ; k--) {
+    const left = names.length - k + counted
+    const out = [...lead, ...names.slice(0, k), ...(left ? [{ text: 'and ' + left + ' more', more: left }] : [])]
+    if (k <= Math.min(1, names.length) || fits(out)) return out
+  }
 }
 
 /* Before the first read (a hot reload lost the memory). */

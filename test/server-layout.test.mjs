@@ -117,8 +117,23 @@ test('a side line with no junction task names its parent line; the counts split 
     const at = new RegExp('data-task="' + id + '"><title>[^<]*</title><circle cx="([\\d.]+)" cy="([\\d.]+)"').exec(svg).slice(1).map(Number);
     return [...new Set([...svg.matchAll(/<path d="([^"]+)" fill="none"/g)].map((m) => m[1]).filter((d) => { const e = endOf(d); return Math.abs(e[0] - at[0]) < 0.5 && Math.abs(e[1] - at[1]) < 0.5; }))];
   };
-  assert.deepEqual([into('c').length, into('d').length], [4, 3], 'one path for each wait into c and into d');
+  const from = (id, svg = whole) => {
+    const at = new RegExp('data-task="' + id + '"><title>[^<]*</title><circle cx="([\\d.]+)" cy="([\\d.]+)"').exec(svg).slice(1).map(Number);
+    return [...svg.matchAll(/<path d="M([\d.]+) ([\d.]+)/g)].filter((m) => Math.abs(m[1] - at[0]) < 0.5 && Math.abs(m[2] - at[1]) < 0.5);
+  };
+  assert.ok([...'efghi'].every((id) => from(id).length) && into('c').length && into('d').length, 'each wait into c and d leaves its station as a line');
   assert.ok(!/also after/.test(whole), 'no wait left as words');
+  /* the release waited on 13 running tasks; every one joins one trunk into it, the critical one white on it */
+  const fixes = Array.from({ length: 13 }, (_, i) => 'f' + i);
+  const manyFixes = [tv('line', 'Updates', fixes.map((id) => ({ ...task(id, false), status: 'in_progress', agent: 'lane' })).concat([task('r', false), task('o', false)]),
+    { critical: { length: 3, path: ['f9', 'r', 'o'] }, now: fixes.map((id) => ({ id })), edges: fixes.map((id) => ({ task: 'r', on: id })).concat([{ task: 'o', on: 'r' }]) })];
+  const W = graphOf(manyFixes, Date.now(), viewLook()), WL = layoutGraph(layoutInput(manyFixes));
+  for (const view of [431, 900]) {
+    const fan = drawGraph(WL, W.D, W.g, SKIN_PANE, { view });
+    // the one on the station's own row runs straight in; the others turn at the trunk
+    const turns = new Set(fixes.flatMap((id) => from(id, fan).map((m) => (/Q([\d.]+) /.exec(fan.slice(m.index, fan.indexOf('"', m.index + 9))) || [])[1]).filter(Boolean)));
+    assert.ok(!/also after/.test(fan) && fixes.every((id) => from(id, fan).length) && turns.size === 1, view + ': every wait drawn, all turning onto one trunk at ' + [...turns]);
+  }
   /* in the pane at 438 px the far waits into d meet the trunk past where j's branch has left it, so neither reads as feeding j */
   const pane = drawGraph(RL, R.D, R.g, SKIN_PANE, { view: 431 });
   const curve = /H([\d.]+)C[\d.]+ [\d.]+ [\d.]+ [\d.]+ ([\d.]+) /.exec(into('j', pane).find((d) => d.includes('C'))).slice(1).map(Number);
@@ -127,4 +142,64 @@ test('a side line with no junction task names its parent line; the counts split 
   assert.ok(joins.length === 2 && joins.every((x) => x >= curve[0] + 0.75 * (curve[1] - curve[0])), 'joins ' + joins + ' past the branch ' + curve);
   const strips = drawFit(RL, R.D, R.g, SKIN_PANE, { view: 250 });
   assert.ok((strips.match(/<svg /g) || []).length > 1 && /r="3.4"/.test(strips) && !/also after/.test(strips), 'in strips the far waits meet by ports');
+});
+
+/* seeded random tracks at every pane and web width draw no line through a station or its words.
+   A wait whose every route needs a gap another line already holds past full labels (one lane fits there) keeps
+   its words, naming a real wait of that station */
+test('random tracks draw no line through a station or its words; a wait with no free lane keeps its words', async () => {
+  const { paneMeasure: measure } = await import('../lib/mod-core.mjs');
+  const { SKIN_NARROW, viewCols } = await import('../server/web/draw.mjs');
+  const rng = (seed) => () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  // a track: lanes of work, now and then a wait on another lane, a fan-out and a fan-in
+  const track = (seed) => {
+    const r = rng(seed), n = 6 + Math.floor(r() * 15), deps = Array.from({ length: n }, () => new Set()), ends = [];
+    for (let i = 0; i < n; i++) {
+      const roll = r();
+      if (i && roll < 0.12 && ends.length > 2) { ends.sort(() => r() - 0.5).slice(0, 3 + Math.floor(r() * 8)).forEach((e) => deps[i].add(e)); ends.length = 0; ends.push(i); continue; }
+      if (i && roll < 0.22) { const a = Math.floor(r() * i); for (let j = 3 + Math.floor(r() * 5); j > 0 && i < n; j--, i++) { deps[i].add(a); ends.push(i); } i--; continue; }
+      if (i && ends.length && roll < 0.75) { const e = Math.floor(r() * ends.length); deps[i].add(ends[e]); ends[e] = i; } else ends.push(i);
+      if (i > 2 && r() < 0.25) deps[i].add(Math.floor(r() * (i - 1)));
+    }
+    const memo = {}, chain = (i) => memo[i] || (memo[i] = [...deps[i]].reduce((b, d) => (chain(d).length >= b.length ? chain(d) : b), []).concat(['t' + i]));
+    const path = deps.map((_, i) => chain(i)).reduce((b, c) => (c.length > b.length ? c : b), []);
+    const tasks = deps.map((d, i) => ({ id: 't' + i, key: 't' + i, name: 'Task t' + i + ' word'.repeat(Math.floor(r() * 9)), status: !d.size && r() < 0.3 ? 'in_progress' : 'open', ready: !d.size, agent: 'lane' }));
+    return [{ id: 'line', key: 'line', name: 'Random ' + seed, state: 'active', done: 0, holder: { session: 's', pc: 'pc' }, critical: { length: path.length, path },
+      tasks, now: tasks.filter((t) => t.status === 'in_progress').map((t) => ({ id: t.id })), edges: deps.flatMap((d, i) => [...d].map((on) => ({ task: 't' + i, on: 't' + on }))) }];
+  };
+  // points every 2 px or so along a path
+  const points = (d) => {
+    const out = []; let x = 0, y = 0;
+    for (const [, c, a] of d.matchAll(/([MHVQC])([^MHVQC]*)/g)) {
+      const n = a.trim().split(/[ ,]+/).map(Number), x0 = x, y0 = y;
+      if (c === 'M') { [x, y] = n; continue; }
+      const end = c === 'H' ? [n[0], y] : c === 'V' ? [x, n[0]] : n.slice(-2);
+      const at = c === 'Q' ? (t) => [0, 1].map((k) => (1 - t) ** 2 * [x0, y0][k] + 2 * (1 - t) * t * n[k] + t * t * n[2 + k])
+        : c === 'C' ? (t) => [0, 1].map((k) => (1 - t) ** 3 * [x0, y0][k] + 3 * (1 - t) ** 2 * t * n[k] + 3 * (1 - t) * t * t * n[2 + k] + t ** 3 * n[4 + k])
+          : (t) => [x0 + (end[0] - x0) * t, y0 + (end[1] - y0) * t];
+      for (let k = 1, m = Math.ceil(Math.hypot(end[0] - x0, end[1] - y0) / 2) + 1; k <= m; k++) out.push(at(k / m));
+      [x, y] = end;
+    }
+    return out;
+  };
+  for (let seed = 1; seed <= 30; seed++) {
+    const views = track(seed), { g, D } = graphOf(views, 0, viewLook()), L = layoutGraph(layoutInput(views));
+    for (const [S, view] of [[SKIN_PANE, 236.7], [SKIN_PANE, 431.1], [SKIN_PANE, 896], [SKIN_PANE, 1394.7], [SKIN_NARROW, 328], [SKIN_NARROW, 628], [SKIN_WEB, 868]]) {
+      const P = drawGraph(L, D, g, S, { view, measure, parts: true, strip: viewCols(S, L.cols, view) || undefined });
+      const where = seed + ' at ' + view;
+      for (const d of new Set([...P.body.matchAll(/<path d="([^"]+)" fill="none"/g)].map((m) => m[1]))) {
+        const pts = points(d), ends = [pts[0], pts[pts.length - 1]];
+        for (const b of P.boxes) {
+          // the words' glyphs, 3 px in from the box the router keeps clear
+          const pad = b.ring ? 1 : 8, inside = (p) => p[0] > b.x0 + pad && p[0] < b.x1 - pad && p[1] > b.y0 + (b.ring ? 1 : 7) && p[1] < b.y1 - 3;
+          if (b.ring && ends.some(inside)) continue;
+          assert.ok(!pts.some(inside), where + ': ' + d + ' crosses ' + (b.ring ? 'the ring' : 'the words') + ' of ' + b.id);
+        }
+      }
+      for (const m of P.body.matchAll(/data-task="([^"]+)"><title>[^<]*<\/title>([\s\S]*?)<\/g>/g)) {
+        const t = m[2].replace(/<[^>]+>/g, '|'), i = t.indexOf('also after ');
+        if (i >= 0) for (const n of t.slice(i).split('|').slice(0, 2).join(' ').match(/t\d+/g)) assert.ok(L.links.some((lk) => lk.from === n && lk.to === m[1]), where + ': ' + m[1] + ' names ' + n);
+      }
+    }
+  }
 });

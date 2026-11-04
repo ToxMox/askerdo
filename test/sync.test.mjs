@@ -1,6 +1,7 @@
 /* Functional tests for the carrier sync, run against a sandboxed fake home
  * directory (HOME/USERPROFILE plus CLAUDE_PLUGIN_DATA all point into temp
- * dirs), so the real ~/.claude is never touched. */
+ * dirs), so the real ~/.claude is never touched. The config lives in the
+ * home's askerdo/pc/. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
@@ -22,20 +23,24 @@ function sandbox(cfg) {
   const home = tempDir('ttd-home-');
   // The prefix matters: dataDir() only honors CLAUDE_PLUGIN_DATA when its
   // basename starts with the plugin name.
-  const data = tempDir('askerdo-data-');
+  const plugin = tempDir('askerdo-data-');
+  const data = join(home, '.claude', 'askerdo', 'pc');
   mkdirSync(join(home, '.claude'), { recursive: true });
-  if (cfg) writeFileSync(join(data, 'config.json'), JSON.stringify(cfg));
+  if (cfg) {
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(data, 'config.json'), JSON.stringify(cfg));
+  }
   const mdPath = join(home, '.claude', 'CLAUDE.md');
   const stylePath = join(home, '.claude', 'output-styles', 'askerdo.md');
   const settingsPath = join(home, '.claude', 'settings.json');
   return {
-    home, data, mdPath, stylePath, settingsPath,
+    home, data, plugin, mdPath, stylePath, settingsPath,
     md: () => readFileSync(mdPath, 'utf8'),
     style: () => readFileSync(stylePath, 'utf8'),
     settings: () => JSON.parse(readFileSync(settingsPath, 'utf8')),
     log: () => readFileSync(join(data, 'sync.log'), 'utf8'),
     run: (...flags) => execFileSync(process.execPath, [syncScript, ...flags], {
-      env: { ...childEnv(), HOME: home, USERPROFILE: home, CLAUDE_PLUGIN_DATA: data },
+      env: { ...childEnv(), HOME: home, USERPROFILE: home, CLAUDE_PLUGIN_DATA: plugin },
       encoding: 'utf8',
     }),
   };
@@ -193,7 +198,7 @@ test('no config nudges configure', () => {
   assert.ok(out.includes('installed but not configured'), out);
   assert.ok(out.includes('/askerdo:configure'), out);
   assert.equal(sb.md(), '# Mine\n');
-  assert.deepEqual(readdirSync(sb.data), [], 'an unconfigured run leaves no trace');
+  assert.deepEqual([readdirSync(sb.plugin), existsSync(sb.data)], [[], false], 'an unconfigured run leaves no trace');
 });
 
 test('an unconfigured run never creates the data directory', () => {
@@ -209,16 +214,40 @@ test('an unconfigured run never creates the data directory', () => {
   assert.equal(existsSync(ghost), false, 'the ghost dir must not be seeded');
 });
 
-test('a config in a sibling askerdo data dir is found when the given dir is empty', () => {
+test('the old plugin data dir moves into pc/ whole and stays as it was; an older session\'s later save there is taken', () => {
   const sb = sandbox(null);
+  /* a sibling of the dir the harness names, as the harness names it inconsistently */
   const sibling = join(sb.home, '.claude', 'plugins', 'data', 'askerdo-askerdo');
-  mkdirSync(sibling, { recursive: true });
-  writeFileSync(join(sibling, 'config.json'), JSON.stringify({ name: 'Probe' }));
+  mkdirSync(join(sibling, 'kept'), { recursive: true });
+  writeFileSync(join(sibling, 'config.json'), JSON.stringify({ name: 'Probe', weather: false }));
+  writeFileSync(join(sibling, 'kept', 'TR-1.md'), 'kept\n');
   const out = sb.run();
-  assert.equal(sb.style(), expectedStyle({ name: 'Probe' }));
-  assert.ok(!out.includes('no saved config'), out);
-  assert.equal(readdirSync(sb.data).length, 0);
-  assert.ok(existsSync(join(sibling, 'sync.log')));
+  assert.ok(!out.includes('not configured'), out);
+  assert.equal(sb.style(), expectedStyle({ weather: false }));
+  assert.equal(readFileSync(join(sb.data, 'kept', 'TR-1.md'), 'utf8'), 'kept\n');
+  assert.deepEqual(readdirSync(sibling).sort(), ['config.json', 'kept'], 'the old dir is untouched');
+  assert.equal(readdirSync(sb.plugin).length, 0);
+  /* this PC changes fold in pc/, then a session on an older copy saves weather in the old dir */
+  const pcFile = join(sb.data, 'config.json');
+  writeFileSync(pcFile, JSON.stringify({ ...JSON.parse(readFileSync(pcFile, 'utf8')), fold: false }));
+  writeFileSync(join(sibling, 'config.json'), JSON.stringify({ name: 'Probe', weather: true }));
+  sb.run();
+  assert.equal(sb.style(), expectedStyle({ weather: true, fold: false }));
+  /* taken once: pc/ wins again after */
+  writeFileSync(pcFile, JSON.stringify({ ...JSON.parse(readFileSync(pcFile, 'utf8')), weather: false }));
+  sb.run();
+  assert.equal(sb.style(), expectedStyle({ weather: false, fold: false }));
+  /* a marketplace remove and add leaves the app's switch off; the saved on puts it back */
+  const known = join(sb.home, '.claude', 'plugins', 'known_marketplaces.json');
+  writeFileSync(known, JSON.stringify({ askerdo: { installLocation: 'x' } }));
+  writeFileSync(pcFile, JSON.stringify({ ...JSON.parse(readFileSync(pcFile, 'utf8')), pluginUpdates: 'on' }));
+  sb.run();
+  assert.equal(JSON.parse(readFileSync(known, 'utf8')).askerdo.autoUpdate, true);
+  /* an off the person set in /plugin stays off and becomes the saved answer */
+  writeFileSync(known, JSON.stringify({ askerdo: { installLocation: 'x', autoUpdate: false } }));
+  sb.run();
+  assert.equal(JSON.parse(readFileSync(known, 'utf8')).askerdo.autoUpdate, false);
+  assert.equal(JSON.parse(readFileSync(pcFile, 'utf8')).pluginUpdates, 'off');
 });
 
 test('a leaked foreign CLAUDE_PLUGIN_DATA is ignored in favor of the fallback', () => {
@@ -233,7 +262,7 @@ test('a leaked foreign CLAUDE_PLUGIN_DATA is ignored in favor of the fallback', 
   });
   assert.equal(sb.style(), expectedStyle({ name: 'Probe' }));
   assert.equal(readdirSync(decoy).length, 0);
-  assert.ok(existsSync(join(fallback, 'sync.log')));
+  assert.ok(existsSync(join(sb.data, 'config.json')));
 });
 
 test('--chat-prefs prints and records the export', () => {

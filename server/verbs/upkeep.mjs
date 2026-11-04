@@ -11,6 +11,7 @@ import { NEWEST_FIRST, holderPlain, inboxMoved, quietHours, quietSince, stallDay
 import { atWords } from '../web/feed.mjs';
 import { waitingOf } from '../handoff-text.mjs';
 import { overrideCalls } from './override.mjs';
+import { afterTask, trackReview } from './coverage.mjs';
 
 export const BY = 'board:upkeep';
 const SETTING = 'upkeep';
@@ -159,6 +160,8 @@ function closeOne(db, t, ctx, cause) {
   if (ENDED_TASK.includes(t.fields.status) || sideOf(db, t.key)) return;
   const diff = writeFront(db, t, { status: 'completed', closed: ctx.at, inHand: undefined, inHandSince: undefined }, TASK_KEYS);
   logLine(db, { at: ctx.at, verb: 'edit', kind: 'task', rec: headOf(t), changes: diff, by: BY, pc: ctx.pc, note: 'closed with ' + cause });
+  /* the shared check, as every completion runs it */
+  afterTask(db, t.key, { completed: true }, { by: BY, pc: ctx.pc, now: ctx.date });
   wakeLinked(db, { ...t.fields, key: t.key }, 'completed', { at: ctx.at, by: BY, pc: ctx.pc });
 }
 
@@ -371,6 +374,21 @@ function trackRow(db, t, nowMs) {
   };
 }
 
+/* a track whose unreviewed finished code reached review.tasks, at light
+   and full; its press opens the Tracks tab at the track (`pane`, the mod's), else its page. */
+function reviewRow(db, t) {
+  const r = trackReview(db, t.key);
+  if (!r || !r.due) return null;
+  const n = r.uncovered.length;
+  const ids = r.uncovered.slice(0, 8).map((u) => u.id).join(', ') + (n > 8 ? ' and ' + (n - 8) + ' more' : '');
+  return {
+    kind: 'review', record: t.key, id: t.fields.id, name: t.fields.name, since: r.since,
+    text: 'Review due on ' + t.fields.id + ' ' + t.fields.name + ': ' + n + ' finished code tasks wait for a review',
+    why: ids + ' finished with ' + r.lines + ' counted lines no review read, and a review is due at ' + r.size + (r.locked ? '; the track finishes only after one' : ''),
+    presses: [{ label: 'Open the track', verb: null, input: null, url: WEB.record(t.fields.id), pane: 'tracks', does: 'opens ' + t.fields.id + ' in the Tracks tab' }],
+  };
+}
+
 function callsOf(db, scope, nowMs, session) {
   const rows = lookRows(db, scope, session);
   const wsKeys = scope ? [...scope.ws] : db.stmt("SELECT key FROM records WHERE kind = 'workstream' AND status = 'open'").all().map((r) => r.key);
@@ -387,6 +405,8 @@ function callsOf(db, scope, nowMs, session) {
     if (!t || t.fields.status !== 'open') continue;
     const row = trackRow(db, t, nowMs);
     if (row && t.fields.kept !== row.since) rows.push(row);
+    const due = reviewRow(db, t);
+    if (due) rows.push(due);
   }
   return rows;
 }

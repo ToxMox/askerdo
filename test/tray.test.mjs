@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import {
   TRAY_ATTACH_WAIT_MS, TRAY_EXE, TRAY_EXIT_GONE,
   TRAY_RESTART_MIN_MS, TRAY_STOP_MS,
-  createTray, trayArgs, trayExePath, trayRecordPath,
+  createTray, trayArgs, trayExePath, trayRecordPath, trayRunCopy,
 } from '../lib/tray.mjs';
 import { pluginRoot } from '../lib/node-helpers.mjs';
 import { pauseLabel, pauseUntil } from '../lib/notify.mjs';
@@ -306,6 +306,23 @@ test('the exe defaults to the committed binary beside the six faces', () => {
   assert.equal(t.exe, join(pluginRoot, 'assets', TRAY_EXE));
 });
 
+/* a plugin reinstall's delete stops at a running exe, so the tray runs from the store */
+test('the tray runs from a copy in the store, one folder per build, and older ones go', () => {
+  const src = join(tempDir('nd-tray-exe-'), TRAY_EXE);
+  writeFileSync(src, 'build one');
+  writeFileSync(join(src, '..', 'app.ico'), 'ico');
+  const root = tempDir('nd-tray-');
+  const first = trayRunCopy(root, src);
+  assert.ok(first.startsWith(join(root, 'board', 'tray')), first);
+  assert.equal(readFileSync(first, 'utf8'), 'build one');
+  assert.ok(existsSync(join(first, '..', 'app.ico')), 'the Start Menu link wears the icon beside the exe');
+  assert.equal(trayRunCopy(root, src), first, 'the same build reuses its copy');
+  writeFileSync(src, 'build two');
+  const second = trayRunCopy(root, src);
+  assert.notEqual(join(second, '..'), join(first, '..'));
+  assert.equal(readdirSync(join(root, 'board', 'tray')).length, 1, 'the older build is swept');
+});
+
 test('the exe is spawned with a stdin pipe, hidden, undetached, and recorded as native', () => {
   const n = tray();
   const child = n.t.start(ON, 'blocking', { blocking: 2 });
@@ -387,6 +404,13 @@ test('no exe on disk is no tray at all, and no platform without one either', () 
     /* and a platform that never had a tray says nothing at all: that is not
        news about anything */
     assert.deepEqual(linux.log.lines, []);
+
+    /* a sandbox server's tray rewrote the person's real Start Menu link */
+    const sandbox = tray({ env: { ASKERDO_SANDBOX_HOME: tempDir('nd-tray-def-') } });
+    assert.equal(sandbox.t.available, false);
+    assert.equal(sandbox.t.start(ON), null);
+    assert.equal(sandbox.spawn.calls.length, 0);
+    assert.match(sandbox.log.lines.join(), /ASKERDO_SANDBOX_HOME/);
   });
 });
 

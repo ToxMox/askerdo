@@ -127,7 +127,7 @@ export function drawGraph(L, D, g, S, opt) {
   var split = !!(opt.parts && opt.strip && opt.strip < L.cols), between = [], rails = [], needBy = {};
   g.tasks.forEach(function (t) { task[t.id] = t; });
   g.tracks.forEach(function (tr) { trk[tr.id] = tr; });
-  var crit = {}, critEdge = {};
+  var crit = {}, critEdge = {}, RV = reviewPlan(g);
   D.critical.path.forEach(function (id, i, a) { crit[id] = 1; if (i) critEdge[a[i - 1] + '>' + id] = 1; });
   var X = function (c) { return S.padX + c * P + P / 2; };
   var gut = function (c) { return S.padX + (c + 1) * P; }; // the gap right of column c
@@ -250,8 +250,12 @@ export function drawGraph(L, D, g, S, opt) {
     if (gp === null) gp = cands[0];
     // the bend sits mid-gap, flat under the stations' words and steep between them; one leaving the stretch
     // that far waits join peels off at its station, so they meet the row past it (strip cuts keep mid-gap)
-    var nx = occ[a.row + ':' + (gp + 1)], peel = gp === a.col && nx && nx !== lk.to && farInto[nx] && !(opt.strip && (gp + 1) % opt.strip === 0);
+    var nx = occ[a.row + ':' + (gp + 1)], peel = gp === a.col && y2 < y1 && nx && nx !== lk.to && farInto[nx] && !(opt.strip && (gp + 1) % opt.strip === 0);
     var xs = peel ? x1 + S.r + 2 : Math.max(gut(gp) - 0.22 * P, x1 + S.r + 2), xe = Math.min(xs + (peel ? 0.44 * P : gut(gp) + 0.22 * P - xs), x2 - S.r - 2), k = (xe - xs) * 0.5;
+    // falling from its own station, the bend has dropped below the ring by a third of its run: past the words by then
+    if (y2 > y1 && gp === a.col) { var wr = words(lk.from).x1 - 5; if (xs + (xe - xs) * 0.32 < wr) { xs = Math.min(wr - (xe - xs) * 0.32, x2 - S.r - 2 - 0.3 * P); xe = Math.min(xs + 0.44 * P, x2 - S.r - 2); k = (xe - xs) * 0.5; } }
+    // climbing into its station, it is level with that row a third of its run before the station's words begin
+    if (y2 < y1 && gp === b.col - 1) { var wl = words(lk.to).x0 + 5; if (xe - (xe - xs) * 0.32 > wl) { xe = Math.max(wl + (xe - xs) * 0.32, x1 + S.r + 2 + 0.3 * P); xs = Math.max(xe - 0.44 * P, x1 + S.r + 2); k = (xe - xs) * 0.5; } }
     if (geo) { geo.xs = xs; geo.xe = xe; }
     return 'M' + x1 + ' ' + y1 + 'H' + xs + 'C' + (xs + k) + ' ' + y1 + ' ' + (xe - k) + ' ' + y2 + ' ' + xe + ' ' + y2 + 'H' + x2;
   }
@@ -270,9 +274,32 @@ export function drawGraph(L, D, g, S, opt) {
     else thickL[dim ? 'dim' : 'live'].push('<path d="' + d + '" fill="none" stroke="' + lineColor(lineId) + '" stroke-width="' + S.lineW + '" stroke-linecap="round" stroke-linejoin="round"' + dashA + (lk.kind === 'junction' ? ' opacity="0.9"' : '') + '/>');
     if (critEdge[lk.from + '>' + lk.to]) top.push('<path d="' + d + '" fill="none" stroke="' + C.crit + '" stroke-width="' + S.critW + '" stroke-linecap="round" stroke-linejoin="round" opacity="0.92"/>');
   }
-  L.links.forEach(function (lk) {
-    if (lk.far && !critEdge[lk.from + '>' + lk.to]) return far.push(lk); // the critical path keeps its bend
+  // three or more waits reaching one station by the gap before it share one trunk into it, and three
+  // or more lines leaving one station by the gap after it one trunk out; a trunk serves one station only
+  var trunks = [], inTrunk = {}, key = function (lk) { return lk.from + '>' + lk.to; };
+  var reach = function (a, b, gp) { return a.row !== b.row && clear(a.row, a.col + 1, gp) && clear(b.row, gp + 1, b.col - 1); };
+  [true, false].forEach(function (into) {
+    var grp = {};
+    L.links.forEach(function (lk) {
+      var a = L.stations[lk.from], b = L.stations[lk.to], at = into ? b : a, gp = into ? b.col - 1 : a.col;
+      if (inTrunk[key(lk)] || (into ? lk.kind !== 'merge' : lk.kind !== 'merge' && lk.kind !== 'branch') || !reach(a, b, gp)) return;
+      if (split && (into ? Math.floor(a.col / opt.strip) !== Math.floor(b.col / opt.strip) : (gp + 1) % opt.strip === 0)) return;
+      note(grp, into ? lk.to : lk.from, lk);
+    });
+    Object.keys(grp).forEach(function (id) {
+      // the critical path rides the trunk's route in its own white line, so it counts for no width; a bend across
+      // more than one row would cut the words between, so it takes the trunk's route alone
+      var tall = function (lk) { return Math.abs(L.stations[lk.from].row - L.stations[lk.to].row) > 1 && (!into || critEdge[key(lk)]); };
+      if (grp[id].filter(function (lk) { return !critEdge[key(lk)]; }).length < 3 && !grp[id].some(tall)) return;
+      trunks.push({ at: id, into: into, members: grp[id] });
+      grp[id].forEach(function (lk) { inTrunk[key(lk)] = 1; });
+      if (into) farInto[id] = 1;
+    });
+  });
+  function drawLink(lk) {
     var a = L.stations[lk.from], b = L.stations[lk.to], apart = lk.kind === 'cross' || lk.kind === 'junction', geo = {};
+    // a far wait, or a bend across more than one row (which would cut the words between), takes a far wait's route
+    if ((lk.far && !critEdge[lk.from + '>' + lk.to]) || (!apart && Math.abs(a.row - b.row) > 1)) return far.push(lk);
     if (split && apart) return cutLink(a, b, lk);
     var d = apart ? across(a, b, lk, geo) : bend(a, b, lk, geo);
     if (split && !apart) rails.push({ line: b.line, x1: geo.x1, y1: geo.y1, x2: geo.x2, y2: geo.y2, xs: geo.xs, xe: geo.xe });
@@ -281,18 +308,18 @@ export function drawGraph(L, D, g, S, opt) {
     hs.push({ y: geo.y1, x0: geo.x1, x1: xm }, { y: geo.y2, x0: xn, x1: geo.x2 });
     if (Math.abs(geo.y1 - geo.y2) >= 0.5) (apart ? vs : bends).push({ x: xm, x0: xm, x1: xn, y0: Math.min(geo.y1, geo.y2), y1: Math.max(geo.y1, geo.y2), ya: geo.y1, yb: geo.y2, to: lk.to });
     paint(lk, a, b, d);
-  });
+  }
+  L.links.forEach(function (lk) { if (!inTrunk[key(lk)]) drawLink(lk); });
   // the ports of links between lines take their lanes first; a far wait's own vertical keeps clear of theirs
   fan();
   between.forEach(function (p) { if (!p.side) vs.push({ x: p.xv, y0: Math.min(p.sy, edgeY(p.line, p.down)), y1: Math.max(p.sy, edgeY(p.line, p.down)), port: true, ya: p.src ? p.sy : undefined }); });
   // a far second wait climbs a gap as a thin rail; in strips, ends in different strips meet by ports,
   // each end naming the other; with no clear route, it is named under its station
-  var ported = [], toRoute = far.filter(function (lk) {
+  var ported = [], sortFar = function (lk) {
     var a = L.stations[lk.from], b = L.stations[lk.to];
     if (split && Math.floor(a.col / opt.strip) !== Math.floor(b.col / opt.strip)) return ported.push(lk), note(needBy, lk.from, lk.to), note(after, lk.to, lk.from), false;
-    if (lk.via === undefined) return note(also, lk.to, lk.from), false;
     return true;
-  });
+  }, toRoute = far.filter(sortFar);
   // every station's ring and words, which no rail crosses
   var boxes = [], wordAt = {};
   // a station's words, measured again in place when a wait comes to be named under it
@@ -308,6 +335,12 @@ export function drawGraph(L, D, g, S, opt) {
     var s = L.stations[id], t = task[id], k = D.tasks[id], x = X(s.col), yy = Ys(s), ring = k.kind === 'pointer' ? 17 : S.r + 6;
     boxes.push({ id: id, ring: true, x0: x - ring, x1: x + ring, y0: yy - ring, y1: yy + ring }, wordAt[id] = words(id));
     if (k.kind === 'now' && t.agent) { var tg = tw(t.agent, S.fs.tag, 650) / 2 + 12; boxes.push({ id: id, x0: x - tg, x1: x + tg, y0: yy - S.r - S.tagH - 2, y1: yy }); }
+  });
+  // what a trunk cannot place takes the route it would alone; across more than one row, a far wait's
+  trunks.forEach(function (T) {
+    var f0 = far.length;
+    trunk(T).forEach(function (lk) { if (Math.abs(L.stations[lk.from].row - L.stations[lk.to].row) > 1) far.push(lk); else drawLink(lk); });
+    far.slice(f0).forEach(function (lk) { if (sortFar(lk)) toRoute.push(lk); remeasure(lk.from); remeasure(lk.to); });
   });
   // the longest first, so a shorter one into the same station nests inside it without a crossing
   var span = function (lk) { return Math.abs(L.stations[lk.from].row - L.stations[lk.to].row); };
@@ -340,7 +373,7 @@ export function drawGraph(L, D, g, S, opt) {
       var m = best.ds[i];
       if (!m) return note(also, lk.to, lk.from);
       var fork = best.ds.some(function (o) { return o && o !== m && Math.abs(o.xv - m.xv) < 0.5 && (o.y1 - o.y2) * (m.y1 - m.y2) < 0; });
-      paint(lk, L.stations[lk.from], L.stations[lk.to], railD(m, fork));
+      paint(lk, L.stations[lk.from], L.stations[lk.to], m.d || railD(m, fork));
     });
     // the remaining groups route around the "also after" line this one added
     if (best.miss) remeasure(grp[0].to);
@@ -402,10 +435,114 @@ export function drawGraph(L, D, g, S, opt) {
         if (!best || cost < best.cost) best = { cost: cost, x: x };
       }
     }
-    if (!best || best.cost >= 500) return null;
+    if (!best || best.cost >= 500) return chanRail(a, b, to);
     hs.push({ y: y1, x0: x1, x1: best.x }, { y: y2, x0: best.x, x1: x2 });
     vs.push({ x: best.x, y0: lo, y1: hi, ya: y1, to: to, far: true });
     return { x1: x1, y1: y1, x2: x2, y2: y2, xv: best.x };
+  }
+  // with no one gap open to both rows, a far wait turns twice: down a gap open on its own row to the band
+  // between two rows, along it under that row's words, and down a gap open on its station's row
+  function chanRail(a, b, to) {
+    var x1 = X(a.col), y1 = Ys(a), x2 = X(b.col), y2 = Ys(b), floor = joinFloor(b, to), best = null, rows = L.lines[idx[a.line]].rows;
+    var lane = function (gp, ya, yb, min) {
+      var o = null;
+      for (var x = X(gp) + S.r + 6; x <= X(gp + 1) - S.r - 6; x += 2) {
+        if (x < min) continue;
+        var c = vcost(x, Math.min(ya, yb), Math.max(ya, yb), to);
+        if (!o || c < o.cost) o = { cost: c, x: x };
+      }
+      return o;
+    };
+    for (var k = Math.max(0, Math.min(a.sub, b.sub) - 1); k <= Math.min(rows - 2, Math.max(a.sub, b.sub)); k++) {
+      [0.72, 0.76, 0.8].forEach(function (f) {
+        var yc = Ys({ line: a.line, sub: k }) + f * S.rowH;
+        for (var g1 = a.col; g1 < b.col - 1 && clear(a.row, a.col + 1, g1); g1++) {
+          var u = lane(g1, y1, yc, -Infinity);
+          if (!u || u.cost >= 500) continue;
+          for (var g2 = b.col - 1; g2 > g1; g2--) {
+            if (!clear(b.row, g2 + 1, b.col - 1)) continue;
+            var w = lane(g2, yc, y2, floor);
+            if (!w || w.cost >= 500) continue;
+            var cost = u.cost + w.cost + hbox(yc, u.x, w.x) + hcost(yc, u.x, w.x) + hcost(y1, x1, u.x) + hcost(y2, w.x, x2) + (b.col - 1 - g2) * 4 + Math.abs(f - 0.76) * 10;
+            if (!best || cost < best.cost) best = { cost: cost, u: u.x, w: w.x, yc: yc };
+          }
+        }
+      });
+    }
+    if (!best || best.cost >= 500) return null;
+    var u = best.u, w = best.w, yc = best.yc, s1 = yc > y1 ? 1 : -1, s2 = y2 > yc ? 1 : -1;
+    var R = Math.max(0, Math.min(10, Math.abs(yc - y1) / 2, Math.abs(y2 - yc) / 2, (w - u) / 2, u - x1 - S.r - 2, x2 - w - S.r - 2));
+    hs.push({ y: y1, x0: x1, x1: u }, { y: yc, x0: u, x1: w }, { y: y2, x0: w, x1: x2 });
+    vs.push({ x: u, y0: Math.min(y1, yc), y1: Math.max(y1, yc), ya: y1, to: to, far: true }, { x: w, y0: Math.min(yc, y2), y1: Math.max(yc, y2), to: to, far: true });
+    if (split) rails.push({ line: a.line, x1: x1, y1: y1, x2: u, y2: yc, xs: u, xe: u }, { line: a.line, x1: u, y1: yc, x2: x2, y2: y2, xs: w, xe: w });
+    return { x1: w, y1: yc, x2: x2, y2: y2, xv: w, d: 'M' + x1 + ' ' + y1 + 'H' + (u - R) + 'Q' + u + ' ' + y1 + ' ' + u + ' ' + (y1 + s1 * R) + 'V' + (yc - s1 * R) +
+      'Q' + u + ' ' + yc + ' ' + (u + R) + ' ' + yc + 'H' + (w - R) + 'Q' + w + ' ' + yc + ' ' + w + ' ' + (yc + s2 * R) + 'V' + (y2 - s2 * R) + 'Q' + w + ' ' + y2 + ' ' + (w + R) + ' ' + y2 + 'H' + x2 };
+  }
+  // a run along the band between rows at y: through a station's ring or words, or along another run, leaves no route
+  function hbox(y, xa, xb) {
+    var cost = 0, lo = Math.min(xa, xb), hi = Math.max(xa, xb);
+    boxes.forEach(function (bx) { if (y > bx.y0 - 2 && y < bx.y1 + 2 && hi > bx.x0 && lo < bx.x1) cost += 1000; });
+    hs.forEach(function (h) { if (Math.abs(h.y - y) < 6 && Math.min(hi, Math.max(h.x0, h.x1)) - Math.max(lo, Math.min(h.x0, h.x1)) > 2) cost += 1000; });
+    bends.forEach(function (bn) { if (y > bn.y0 && y < bn.y1 && hi > bn.x0 && lo < bn.x1) cost += 6; });
+    return cost;
+  }
+  // a trunk: each wait runs along its own row to one vertical in the gap before its station, turns onto it, and the
+  // vertical turns into the station's row; out of a station the same, mirrored. The critical path rides it whole, white.
+  // Each side of the station's row finds its own lane; what a side cannot place is returned
+  function trunk(T) {
+    var s = L.stations[T.at], sx = X(s.col), sy = Ys(s), gp = T.into ? s.col - 1 : s.col, floor = T.into ? joinFloor(s, T.at) : -Infinity;
+    var own = T.into ? T.at : 'out ' + T.at; // the trunk's two sides may meet at one point, as two far waits may
+    var ends = T.members.map(function (lk) { var o = L.stations[T.into ? lk.from : lk.to]; return { lk: lk, x: X(o.col), y: Ys(o), crit: critEdge[key(lk)] }; });
+    var left = [], sides = [-1, 1].map(function (side) { return { side: side, mine: ends.filter(function (e) { return (e.y - sy) * side > 0; }) }; }).filter(function (q) { return q.mine.length; });
+    var scan = function (q) {
+      var ys = q.mine.map(function (e) { return e.y; }).concat([sy]), lo = Math.min.apply(null, ys), hi = Math.max.apply(null, ys), out = {};
+      for (var x = X(gp) + Math.max(S.r + 6, 0.3 * P); x <= X(gp + 1) - Math.max(S.r + 6, 0.3 * P); x += 2) {
+        if (x < floor) continue;
+        var cost = (T.into ? X(gp + 1) - x : x - X(gp)) / P * 2 + vcost(x, lo, hi, own) + hcost(sy, sx, x);
+        q.mine.forEach(function (e) { cost += hcost(e.y, e.x, x); });
+        out[x] = cost;
+      }
+      return out;
+    };
+    // both sides on one lane when one serves both, so the trunk reads as one line through the station's row
+    var both = null;
+    if (sides.length === 2) {
+      var c0 = scan(sides[0]), c1 = scan(sides[1]);
+      Object.keys(c0).forEach(function (x) { if (c0[x] < 500 && c1[x] < 500 && (!both || c0[x] + c1[x] < both.cost)) both = { x: Number(x), cost: c0[x] + c1[x] }; });
+    }
+    sides.forEach(function (q) {
+      var side = q.side, mine = q.mine, best = null, cs = both ? null : scan(q);
+      if (both) best = both;
+      else Object.keys(cs).forEach(function (x) { if (!best || cs[x] < best.cost) best = { x: Number(x), cost: cs[x] }; });
+      if (!best || best.cost >= 500) { left = left.concat(mine.map(function (e) { return e.lk; })); return; }
+      var xt = best.x, R = 10;
+      mine.forEach(function (e) { R = Math.min(R, Math.abs(e.y - sy) / 2, Math.abs(xt - e.x) - S.r - 2, Math.abs(sx - xt) - S.r - 2); });
+      R = Math.max(0, R);
+      var draw = function (lk, d, x1, y1, x2, y2) { paint(lk, L.stations[lk.from], L.stations[lk.to], d); if (split) rails.push({ line: s.line, x1: x1, y1: y1, x2: x2, y2: y2, xs: xt, xe: xt }); };
+      // from the vertical onto a row heading right; from a row onto the vertical heading `dir`
+      var onRow = function (y) { return 'Q' + xt + ' ' + y + ' ' + (xt + R) + ' ' + y; };
+      var offRow = function (y, dir) { return 'Q' + xt + ' ' + y + ' ' + xt + ' ' + (y + dir * R); };
+      hs.push({ y: sy, x0: sx, x1: xt });
+      var plain = mine.filter(function (e) { return !e.crit; }), tip = plain.reduce(function (m, e) { return !m || Math.abs(e.y - sy) > Math.abs(m.y - sy) ? e : m; }, null);
+      var lead = plain.filter(function (e) { return e.lk.kind === 'branch'; })[0] || tip, ty = tip ? tip.y - side * R : sy;
+      // the vertical from the furthest wait to the station, or out of it to the furthest line
+      if (tip && T.into) draw(lead.lk, 'M' + xt + ' ' + ty + 'V' + (sy + side * R) + onRow(sy) + 'H' + sx, xt, ty, sx, sy);
+      if (tip && !T.into) draw(lead.lk, 'M' + sx + ' ' + sy + 'H' + (xt - R) + offRow(sy, side) + 'V' + ty, sx, sy, xt, ty);
+      mine.forEach(function (e) {
+        hs.push({ y: e.y, x0: e.x, x1: xt });
+        vs.push({ x: xt, y0: Math.min(e.y, sy), y1: Math.max(e.y, sy), ya: T.into ? e.y : sy, to: own, far: true });
+        var j = e.y - side * R;
+        if (T.into) {
+          var stub = 'M' + e.x + ' ' + e.y + 'H' + (xt - R) + offRow(e.y, -side);
+          if (e.crit) draw(e.lk, stub + 'V' + (sy + side * R) + onRow(sy) + 'H' + sx, e.x, e.y, sx, sy);
+          else draw(e.lk, stub, e.x, e.y, xt, j);
+        } else {
+          var leave = 'M' + sx + ' ' + sy + 'H' + (xt - R) + offRow(sy, side) + 'V' + j;
+          draw(e.lk, (e.crit ? leave : 'M' + xt + ' ' + j) + onRow(e.y) + 'H' + e.x, e.crit ? sx : xt, e.crit ? sy : j, e.x, e.y);
+        }
+      });
+    });
+    return left;
   }
   // two waits meeting their row at one point from either side sweep in wider, so the pair reads as a fork
   function railD(m, fork) {
@@ -522,20 +659,45 @@ export function drawGraph(L, D, g, S, opt) {
   // what holds it wraps to the label's width too, so no line of words runs into the next column
   function wordsOf(id) {
     var t = task[id], ex = [], named = function (m, w) { return m[id] && m[id].length ? [['sec', w + m[id].join(', ')]] : []; };
-    var extra = extraLines(t, D.tasks[id]).concat(named(also, 'also after '), named(after, 'after '), named(needBy, 'needed by '));
+    var extra = reviewWords(id).concat(t.review && D.tasks[id].kind === 'done' ? [] : extraLines(t, D.tasks[id]), named(also, 'also after '), named(after, 'after '), named(needBy, 'needed by '));
     extra.forEach(function (e) { wrapText(e[1], S.labelW, fits(S.fs.extra, 550), 2).forEach(function (l) { ex.push([e[0], l]); }); });
     ex = ex.slice(0, 4); // the hover lists every wait whole
     return { ex: ex, lines: wrapText(id + ' ' + t.title, S.labelW, fits(S.fs.title, 550), Math.max(2, S.labelLines - ex.length)) };
   }
 
-  var stn = [], dimS = [], marks = []; // marks: each station's drawn extent, for the pane's strips
+  // under a review its count, under a held finish what waits on a review
+  function reviewWords(id) {
+    var t = task[id], out = [];
+    if (t.review && D.tasks[id].kind === 'done') out.push(['sec', RV.count[id] + ' covered']);
+    else if (t.reopened && RV.count[id]) out.push(['amber', RV.count[id] + ' to review']);
+    if (RV.lock[id] !== undefined && !out.length) out.push(['amber', RV.lock[id] + ' to review']);
+    return out;
+  }
+  function reviewTip(id) {
+    var t = task[id], n = RV.count[id];
+    if (t.review && D.tasks[id].kind === 'done') return ', covered ' + ((t.covers || []).map(function (c) { return c.id; }).join(', ') || 'nothing') + (opt.reviewPress ? '. Press to list them.' : '');
+    var s = !t.review ? '' : t.reopened ? '; reopened, ' + n + ' to review' : n ? '; will cover ' + n + ' finished code ' + (n === 1 ? 'task' : 'tasks') : '';
+    return s + (RV.lock[id] !== undefined ? '; the finish waits on a review of ' + RV.lock[id] : '');
+  }
+  var stn = [], dimS = [], marks = [], hits = []; // marks: each station's drawn extent, for the pane's strips; hits: what a press finds
   Object.keys(L.stations).forEach(function (id) {
     var s = L.stations[id], t = task[id], k = D.tasks[id], x = X(s.col), yy = Ys(s), r = S.r, out = [];
     var junctionOf = g.tracks.filter(function (tr) { return tr.junction === id; });
     // a station opens its own task's page
     if (opt.interactive) out.push('<a href="' + esc(pageOf(t.key || id)) + '">');
-    out.push('<g class="stn" data-task="' + id + '"><title>' + esc(id + ' ' + (t.full || t.title) + stationWords(t, k, g)) + '</title>');
-    if (k.kind === 'done') {
+    out.push('<g class="stn" data-task="' + id + '"><title>' + esc(id + ' ' + (t.full || t.title) + stationWords(t, k, g) + reviewTip(id)) + '</title>');
+    // a review is a diamond: done, filled grey and holding what it covered; open, outlined in its state's colour
+    if (t.review && k.kind !== 'pointer') {
+      if (opt.pressed === id) out.push('<path d="' + diamondD(x, yy, r + 6.5) + '" fill="none" stroke="' + C.sky + '" stroke-width="1.6" stroke-linejoin="round"/>');
+      if (k.kind === 'done') out.push('<path d="' + diamondD(x, yy, r + 2.5) + '" fill="' + C.cross + '" stroke="' + C.bg + '" stroke-width="2" stroke-linejoin="round"/>');
+      else if (k.kind === 'now') {
+        out.push('<circle cx="' + x + '" cy="' + yy + '" r="' + (r + 6) + '" fill="' + C.sky + '" opacity="0.2"/>');
+        out.push('<path d="' + diamondD(x, yy, r + 2) + '" fill="' + C.sky + '" stroke="' + C.bg + '" stroke-width="2" stroke-linejoin="round"/>');
+      } else {
+        var ink = t.reopened ? C.amber : k.kind === 'ready' ? C.ready : k.kind === 'gated' ? C.amber : k.kind === 'left' ? C.sky : C.wait;
+        out.push('<path d="' + diamondD(x, yy, r + 1.5) + '" fill="' + C.bg + '" stroke="' + ink + '" stroke-width="2.8" stroke-linejoin="round"/>');
+      }
+    } else if (k.kind === 'done') {
       out.push('<circle cx="' + x + '" cy="' + yy + '" r="' + (r - 1.5) + '" fill="' + C.line + '" stroke="' + C.bg + '" stroke-width="2"/>');
     } else if (k.kind === 'now') {
       out.push('<circle cx="' + x + '" cy="' + yy + '" r="' + (r + 6) + '" fill="' + C.sky + '" opacity="0.2"/>');
@@ -553,6 +715,7 @@ export function drawGraph(L, D, g, S, opt) {
     } else {
       out.push('<circle cx="' + x + '" cy="' + yy + '" r="' + (r - 1.5) + '" fill="' + C.bg + '" stroke="' + C.wait + '" stroke-width="2.6"/>');
     }
+    if (RV.lock[id] !== undefined) out.push(padlock(x + r + 1, yy - r - 6, C.amber, C.bg));
     if (junctionOf.length && k.kind !== 'pointer') out.push('<circle cx="' + x + '" cy="' + yy + '" r="' + (r + 4.5) + '" fill="none" stroke="' + C.crit + '" stroke-width="1.6"/>');
     if (k.kind === 'now' && t.agent) {
       // the agent's tag stays inside its band, off centre when the station sits near the band's edge
@@ -571,12 +734,48 @@ export function drawGraph(L, D, g, S, opt) {
     ex.forEach(function (e, i) { txt += '<tspan x="' + x + '" y="' + (ly + (lines.length + i) * S.lh + 1) + '" font-size="' + S.fs.extra + '" fill="' + C[e[0]] + '" font-weight="550">' + esc(e[1]) + '</tspan>'; });
     out.push(txt + '</text></g>' + (opt.interactive ? '</a>' : ''));
     marks.push({ line: s.line, x: x, top: k.kind === 'now' && t.agent ? yy - r - S.tagH - 2 : yy - r - 7, bottom: ly + (lines.length + ex.length - 1) * S.lh + 5 });
-    ((dimLine(s.line) && !crit[id]) || k.kind === 'done' ? dimS : stn).push(out.join(''));
+    hits.push({ id: id, kind: t.review && k.kind === 'done' ? 'review' : 'task', line: s.line, x: x, y: yy, r: r + 6, url: t.url || null, key: t.key || id,
+      wx: x - S.labelW / 2, wy: yy + r + 2, ww: S.labelW, wh: (lines.length + ex.length) * S.lh + 2 });
+    ((dimLine(s.line) && !crit[id]) || (k.kind === 'done' && !t.review) ? dimS : stn).push(out.join(''));
+  });
+  // beads, about 11 px apart in the gap where their tasks fall, a count where they do not fit
+  var beadsOut = [];
+  Object.keys(RV.gaps).forEach(function (gk) {
+    var gp = RV.gaps[gk], b = L.stations[gp.at];
+    if (!b) return;
+    var bd = band[b.line], x = X(b.col), yy = Ys(b), clr = S.r + 6, xL, xR, stub = false;
+    var first = !Object.keys(L.stations).some(function (o) { var q = L.stations[o]; return q.line === b.line && q.row === b.row && q.col < b.col; });
+    if (gp.after) { xL = x + clr; xR = Math.min(x + P / 2 + 10, bd.x2 - 10); stub = true; }
+    else {
+      var prev = occ[b.row + ':' + (b.col - 1)];
+      xR = x - clr;
+      if (prev && L.links.some(function (lk) { return lk.from === prev && lk.to === gp.at; })) xL = X(b.col - 1) + clr;
+      else if (first) { xL = Math.max(bd.x1 + 10, x - P + clr); stub = true; }
+      else xL = x - 0.28 * P + 2;
+      // a strip cut at this gap shows only the station's side of it
+      if (opt.strip && b.col % opt.strip === 0) xL = Math.max(xL, x - P / 2 + 8);
+    }
+    var n = gp.beads.length, step = 11, room = xR - xL - 7, mid = (xL + xR) / 2, lc = dimLine(b.line) ? C.line : lineColor(b.line);
+    var dot = function (cx, f) {
+      var c = '<circle cx="' + cx + '" cy="' + yy + '" r="3.2" fill="' + C.amber + '" stroke="' + C.bg + '" stroke-width="1.6"/>';
+      var tip = '<title>' + esc((f ? f.id + ' ' + f.name : gp.beads.map(function (q) { return q.id; }).join(', ')) + ': done, not reviewed') + '</title>';
+      var el = '<g class="bead"' + (f ? ' data-task="' + f.id + '"' : '') + '>' + tip + c + '</g>';
+      return opt.interactive && f ? '<a href="' + esc(pageOf(f.key || f.id)) + '">' + el + '</a>' : el;
+    };
+    // a lead into a line's first station, or past its last, runs on a short rail of its own
+    if (stub) beadsOut.push('<path d="M' + (gp.after ? x : xL - 4) + ' ' + yy + 'H' + (gp.after ? xR + 4 : x) + '" stroke="' + lc + '" stroke-width="' + S.lineW + '" stroke-linecap="round"' + (dash(b.line) ? ' stroke-dasharray="' + dash(b.line) + '"' : '') + '/>');
+    if ((n - 1) * step <= room) gp.beads.forEach(function (f, i) { beadsOut.push(dot(mid + (i - (n - 1) / 2) * step, f)); });
+    else {
+      var num = String(n), nw = tw(num, S.fs.extra, 700), x0 = mid - (nw + 9) / 2;
+      beadsOut.push(dot(x0 + 3.2, null) + '<text x="' + (x0 + 9) + '" y="' + (yy + S.fs.extra * 0.36) + '" font-size="' + S.fs.extra + '" font-weight="700" fill="' + C.amber + '"' + halo + '>' + num + '</text>');
+    }
   });
 
-  var body = (split ? '' : under.join('')) + '<g opacity="0.42">' + dimL.join('') + dimS.join('') + '</g>' + liveL.join('') + top.join('') + stn.join('') + caps.join('');
+  var body = (split ? '' : under.join('')) + '<g opacity="0.42">' + dimL.join('') + dimS.join('') + '</g>' + liveL.join('') + top.join('') + beadsOut.join('') + stn.join('') + caps.join('');
   if (opt.parts) {
-    return { w: W, h: H, body: body, pitch: P, padX: S.padX, cols: L.cols, marks: marks, split: split, between: between, rails: rails, skin: S, nameW: fits(S.fs.sub, 600),
+    return { w: W, h: H, body: body, pitch: P, padX: S.padX, cols: L.cols, marks: marks, split: split, between: between, rails: rails, skin: S, nameW: fits(S.fs.sub, 600), boxes: boxes,
+      hits: hits.concat(L.lines.map(function (ln) { var b = band[ln.id]; return { id: ln.id, kind: 'track', line: ln.id, x: b.cx, y: b.top + 4, w: b.capW, h: S.fs.cap + 8, url: trk[ln.id].url || null, key: trk[ln.id].key || ln.id }; })),
+      reviews: RV,
       bands: L.lines.map(function (ln) { var b = band[ln.id]; return { id: ln.id, top: b.top, h: b.h, rows: b.rows, x1: b.x1, x2: b.x2, cx: b.cx, look: b.look, more: ln.id + ' ' + trk[ln.id].name }; }) };
   }
   return '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" font-family=\'' + S.font + '\'' + (opt.label ? ' role="img" aria-label="' + esc(opt.label) + '"' : '') + '>' +
@@ -725,6 +924,43 @@ function stationWords(t, k, g) {
   return ': ' + w + (on.length && k.kind !== 'pointer' ? ', after ' + on.join(', ') : '') + (need.length ? '; needed by ' + need.join(', ') : '');
 }
 function pageOf(ref) { return '/r/' + encodeURIComponent(ref); }
+/* what the map draws for review coverage, from the graph alone: each finished code
+   task no completed review folded is a bead in the gap before the next station by place (after the last
+   with none), a review a diamond with its count, a held finish a padlock; marks: the kinds drawn */
+export function reviewPlan(g) {
+  var out = { gaps: {}, count: {}, lock: {}, marks: {} }, by = {};
+  g.tasks.forEach(function (t) { (by[t.track] = by[t.track] || []).push(t); });
+  g.tracks.forEach(function (tr) {
+    var st = (by[tr.id] || []).slice().sort(function (a, b) { return a.pos - b.pos; });
+    if (!st.length) return;
+    var beads = (tr.finished || []).filter(function (f) { return f && !f.review && !f.covered; });
+    beads.forEach(function (f) {
+      var next = st.filter(function (t) { return t.pos > (f.position || 0); })[0], at = next || st[st.length - 1], k = at.id + (next ? '' : ' after');
+      (out.gaps[k] = out.gaps[k] || { at: at.id, after: !next, beads: [] }).beads.push(f);
+      out.marks.bead = 1;
+    });
+    st.forEach(function (t, i) {
+      if (!t.review) return;
+      if (t.status === 'completed') { out.count[t.id] = (t.covers || []).length; out.marks.reviewed = 1; return; }
+      // an open review reads what lies before the next review on its line
+      var later = st.slice(i + 1).filter(function (x) { return x.review; })[0], end = later ? later.pos : Infinity;
+      out.count[t.id] = beads.filter(function (f) { return (f.position || 0) < end; }).length;
+      out.marks[t.reopened ? 'reopened' : 'review'] = 1;
+    });
+    // a planned review before the finish is the way through, so no padlock yet
+    if (tr.review && tr.review.locked && !tr.review.planned) { out.lock[st[st.length - 1].id] = (tr.review.held || []).length; out.marks.lock = 1; }
+  });
+  return out;
+}
+var REVIEW_LEGEND = [['bead', 'finished, not reviewed'], ['review', 'a review to do'], ['reviewed', 'a review: what it covered'],
+  ['reopened', 'reopened: work landed after it'], ['lock', 'the finish waits on a review']];
+export function reviewLegend(marks) { return REVIEW_LEGEND.filter(function (e) { return marks && marks[e[0]]; }); }
+// a diamond at x, y of half-size h; a padlock with its body's top left at x, y
+export function diamondD(x, y, h) { return 'M' + x + ' ' + (y - h) + 'L' + (x + h) + ' ' + y + 'L' + x + ' ' + (y + h) + 'L' + (x - h) + ' ' + y + 'Z'; }
+export function padlock(x, y, ink, bg) {
+  return '<path d="M' + (x + 1.6) + ' ' + y + 'V' + (y - 2) + 'A2.4 2.4 0 0 1 ' + (x + 6.4) + ' ' + (y - 2) + 'V' + y + '" fill="none" stroke="' + ink + '" stroke-width="1.5"/>' +
+    '<rect x="' + (x - 0.5) + '" y="' + (y - 0.5) + '" width="9" height="7" rx="1.5" fill="' + bg + '"/><rect x="' + x + '" y="' + y + '" width="8" height="6" rx="1.2" fill="' + ink + '"/>';
+}
 /* small marks for lists and the legend, the same shapes the picture draws */
 export function mark(kind, size) {
   size = size || 18; var c = size / 2, r = size * 0.3, s = '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '" aria-hidden="true">';
@@ -738,9 +974,13 @@ export function mark(kind, size) {
   else if (kind === 'pointer') s += '<rect x="' + (c - 8) + '" y="' + (c - 5) + '" width="16" height="10" rx="5" fill="' + C.bg + '" stroke="' + C.crit + '" stroke-width="1.8"/>';
   else if (kind === 'junction') s += '<circle cx="' + c + '" cy="' + c + '" r="' + (r - 1) + '" fill="' + C.bg + '" stroke="' + C.wait + '" stroke-width="2"/><circle cx="' + c + '" cy="' + c + '" r="' + (r + 2.5) + '" fill="none" stroke="' + C.crit + '" stroke-width="1.3"/>';
   else if (kind === 'done') s += '<circle cx="' + c + '" cy="' + c + '" r="' + (r - 1) + '" fill="' + C.line + '"/>';
+  else if (kind === 'bead') s = s.replace(/width="\d+"/, 'width="' + (size + 8) + '"').replace(/viewBox="0 0 \d+/, 'viewBox="0 0 ' + (size + 8)) + '<path d="M1 ' + c + 'H' + (size + 7) + '" stroke="' + C.line + '" stroke-width="3" stroke-linecap="round"/><circle cx="' + (c - 2) + '" cy="' + c + '" r="3" fill="' + C.amber + '"/><circle cx="' + (c + 9) + '" cy="' + c + '" r="3" fill="' + C.amber + '"/>';
+  else if (kind === 'review' || kind === 'reopened') s += '<path d="' + diamondD(c, c, r + 1) + '" fill="' + C.bg + '" stroke="' + (kind === 'review' ? C.ready : C.amber) + '" stroke-width="2.4" stroke-linejoin="round"/>';
+  else if (kind === 'reviewed') s += '<path d="' + diamondD(c, c, r + 2) + '" fill="' + C.cross + '"/>';
+  else if (kind === 'lock') s += padlock(c - 4, c - 1, C.amber, C.bg);
   return s + '</svg>';
 }
-export function legendHtml() {
+export function legendHtml(marks) {
   var rail = function (col, w, dashA, op) { return '<svg width="30" height="12" aria-hidden="true"><path d="M2 6H28" stroke="' + col + '" stroke-width="' + w + '" stroke-linecap="round"' + (dashA ? ' stroke-dasharray="' + dashA + '"' : '') + (op ? ' opacity="' + op + '"' : '') + '/></svg>'; };
   var C = SKIN_WEB.c;
   return '<div class="legend">' +
@@ -756,5 +996,6 @@ export function legendHtml() {
     '<span>' + rail(C.live, 4) + 'the line a session is on</span>' +
     '<span>' + rail(C.live, 2, '', 0.85) + 'thin: a second thing it waits on</span>' +
     '<span>' + rail(C.cross, 2.2, '5 4') + 'waits on another line</span>' +
-    '<span>' + rail(C.line, 4, '7 6', 0.5) + 'parked or stalled, dimmed</span></div>';
+    '<span>' + rail(C.line, 4, '7 6', 0.5) + 'parked or stalled, dimmed</span>' +
+    reviewLegend(marks).map(function (e) { return '<span>' + mark(e[0]) + esc(e[1]) + '</span>'; }).join('') + '</div>';
 }

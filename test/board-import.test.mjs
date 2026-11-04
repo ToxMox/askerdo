@@ -71,6 +71,11 @@ test('a thread and its plan become one track with the thread\'s number, its hand
   /* automatic upkeep switched on stays on through the export and its import */
   runVerb(db, 'upkeepSwitch', { on: true }, 'cli');
   assert.match([...storeFiles(db)].find((f) => f.path === 'board/settings.json').text, /"upkeep": "on"/);
+  /* a commit link and a review's cover ride the export too */
+  runVerb(db, 'commitLink', { repo: 'r', sha: 'a'.repeat(40), task: 'T-1', via: 'message', at: '2026-11-01T10:00:00Z', added: 3, files: [{ path: 'a.js', added: 3, removed: 0 }] }, 'cli');
+  const rv = runVerb(db, 'createRecord', { name: 'Review the move', description: 'd', track: tr.front.id }, 'cli');
+  runVerb(db, 'reviewCovers', { review: rv.id, tasks: ['T-1'] }, 'cli');
+  assert.deepEqual(['coverage/commits.jsonl', 'coverage/covers.jsonl'].filter((p) => ![...storeFiles(db)].some((f) => f.path === p)), []);
   assert.deepEqual(roundTrip(db).problems, []);
 });
 

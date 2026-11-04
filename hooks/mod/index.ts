@@ -13,7 +13,7 @@ import {
   handoffAlert, handoffGate, pastWindow, isStateNoteCall, mainDepthNote, marksCrossed, marksFor, parseGuard, questionsModel,
   readingFrom, rememberKeys, stateNoteFrom,
   decisionQuestions, depthFrom, handoffAsk, handoffFilesNote, handoffPrompt, isRecordId, newlyWaiting, openSetText, tracksView,
-  USAGE, answerArgs, parseAnswer, parseAskerdo, parseResume, parseTrack, shelfText, taskEditArgs, trackAlert, trackText,
+  USAGE, answerArgs, coverageArgs, parseAnswer, parseAskerdo, parseResume, parseTrack, reviewCoversArgs, shelfText, taskEditArgs, trackAlert, trackText,
   threadNameOf, token, unquote, validateAsk, validateHandoff, waitingKeys, waitingToast,
   commandLead, heldText, lostTrackNote,
   AGENT_TOOLS, ASK_TOOL, agentChecks, firstTellingCard, flagLine, flagNote, isHubShell, namesBoardId, replyChecks,
@@ -31,7 +31,7 @@ import { cardHref, recordHref, signedRoot } from '../../lib/mod-core.mjs'
 import { commandLine, depthText, editWords, peerBody, resumeLine, rewoundNote, wholePercent } from '../../lib/mod-core.mjs'
 import { handoffCheckLine, verifyLines } from '../../lib/mod-core.mjs'
 import { noBandHere, noBandSection, surfacePick } from '../../lib/mod-core.mjs'
-import { carriesTold, hideTold, resumeBlock, tellBlock } from '../../lib/mod-core.mjs'
+import { carriesTold, resumeBlock, tellBlock, tellingParts } from '../../lib/mod-core.mjs'
 import { capFirst, nameOf } from '../../lib/mod-core.mjs'
 import { carryBlock, offlineLine, withOffline } from '../../lib/mod-core.mjs'
 import { feedRows } from '../../lib/mod-core.mjs'
@@ -48,11 +48,14 @@ import { callPressText, parseOverride } from '../../lib/mod-core.mjs'
 import { briefDecisionIds, isHubOverride, overrideArgs, overrideCard, overrideOn, overrideResult, overrideTold } from '../../lib/mod-core.mjs'
 import { agentsModel } from '../../lib/mod-core.mjs'
 import { closedInbox, commitsIn, offTrackSlip } from '../../lib/mod-core.mjs'
-import { inboxLines } from '../../server/handoff-text.mjs'
+import { LINK_VERB, captureCommit, headsOf, repoCandidates, shaHint, taggedTasks } from '../../lib/commit-capture.mjs'
+import { inboxLines, staleToolsLine } from '../../server/handoff-text.mjs'
 import { STOP_FIRST, handoffCurrency, stepChanges, stepTool } from '../../lib/mod-core.mjs'
 import { updateProblems } from '../../lib/handoff-payload.mjs'
 import { statusTree } from './status.tsx'
 import { bandTree } from './band.tsx'
+import { checkHealth, health, healthDue, healthStale, sawLocal } from './health.ts'
+import { withHealth } from '../../lib/mod-core.mjs'
 import { paneLoading, paneTree } from './pane.tsx'
 import { GUIDE_HOME, guideIndex, guideTree } from './guide.tsx'
 import type { GuidePage } from './guide.tsx'
@@ -818,7 +821,7 @@ const toolsFor = (n: string) => [
     name: 'ask',
     description: 'Register a question for ' + n + ' on the AskerDo board, at ask time, before telling it in the reply. '
       + 'The session and project are filled in; the workstream, left out, is that of the track this session holds. '
-      + 'Answers with the question id, its answer tokens (106a, 106b) and the block to paste in the reply, exactly, once: the question\'s header line, then its reversal line, question line, crux and table. '
+      + 'Answers with the question id, its answer tokens (106a, 106b) and the block to paste in the reply\'s footer, under its label, exactly, once: the question\'s header line, then its reversal line, question line, crux and table. '
       + 'The ask names the options by letter, since the number comes at registration; model asks: '
       + '"When a session is working down a track, where do you want to see which task it\'s on? On the status line next to the track (a, my pick), '
       + 'as a row in the band above the prompt (b), or nowhere on screen, only in the kickoff and the Tracks tab (c)?" and '
@@ -1017,6 +1020,31 @@ const toolsFor = (n: string) => [
             ],
           },
         },
+      },
+    },
+  },
+  {
+    name: 'review_covers',
+    description: 'Set what a review task read: its covers list, the code tasks it covers, each through its newest commit now. '
+      + 'Left out, tasks is the default: every uncovered code task on its track finished before the review started (a project-wide review: the project\'s since the last one). '
+      + 'A review that completes with no list takes the default on its own; give the list when the review read less, or other work.',
+    inputSchema: {
+      type: 'object', additionalProperties: false, required: ['review'],
+      properties: {
+        review: { type: 'string', description: 'T-n: the review task' },
+        tasks: { type: 'array', items: { type: 'string' }, description: 'T-n ids of the code tasks it read' },
+      },
+    },
+  },
+  {
+    name: 'coverage',
+    description: 'Read the review coverage of a track or a workstream: its code tasks with the review that covers each, its reviews, '
+      + 'the commits no task owns, and whether a review is due. Reads only, unless scan links the commits here whose messages name a task first.',
+    inputSchema: {
+      type: 'object', additionalProperties: false, required: ['scope'],
+      properties: {
+        scope: { type: 'string', description: 'TR-n or WS-n' },
+        scan: { type: 'boolean', description: 'true: first link the commits in the repos its handoffs name' },
       },
     },
   },
@@ -1372,10 +1400,19 @@ const FREEZE_CLOSED = true
    poll again and reloads on a change of the board's seq. With no local server answering, the
    load starts it once (a refused start is not tried again until local.json changes). */
 async function poll($: any): Promise<void> {
-  if ((FREEZE_CLOSED && closedAs(mem.id)) || wait.live) return
+  if (FREEZE_CLOSED && closedAs(mem.id)) return
+  /* while a problem shows, local.json's stamp on this tick; a moved file looks again */
+  if (health.first) void localStamp($).then((s) => { if (sawLocal(s)) healthNow($) }).catch(() => {})
+  if (wait.live) return
   armWait($)
   const st = await waitRead($, 'state')
   if (st ? 'seq:' + st.seq !== band.marker || !band.loaded : !(await localBase($))) await refresh($)
+}
+
+async function localStamp($: any): Promise<string> {
+  const root = routeRoots(await callerEnv($))[0]
+  if (!root) return ''
+  try { const st = await $.fs.stat(root + '/board/local.json'); return st.size + ':' + st.mtimeMs } catch { return '' }
 }
 
 function startPoll($: any): void {
@@ -2145,7 +2182,7 @@ async function trackCmd($: any, args: string): Promise<string> {
     const ws = band.mine && band.mine.held ? band.mine.workstream : null
     if (!p.inbox && !held) return needTrack()
     if (p.inbox && !ws) return 'Capturing into the inbox needs the workstream of a held track. ' + needTrack()
-    const r = await cli($, ['track', 'capture', ...(p.inbox ? ['--workstream', ws] : ['--track', held as string]), '--name', p.name, '--session', sid, '--json'])
+    const r = await cli($, ['track', 'capture', ...(p.inbox ? ['--workstream', ws, '--unplaced', 'captured into the inbox by /askerdo track capture inbox'] : ['--track', held as string]), '--name', p.name, '--session', sid, '--json'])
     if (!r.ok) return failed('Capturing', r)
     kick($)
     return r.json.id + ' captured ' + (r.json.track ? 'onto ' + r.json.track : 'into the inbox of ' + ws) + '; the work in hand carries on.'
@@ -2294,7 +2331,8 @@ const commandFailed = () => ({ text: PLUGIN + ': /' + COMMAND + ' failed before 
 /* graph: Home's scope, the held track's lines until the user switches */
 /* done: Home's fold of finished agents, shut until pressed, held for the session only */
 /* filterSeed: the text the filter field is drawn with, the filter as the field last mounted */
-const view: { tab: PaneTab; filter: string; filterSeed: string; chosen?: boolean; unfolded: Set<string>; graph: string; done: boolean; seeded?: PaneTab } = { tab: 'home', filter: '', filterSeed: '', unfolded: new Set(), graph: 'mine', done: false }
+/* review: the review whose covered list Home shows, pane state only */
+const view: { tab: PaneTab; filter: string; filterSeed: string; chosen?: boolean; unfolded: Set<string>; graph: string; done: boolean; seeded?: PaneTab; review?: string | null } = { tab: 'home', filter: '', filterSeed: '', unfolded: new Set(), graph: 'mine', done: false, review: null }
 const TAB_NAMES: Record<PaneTab, string> = { home: 'Home', questions: 'Questions', tracks: 'Tracks', settings: 'Settings', guide: 'Guide' }
 
 /* Every opener, command or press: an open pane redraws on the tab asked for. Questions
@@ -2316,6 +2354,8 @@ async function openPane($: any, tab: PaneTab, focus?: string, press = false): Pr
   const r = await $.ui.open({ id: PANE_ID, title: paneTitle(where.now, where.cols), ...keys })
   qpaneRedraw($)
   void readWhere($).catch(() => {})
+  /* Tracks at a track: the focus scrolls its tile's name into view (desktop) */
+  if (tab === 'tracks' && focus && r && r.isPlaced !== false) try { await $.ui.focus({ requestId: PANE_ID, key: 'tname-' + focus + '-link' }) } catch {}
   if (tab === 'questions' && r && r.isPlaced !== false) {
     /* a desktop focuses the pane's frame, outside the tree its hotkeys answer in, so
        the ring goes onto the pinned card; the focus scrolls to it, so the view goes back up */
@@ -2533,14 +2573,69 @@ function handedKeys(n: any, surface: string, rings = false): any {
   return { ...n, props, ...(Array.isArray(n.children) ? { children: kids } : {}) }
 }
 
+/* the PC's first problem from `askerdo status`, looked at again when the route finds its
+   local server gone or a start refused; never while a start is in flight */
+function healthNow($: any): any {
+  if (route.starting) return health.first
+  const sig = route.refused ? 'refused:' + route.refused.key + ':' + route.refused.why : route.down ? 'down:' + route.down.base : ''
+  const now = Date.now()
+  if (healthDue(sig, now)) {
+    const args = ['status', '--json']
+    void checkHealth(sig, now, [() => spawn($, healthArgv($, args), { timeoutMs: 30000 }), () => healthProcess($, args)])
+      .then((moved) => { if (moved) qpaneRedraw($) }).catch(() => {})
+  }
+  return health.first
+}
+
+const healthArgv = ($: any, args: string[]) => ['node', $.plugin.root + '/bin/askerdo.mjs', ...args]
+
+/* a process, past the route: the route is what may be broken */
+async function healthProcess($: any, args: string[]): Promise<any> {
+  const env = await seamEnv($)
+  const init = { timeoutMs: 60000 }
+  return $.process.run(healthArgv($, args), env ? { ...init, env } : init)
+}
+
+/* The problem's press: its verb run here, else its command copied, else Home, where its row and card are */
+async function healthFix($: any, input?: any): Promise<void> {
+  const p = health.first
+  const command = String((input && input.command) || (p && p.command) || '')
+  const copy = String((input && input.copy) || (p && !p.command && p.copy) || '')
+  if (command) {
+    toast($, 'Running askerdo ' + command, 'press')
+    const r = await healthProcess($, [...command.split(' '), '--json']).catch((err: any) => ({ exitCode: -1, stderr: String((err && err.message) || err) }))
+    const said = String((r && r.stderr) || '').replace(/^AskerDo: /gm, '').trim().split(/\r?\n/)[0]
+    if (r && r.exitCode === 0) {
+      /* the server it started writes a new local.json, which the route reads afresh */
+      route.refused = undefined
+      route.down = undefined
+      route.key = undefined
+    }
+    toast($, r && r.exitCode === 0 ? 'askerdo ' + command + ' ran' : 'askerdo ' + command + ' failed' + (said ? ': ' + said : ''), 'press')
+    healthStale()
+    healthNow($)
+    kick($)
+    return
+  }
+  if (copy) {
+    let copied = false
+    try { copied = !!(await $.ui.copy({ text: copy })).isCopied } catch {}
+    toast($, copied ? 'Copied: ' + copy : 'Could not copy: run ' + copy, 'press')
+    return
+  }
+  await openPane($, 'home', undefined, true)
+}
+
 /* The band's model and presses, one set for the band over the prompt and Home's copy. */
 function bandParts($: any): { model: any; answer: (q: any, a: any) => void; open: (q?: any) => void; submit: () => void; send: () => void; press: (c: any, p: any) => void; fold: { open: boolean; toggle: () => void } } {
   void queueRead($).catch(() => {})
   return {
     /* the questions this session keeps draw ahead of the board's; the queued count beside what waits */
-    model: withWaiting(withPresses(withChipStates(withLocal(band.model, localOpen(), mem.id), answers.chips)), { inbox: band.inbox, closed: closedLine(closedAs(mem.id), savedHere()), saved: savedHere().length > 0,
-      queued: answerQueue.items.size }),
-    press: (c: any, p: any) => pressed($, () => { void bandCall($, c, p) })(),
+    model: withHealth(withWaiting(withPresses(withChipStates(withLocal(band.model, localOpen(), mem.id), answers.chips)), { inbox: band.inbox, closed: closedLine(closedAs(mem.id), savedHere()), saved: savedHere().length > 0,
+      queued: answerQueue.items.size }), healthNow($)),
+    press: (c: any, p: any) => pressed($, () => {
+      void (p && p.pane === 'tracks' ? openPane($, 'tracks', (c && c.id) || undefined, true) : c && c.kind === 'health' ? healthFix($, p && p.input) : bandCall($, c, p)).catch(() => {})
+    })(),
     fold: { open: callFold.open, toggle: pressed($, () => { callFold.open = !callFold.open }) },
     answer: (q: any, a: any) => pressed($, () => { void bandAnswer($, q, a) })(),
     open: (q?: any) => pressed($, () => { void openPane($, 'questions', q && q.id).catch(() => {}) })(),
@@ -2554,8 +2649,9 @@ const hereNow = () => ({ pc: (band.near && band.near.here && band.near.here.pc) 
 
 /* The status row's presses: the guard, the shelf count (Tracks), the AskerDo opener (Home)
    and the agents count (Home with its agents unfolded). */
-function statusPresses($: any): { guard: () => void; shelf: () => void; home: () => void; questions: () => void; agents: () => void } {
+function statusPresses($: any): { guard: () => void; shelf: () => void; home: () => void; questions: () => void; agents: () => void; health: () => void } {
   return {
+    health: pressed($, () => { void healthFix($).catch(() => {}) }),
     guard: pressed($, guardToggle($)),
     shelf: pressed($, () => { void openPane($, 'tracks', undefined, true).catch(() => {}) }),
     home: pressed($, () => { void openPane($, 'home', undefined, true).catch(() => {}) }),
@@ -2692,8 +2788,8 @@ async function paneDraw($: any, e: any): Promise<any> {
     const ours = b.model && bandTree(els, b.model, b.answer, { columns: inside, now, surface, open: b.open, submit: b.submit, send: b.send, cards: false, unfold, press: b.press, fold: b.fold })
     const sm = statusOf($)
     /* the guard's press under its own name, so `guard` below is still the guard's state */
-    const { guard: guardTap, shelf, agents: openAgents } = statusPresses($)
-    const status = sm ? statusTree(els, sm, null, { columns: inside, surface, guard: guardTap, shelf, agents: openAgents, wrap: true, cards: false }) : null
+    const { guard: guardTap, shelf, agents: openAgents, health: fixHealth } = statusPresses($)
+    const status = sm ? statusTree(els, sm, null, { columns: inside, surface, guard: guardTap, shelf, agents: openAgents, health: fixHealth, wrap: true, cards: false }) : null
     const wide = !!view.filter.trim()
     const read = feedRead($, wide ? 'all' : 'own')
     /* the board on the LAN is plain http, which the desktop does not open, so a row's page
@@ -2705,12 +2801,14 @@ async function paneDraw($: any, e: any): Promise<any> {
     /* drawn for the width this draw reports, so a pane dragged wider draws more columns */
     let gm: any
     try {
-      gm = homeGraph({ graph: band.graph, mine: band.mine, shelf: band.shelf, local: !!band.near, scope: view.graph, columns: cols, draw: surface === 'desktop' })
+      gm = homeGraph({ graph: band.graph, mine: band.mine, shelf: band.shelf, local: band.near ? band.local || true : false, scope: view.graph, columns: cols, draw: surface === 'desktop', pressed: view.review })
     } catch {
       gm = { scope: view.graph, lines: [], off: [], why: 'The picture could not be drawn from what the local board holds.' }
     }
     const graph = graphTree(els, gm, (s: string) => { view.graph = s; qpaneRedraw($) }, surface,
-      { open: foldOpen($, 'graph'), toggle: () => foldSet($, 'graph', !foldOpen($, 'graph')), line: standLine(heldNow(), gm), columns: cols })
+      { open: foldOpen($, 'graph'), toggle: () => foldSet($, 'graph', !foldOpen($, 'graph')), line: standLine(heldNow(), gm), columns: cols },
+      /* one list open at a time; a second press on its diamond, or the X, closes it */
+      (id: string | null) => { view.review = id && id !== view.review ? id : null; qpaneRedraw($) })
     const am = agentsModel(flightList(), guard.state, Date.now())
     const agents = am ? agentsTree(els, am, foldOpen($, 'agents'), () => foldSet($, 'agents', !foldOpen($, 'agents')), surface, cols,
       { open: view.done, toggle: () => { view.done = !view.done; qpaneRedraw($) } }) : null
@@ -3108,7 +3206,7 @@ function statusOf($: any): any {
     shelf: band.shelf, elsewhere: band.elsewhere, here: { pc: hereNow().pc }, now, agents: flightList(),
     /* what the track's and task's tooltips read beside them */
     graph: band.graph, handoffs: band.near && band.near.handoffs, questions: band.questions, local: band.local,
-    version: ownVersion($),
+    version: ownVersion($), health: healthNow($),
   })
   /* the AskerDo button's card names the folder and branch too */
   const facts = whereFacts(where.now)
@@ -3346,6 +3444,15 @@ async function taskTool($: any, input: any): Promise<any> {
 }
 
 /* the engine's own reading as the band shows it; nothing is written */
+/* a session records what a review read, and reads the coverage, without the CLI */
+async function coverageTool($: any, name: string, input: any): Promise<any> {
+  const a = name === 'review_covers' ? reviewCoversArgs(input) : coverageArgs(input)
+  if (a.error) return { deny: name + ' refused: ' + a.error }
+  const r = await cli($, [...a.args, '--session', await sessionId($)])
+  if (!r.ok) return { deny: failed(name, r) }
+  return { result: r.out.trim() }
+}
+
 async function depthTool($: any): Promise<any> {
   let reading: any = lastReading()
   if (!reading) { try { reading = depthReading(((await $.session.usage()) || {}).context) } catch {} }
@@ -3384,7 +3491,7 @@ function laidOutNote(steps: any, track: string): string {
 
 async function handoffTool($: any, input: any, agentId?: string): Promise<any> {
   const user = await userName($)
-  const v = validateHandoff(input, { name: user })
+  const v = validateHandoff(input, { name: user, version: ownVersion($) })
   if (v.error) return { deny: 'handoff_write refused: ' + v.error }
   const sid = await sessionId($)
   const held = await boundTrack($, sid, true)
@@ -3479,6 +3586,7 @@ async function handoffTool($: any, input: any, agentId?: string): Promise<any> {
       + (r.json.released ? ' This session let ' + id + ' go with it.' : '')
       + (laidOutNote(r.json.laidOut, id) ? '\n' + laidOutNote(r.json.laidOut, id) : '')
       + (r.json.leavesLine ? '\n' + r.json.leavesLine : '')
+      + (r.json.reviewLine ? '\n' + r.json.reviewLine : '')
       + inboxText(r.json.inbox)
       + (r.json.warning ? '\nWARNING: ' + r.json.warning : '')
       + (handoffFilesNote(r.json, user) ? '\n' + handoffFilesNote(r.json, user) : '')
@@ -3536,6 +3644,8 @@ const trackOf = (id: string) => String(id || '').trim().replace(/\.\d+$/, '').to
 async function updateTool($: any, input: any): Promise<any> {
   const { track: named, ...patch } = input && typeof input === 'object' && !Array.isArray(input) ? input : ({} as any)
   const bad = [...Object.keys(patch).filter((k) => k !== 'ops').map((k) => 'unknown field "' + k + '"'), ...updateProblems(patch)]
+  /* an unknown top-level name gets the line the ops' own unknowns already carry */
+  if (Object.keys(patch).some((k) => k !== 'ops') && !bad.some((x) => x.includes('new session'))) bad.push(staleToolsLine(ownVersion($)))
   if (named !== undefined && !(typeof named === 'string' && /^TR-\d+(\.\d+)?$/i.test(named.trim()))) bad.unshift('track is TR-n or TR-n.m')
   if (bad.length) return { deny: 'handoff_update refused: ' + bad.join('; ') }
   const sid = await sessionId($)
@@ -3765,6 +3875,109 @@ function laneStart(toolUseId: any, agentId: any): void {
     dispatched.delete(toolUseId)
     if (agentId) agents.set(agentId, { ...(agents.get(agentId) || { last: 0, tokens: 0 }), tasks: d.tasks, name: d.name })
   } catch {}
+}
+
+/* ---- commits, linked to the task they finished ---- */
+
+/* who made a commit, kept past the agent's end (laneEnd trims `agents`): each spawn's
+   dispatch id, parent and names; a workflow's agents share their Workflow call's id */
+const owners = new Map<string, { use?: string; parent?: string; names: string[]; tasks: string[] }>()
+const dispatches = new Map<string, { tasks: string[]; names: string[] }>()
+const OWNERS_KEPT = 200
+const namesOf = (...s: any[]) => s.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim().slice(0, 120))
+
+function dispatchSeen(toolUseId: string, tasks: string[], input: any): void {
+  if (dispatches.size >= OWNERS_KEPT) dispatches.delete(dispatches.keys().next().value as string)
+  dispatches.set(toolUseId, { tasks, names: namesOf(input.name, input.description) })
+}
+
+/* never throws: the spawn hook's catch would spawn again; a resume keeps its first dispatch */
+function ownerSpawn(e: any, res: any): void {
+  try {
+    const id = res && res.agentId
+    if (!id || (res && res.deny)) return
+    if (owners.has(id) && !(e.tool_use_id && dispatches.has(e.tool_use_id))) return
+    if (owners.size >= OWNERS_KEPT) owners.delete(owners.keys().next().value as string)
+    owners.set(id, { use: e.tool_use_id, parent: e.parentAgentId, names: namesOf(e.name, e.description), tasks: tasksOfDispatch(e) })
+  } catch {}
+}
+
+/* An agent's dispatched tasks, from the first mapped ancestor up; its own names for the job. */
+function ownerOf(agentId: string): { tasks: string[]; names: string[] } {
+  let id: string | undefined = agentId
+  let names: string[] = []
+  for (let i = 0; id && i < 10; i++) {
+    const o = owners.get(id)
+    if (!o) break
+    const d = o.use ? dispatches.get(o.use) : undefined
+    if (!names.length) names = o.names.length ? o.names : d ? d.names : []
+    if (d && d.tasks.length) return { tasks: d.tasks, names }
+    /* a workflow agent's own description, where its Workflow call named none */
+    if (o.tasks.length) return { tasks: o.tasks, names }
+    id = o.parent
+  }
+  return { tasks: [], names }
+}
+
+/* argv with no shell, off the tool's wall time; never throws */
+const modGit = ($: any) => async (dir: string, args: string[]) => {
+  try {
+    const r = await $.process.run(['git', '-C', dir, ...args], { timeoutMs: 10000, env: { GIT_OPTIONAL_LOCKS: '0' } })
+    return { status: r.exitCode, out: String(r.stdout || '') }
+  } catch { return { status: -1, out: '' } }
+}
+
+/* the session's write: dropped when the board is away, never queued (the backfill catches it) */
+const linkSend = ($: any) => (input: any) => localVerb($, LINK_VERB, { input, session: input.session })
+
+/* the belt's last read of the session's repo, and the shas already sent */
+const belt: { top?: string; branch?: string; head?: string; since?: string; linked: Set<string>; busy: Set<Promise<void>> } = { linked: new Set(), busy: new Set() }
+const BELT_KEPT = 500
+function beltSaw(sha: string): void {
+  if (!sha) return
+  if (belt.linked.size >= BELT_KEPT) belt.linked.delete(belt.linked.values().next().value as string)
+  belt.linked.add(sha)
+}
+
+/* One commit linked by the design's order; `agentId` is the loop that made it. */
+async function linkHere($: any, c: { dirs: string[]; sha: string; agentId?: string; was?: string[] }): Promise<void> {
+  const own = c.agentId ? ownerOf(c.agentId) : { tasks: [], names: [] }
+  const r = await captureCommit(modGit($), linkSend($), {
+    dirs: c.dirs, sha: c.sha, was: c.was, session: await sessionId($), job: own.names[0] || '', agentTasks: own.tasks,
+    tagged: own.names.length ? taggedTasks(band.graph && band.graph.view, own.names) : [], hand: band.hand || [],
+  })
+  if (r) beltSaw(r.sha)
+}
+
+/* the HEADs a commit call starts on; never throws */
+async function headsBefore($: any, e: any): Promise<string[] | undefined> {
+  try { return await headsOf(modGit($), repoCandidates(toolInput(e).command, String(await $.session.cwd()))) } catch { return undefined }
+}
+
+function commitSeen($: any, cwd: string, e: any, res: any, was?: string[]): void {
+  const run = linkHere($, { dirs: repoCandidates(toolInput(e).command, cwd), sha: shaHint(res.result).sha, agentId: e.agentId, was }).catch(() => {})
+  belt.busy.add(run)
+  void run.finally(() => belt.busy.delete(run))
+}
+
+/* At the main loop's turn end: commits on the session's branch no tool call showed (a
+   script's, the app's own commit action), since the last read; a branch switch is no commit. */
+async function beltCheck($: any): Promise<void> {
+  await Promise.allSettled([...belt.busy])
+  const git = modGit($)
+  const r = await git(await projectDir($), ['rev-parse', '--path-format=absolute', '--show-toplevel', '--abbrev-ref', 'HEAD', 'HEAD'])
+  const [top, branch, head] = String(r.out).split(/\r?\n/).map((s) => s.trim())
+  if (r.status !== 0 || !top || !head) return
+  const was = { top: belt.top, branch: belt.branch, head: belt.head, since: belt.since }
+  Object.assign(belt, { top, branch, head, since: new Date(Date.now() - 5000).toISOString() })
+  if (!was.head || was.head === head || !was.top || !sameDir(was.top, top) || was.branch !== branch) return
+  const list = await git(top, ['rev-list', '--reverse', '--max-count=20', '--since=' + was.since, was.head + '..' + head])
+  if (list.status !== 0) return
+  for (const sha of String(list.out).split(/\r?\n/).map((s) => s.trim()).filter(Boolean)) {
+    if (belt.linked.has(sha)) continue
+    beltSaw(sha)
+    await linkHere($, { dirs: [top], sha })
+  }
 }
 
 /* at the agent's end its size and whether it finished its brief
@@ -4451,14 +4664,16 @@ function flagSlips($: any, what: string, slips: any[]): void {
 /* the dispatch checks run where rules are in force (none with no board); a
    brief file the prompt names is read for lines against them. */
 async function agentFlag($: any, input: any, toolUseId?: string): Promise<void> {
-  const r = await readRules($).catch(() => null)
-  if (!(r && r.values)) return
   const briefs: string[] = []
   for (const f of briefPaths(input.prompt, await projectDir($))) {
     try { const t = await $.fs.read(f); if (typeof t === 'string') briefs.push(t) } catch {}
   }
   /* the tasks it serves, for its lane size at its end and the last lane's flag */
   const tasks = tasksOfDispatch(input, briefs)
+  /* the commit join holds with no rules in force */
+  if (toolUseId) dispatchSeen(toolUseId, tasks, input)
+  const r = await readRules($).catch(() => null)
+  if (!(r && r.values)) return
   const name = String(input.description || input.subagent_type || 'an agent').slice(0, 60)
   if (toolUseId && tasks.length) {
     if (dispatched.size >= 20) dispatched.delete(dispatched.keys().next().value as string)
@@ -4722,6 +4937,8 @@ export const register: Register = (on: any) => {
     void pruneKept($).catch(() => {})
     where.paneRead = false
     void readWhere($).catch(() => {})
+    /* the belt's first read of HEAD */
+    void beltCheck($).catch(() => {})
     return res
   })
 
@@ -4766,6 +4983,7 @@ export const register: Register = (on: any) => {
       try { flightEnd($, e.agentId) } catch {}
       void laneEnd($, e.agentId, String(e.answer || '')).catch(() => {})
     }
+    if (e.agentId === undefined) void beltCheck($).catch(() => {})
     return next(e)
   })
 
@@ -4812,6 +5030,11 @@ export const register: Register = (on: any) => {
         await dispatchFresh($, e.tool_use_id)
         await agentFlag($, toolInput(e), e.tool_use_id).catch(() => {})
       }
+      else if (e.tool === 'Workflow' && e.tool_use_id) {
+        /* a workflow's agents spawn under this call's id */
+        const w = toolInput(e)
+        dispatchSeen(e.tool_use_id, tasksOfDispatch({ description: w.description, prompt: String(w.script || w.name || '') }), w)
+      }
       else if (COMMAND_TOOLS.includes(e.tool) && isHubShell(toolInput(e).command)) hub = true
       /* a call matching a procedure's trigger points the model at its file */
       if (COMMAND_TOOLS.includes(e.tool) || FILE_TOOLS.includes(e.tool)) {
@@ -4836,6 +5059,9 @@ export const register: Register = (on: any) => {
       if (f && !f.done) f.tool = e.tool
       /* engaged after the call runs, so a binding it makes narrows the first draw */
       let res: any
+      /* HEAD at the call's start, so a failed commit never links the old HEAD again */
+      const commit = COMMAND_TOOLS.includes(e.tool) && commitsIn(toolInput(e).command)
+      const was = commit ? await headsBefore($, e) : undefined
       try { return (res = await next(e)) } finally {
         if (hub) engage($)
         /* a close run from the shell lists the inbox it leaves; its ids ride the turn */
@@ -4844,6 +5070,10 @@ export const register: Register = (on: any) => {
           if (c) keepInbox(c.track, c.ids, !!c.more)
         }
         if (f && f.tool === e.tool) { f.tool = undefined; flightRedraw($) }
+        /* every loop's commit; the folder is read here, the git reads and the link run behind */
+        if (res && !res.isError && commit) {
+          try { commitSeen($, String(await $.session.cwd()), e, res, was) } catch {}
+        }
       }
     }
     return { deny: agentDenyReason({ tokens: a.tokens, guard: g, note: '' }) }
@@ -4856,6 +5086,7 @@ export const register: Register = (on: any) => {
     if (e.workflow || e.resume) {
       const res = await next(e)
       flightStart($, e, res)
+      ownerSpawn(e, res)
       return res
     }
     /* the rulings on the dispatch's tasks follow the rules block */
@@ -4865,6 +5096,7 @@ export const register: Register = (on: any) => {
     const res = await (prompt === e.prompt ? next(e) : next({ ...e, prompt }))
     laneStart(e.tool_use_id, res && res.agentId)
     flightStart($, e, res)
+    ownerSpawn(e, res)
     return res
   }).catch(($: any, e: any, next: any) => next(e))
 
@@ -4984,6 +5216,12 @@ export const register: Register = (on: any) => {
     return updateTool($, toolInput(e))
   }).catch(toolFailed)
   on('tool.call', { tool: 'mcp__askerdo__depth' }, async ($: any, e: any) => depthTool($)).catch(toolFailed)
+  for (const name of ['review_covers', 'coverage']) {
+    on('tool.call', { tool: 'mcp__askerdo__' + name }, async ($: any, e: any) => {
+      await settle($).catch(() => {})
+      return coverageTool($, name, toolInput(e))
+    }).catch(toolFailed)
+  }
 
   /* the band draws on the terminal and desktop surfaces only */
   on('ui.render', { component: 'AbovePrompt' }, async ($: any, e: any, next: any) => {
@@ -5117,10 +5355,12 @@ export const register: Register = (on: any) => {
     }
     if (!cards.length) return next(e)
     /* the desktop, where the card is measured to draw, draws the reply without
-       the question's block; the stored message and every other screen keep it */
+       the question's block; the stored message and every other screen keep it. Its
+       footer draws under the last card, so it stays the last thing on screen */
     const text = e.props && typeof e.props.text === 'string' ? e.props.text : ''
-    const shown = e.surface === 'desktop' && text && !e.props.isSummary ? hideTold(text, drawn) : text
-    return underReply(els, await next(shown !== text ? { ...e, props: { ...e.props, text: shown } } : e), cards.map((c) => handedKeys(c, e.surface, true)))
+    const parts = e.surface === 'desktop' && text && !e.props.isSummary ? tellingParts(text, drawn) : { body: text, footer: '' }
+    const shown = parts.body
+    return underReply(els, await next(shown !== text ? { ...e, props: { ...e.props, text: shown } } : e), cards.map((c) => handedKeys(c, e.surface, true)), parts.footer)
   })
 
   /* the main loop's text rows; a telling sits under the one carrying its block */

@@ -285,6 +285,9 @@ test('a handoff written through the launcher keeps its loose-file lists on the P
 
   await assert.rejects(boardCall('writeHandoff', { track: tr.id, focus: 'x', state: 'y', verify: [{ path: repo, files: [] }] }),
     (e) => e.message.includes('files'), 'the board refuses the lists');
+  /* an older AskerDo's renamed key is refused with the update fix, never dropped */
+  await assert.rejects(boardCall('writeHandoff', { track: tr.id, focus: 'x', state: 'y', waitingOnUser: ['a line'] }),
+    (e) => /unknown field "waitingOnUser"/.test(e.message) && /plugin update/.test(e.message) && /new session/.test(e.message), 'the board names the stale key and the fix');
 });
 
 test('the kickoff reads the handoff folder through this PC\'s map: a worktree maps its main checkout, the session\'s own checkout comes first, an unmapped project says so', async () => {

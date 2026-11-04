@@ -5,6 +5,7 @@ import { UsageError, resolveLabel, resolveLegacy as legacyOf } from './labels.mj
 import {
   addEdge, addItem, checkItem, moveItem, removeEdge, startTask,
 } from './graph.mjs';
+import { trackFound } from './found.mjs';
 import {
   acquireLease, capture, dropTrack, finishTrack, foldBack, layOut, listTracks, newTrack, parkTrack, promoteTask, releaseLease,
   renewLease, reorder, splinter, takeOver, trackSummary, trackView, workstreamView,
@@ -12,7 +13,7 @@ import {
 import { boardSnapshot, workingSet } from './snapshot.mjs';
 import { readHandoff, resumeCutoff, resumeTrack, shelf, trackHandoffs, trackKickoff, updateHandoff, writeHandoff } from './handoffs.mjs';
 import {
-  amendKnowledge, closeRecord, createKnowledge, createRecord, editKnowledge, editRecord, heldTask, listWork, noteRecord, readRecord, reopenRecord, supersedeKnowledge,
+  amendKnowledge, closeRecord, createKnowledge, editKnowledge, fileRecord, editRecord, heldTask, listWork, noteRecord, readRecord, reopenRecord, supersedeKnowledge,
   taskUpdate, waitsOn,
 } from './work.mjs';
 import {
@@ -30,6 +31,7 @@ import { bandCalls, bandKeep, lookNotYet, upkeepDryRun, upkeepSwitch } from './u
 import { applyPicture } from './picture.mjs';
 import { overrideDecide, overrideRequest, overrideUnscrub, overrideView } from './override.mjs';
 import { projectsRename } from './projects.mjs';
+import { commitLink, commitMove, coverage, reviewCovers } from './coverage.mjs';
 
 /* A legacy brain id, { id, project, cwd } in: { key, entry } out, `entry.label` its record's label now. */
 const resolveLegacy = (db, input) => {
@@ -39,11 +41,12 @@ const resolveLegacy = (db, input) => {
 
 const GROUPS = [
   { register, answer, drop, snooze, wake, surface, subscribe, show, list, peekOpenQuestions, peekSessionScope, namesLine, editQuestion },
-  { createRecord, editRecord, taskUpdate, closeRecord, reopenRecord, noteRecord, createKnowledge, supersedeKnowledge, readRecord, listWork, waitsOn, heldTask },
+  /* a session's task names its place (work.mjs fileRecord); the board's own callers use createRecord */
+  { createRecord: fileRecord, editRecord, taskUpdate, closeRecord, reopenRecord, noteRecord, createKnowledge, supersedeKnowledge, readRecord, listWork, waitsOn, heldTask },
   { addEdge, removeEdge, startTask, addItem, checkItem, moveItem },
   {
     newTrack, splinter, capture, layOut, reorder, parkTrack, finishTrack, dropTrack, promoteTask, foldBack,
-    acquireLease, renewLease, releaseLease, takeOver, trackSummary, trackView, listTracks, workstreamView,
+    acquireLease, renewLease, releaseLease, takeOver, trackSummary, trackView, listTracks, workstreamView, trackFound,
   },
   { writeHandoff, updateHandoff, resumeTrack, trackKickoff, trackHandoffs, readHandoff, shelf, resumeCutoff },
   { search, activity },
@@ -60,6 +63,8 @@ const GROUPS = [
   { overrideRequest, overrideDecide, overrideUnscrub, overrideView },
   /* a project's records onto its new shared name */
   { projectsRename },
+  /* the commits a task finished with and the reviews that read them */
+  { commitLink, commitMove, reviewCovers, coverage },
 ];
 
 /* two groups adding the same name would shadow one verb silently */

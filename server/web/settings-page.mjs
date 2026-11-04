@@ -108,13 +108,14 @@ function control(m, row, target, back) {
   if (row.kind === 'choice') {
     return form('<span class="seg" role="group"' + attr('aria-label', row.label) + '>' + row.values.map((c) => '<button type="submit" name="value"' + attr('value', c) + (c === row.value ? ' class="on" aria-pressed="true"' : '') + '>' + esc(valueWords(row, c)) + '</button>').join('') + '</span>');
   }
-  if (row.kind === 'percent' || row.kind === 'tokens' || row.kind === 'text') {
+  if (row.kind === 'percent' || row.kind === 'tokens' || row.kind === 'count' || row.kind === 'text') {
     const drawn = row.kind === 'tokens' ? kWords(row.value) : String(row.value);
     /* a refused save draws the stored value again, the refusal line under it, as the pane does */
     const short = row.kind !== 'text';
     const input = '<input class="fld' + (short ? ' short' : '') + '" name="value"' + attr('value', drawn) + attr('data-drawn', drawn) + attr('aria-label', row.label)
-      + (short ? ' inputmode="' + (row.kind === 'percent' ? 'numeric' : 'text') + '"' : ' placeholder="none"') + ' autocomplete="off">';
-    return form(input + (short ? '<span class="dim">' + (row.kind === 'percent' ? '%' : 'tokens') + '</span>' : '') + '<button type="submit" class="gbtn">Save</button>', short ? 'ctl' : 'ctl wide');
+      + (short ? ' inputmode="' + (row.kind === 'tokens' ? 'text' : 'numeric') + '"' : ' placeholder="none"') + ' autocomplete="off">';
+    const unit = { percent: '%', tokens: 'tokens', count: 'tasks' }[row.kind];
+    return form(input + (short ? '<span class="dim">' + unit + '</span>' : '') + '<button type="submit" class="gbtn">Save</button>', short ? 'ctl' : 'ctl wide');
   }
   return '<div class="ctl"><span class="val">' + esc(valueWords(row)) + '</span></div>';
 }

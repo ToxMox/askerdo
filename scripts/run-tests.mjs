@@ -16,7 +16,7 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
    spawned CLI honours over the throwaway home, and the nested runner's context, which
    turns a child node --test into a silent subtest stream */
 const DROP = ['ASKERDO_ROOT', 'ASKERDO_SANDBOX_HOME', 'ASKERDO_MOD', 'CLAUDE_CODE_SESSION_ID',
-  'ASKERDO_BOARD_URL', 'ASKERDO_BOARD_TOKEN', 'CLAUDE_PLUGIN_DATA', 'NODE_TEST_CONTEXT'];
+  'ASKERDO_BOARD_URL', 'ASKERDO_BOARD_TOKEN', 'CLAUDE_PLUGIN_DATA', 'CLAUDE_CONFIG_DIR', 'NODE_TEST_CONTEXT'];
 /* claude.exe writes its own state file into HOME on every run */
 const PLUGIN_LEAVES = ['.claude.json'];
 

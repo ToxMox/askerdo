@@ -9,12 +9,13 @@ const GROUPS = [
   ['Questions', ['register', 'answer', 'drop', 'snooze', 'wake', 'surface', 'list', 'question edit']],
   ['Any record', ['show', 'read', 'resolve', 'search', 'activity', 'note', 'reopen', 'subscribe']],
   ['Workstreams and tasks', ['ws create', 'ws edit', 'ws close', 'task create', 'task edit', 'task update', 'check add', 'check done', 'check move', 'edge add', 'edge remove']],
-  ['Tracks and handoffs', ['resume', 'shelf', 'track list', 'track show', 'track mine', 'track new', 'track park', 'track finish', 'track drop', 'track splinter', 'track capture', 'track layout', 'track promote', 'track fold', 'track reorder', 'handoff write', 'handoff update']],
+  ['Tracks and handoffs', ['resume', 'shelf', 'track list', 'track show', 'track mine', 'track new', 'track park', 'track finish', 'track drop', 'track splinter', 'track capture', 'track layout', 'track promote', 'track fold', 'track reorder', 'track found', 'handoff write', 'handoff update']],
+  ['Commits and reviews', ['commit link', 'commit move', 'review covers', 'coverage']],
   ['Knowledge and decisions', ['knowledge new', 'knowledge supersede', 'knowledge amend', 'knowledge edit', 'decide', 'decisions', 'decisions triggers']],
   ['Settings and profiles', ['settings', 'settings set', 'settings unset', 'settings rule', 'profile add', 'profile remove', 'profile show-effective', 'profile rule-add', 'profile rule-drop', 'profile rule-clear', 'profile define', 'profile list', 'profile guard']],
   ['Procedures', ['proc scan', 'proc ran', 'proc find', 'proc triggers']],
   ['Overrides', ['override request', 'override decide', 'override unscrub']],
-  ['This PC and the board', ['board', 'board here', 'timings', 'projects', 'projects scan', 'projects forget', 'projects rename', 'login', 'join-code', 'join', 'upkeep', 'upkeep on', 'upkeep off', 'legacy', 'help']],
+  ['This PC and the board', ['board', 'board here', 'timings', 'projects', 'projects scan', 'projects forget', 'projects rename', 'login', 'join-code', 'join', 'upkeep', 'upkeep on', 'upkeep off', 'status', 'board move', 'backup', 'restore', 'legacy', 'help']],
 ];
 
 /* GitHub's heading anchor for a verb heading such as "ws create" */

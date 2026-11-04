@@ -1,6 +1,7 @@
 /* The web views' reads: each page's model in one read transaction,
    from the track verbs' views plus the few rows only a page shows. Read only. */
 import { readTx } from '../db.mjs';
+import { WEB } from '../paths.mjs';
 import { layoutGraph, layoutInput, linesTouching } from '../layout.mjs';
 import { graphOf, shortTitle } from './graph.mjs';
 import { clockOf, isKey, labelOf } from '../records.mjs';
@@ -80,7 +81,15 @@ const wsOfRecord = (db, key) => (db.stmt('SELECT workstream FROM records WHERE k
 
 /* The drawn graph's three inputs from the track views: g and D (server/web/graph.mjs, its
    look read from the tables) and L (server/layout.mjs). */
+/* each track, station, finished task, review and covered task carries its board page */
+const pageOf = (x) => (x && x.id ? { ...x, url: x.url || WEB.record(x.id) } : x);
+export const withPages = (views) => views.map((tv) => ({
+  ...pageOf(tv), tasks: (tv.tasks || []).map(pageOf),
+  finished: (tv.finished || []).map((f) => ({ ...pageOf(f), ...(Array.isArray(f.covers) ? { covers: f.covers.map(pageOf) } : {}) })),
+}));
+
 export function graphFrom(db, views, now, { layout = true } = {}) {
+  views = withPages(views);
   const keyOf = new Map();
   for (const tv of views) for (const t of tv.tasks) keyOf.set(t.id, t.key);
   const gates = gatesOf(db, [...keyOf.values()]);

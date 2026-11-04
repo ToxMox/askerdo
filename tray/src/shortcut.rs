@@ -14,7 +14,7 @@
  * The undo is one step, and --unregister does it:
  *   del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\AskerDo.lnk"
  */
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{
@@ -110,6 +110,34 @@ fn is_current(path: &PathBuf, dir: &str) -> bool {
     match std::fs::read(path) {
         Ok(bytes) => holds(&bytes, AUMID) && holds(&bytes, dir) && holds(&bytes, LINK_ARGS),
         Err(_) => false,
+    }
+}
+
+/* The resident start's gate: a copy run from another store's board/tray/<build>
+   folder (a sandbox or a rehearsal) leaves the person's link alone, since the
+   link would name that copy. --register still writes it on request. */
+pub fn from_other_store(live: Option<&Path>) -> bool {
+    match exe_path() {
+        Ok(exe) => other_store(&exe, live),
+        Err(_) => false,
+    }
+}
+
+fn other_store(exe: &Path, live: Option<&Path>) -> bool {
+    let named = |p: Option<&Path>, n: &str| {
+        p.and_then(|p| p.file_name()).map_or(false, |f| f.eq_ignore_ascii_case(n))
+    };
+    let tray = exe.parent().and_then(|b| b.parent());
+    let board = tray.and_then(|t| t.parent());
+    if !named(tray, "tray") || !named(board, "board") {
+        return false;
+    }
+    let norm = |p: &Path| {
+        p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_lowercase()
+    };
+    match (board.and_then(|b| b.parent()), live) {
+        (Some(store), Some(live)) => norm(store) != norm(live),
+        _ => true,
     }
 }
 
@@ -239,6 +267,15 @@ unsafe fn write_link_inner(path: &str, exe: &str, home: &str, icon: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_copy_in_another_store_skips_the_link() {
+        let live = Path::new("C:/Users/x/.claude/askerdo");
+        let copy = |s: &str| PathBuf::from(s);
+        assert!(!other_store(&copy("C:\\Users\\x\\.claude\\askerdo\\board\\tray\\abc\\askerdo-tray.exe"), Some(live)));
+        assert!(other_store(&copy("C:/tmp/sb/.claude/askerdo/board/tray/abc/askerdo-tray.exe"), Some(live)));
+        assert!(!other_store(&copy("C:/cache/askerdo/0.8.14/assets/askerdo-tray.exe"), Some(live)));
+    }
 
     #[test]
     fn holds_finds_a_utf16_run() {

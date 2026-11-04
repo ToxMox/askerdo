@@ -1,6 +1,6 @@
 # AskerDo
 
-**A Claude Code plugin that gives every reply a shape you take in at a glance, and puts every question and every piece of work on one board you answer from anywhere.**
+**A Claude mod and plugin that gives every reply a shape you take in at a glance, and puts every question and every piece of work on one board you answer from anywhere.**
 
 <table>
 <tr>
@@ -14,6 +14,20 @@
 </table>
 
 AskerDo runs inside the Claude desktop app and Claude Code. Its board runs on your one PC, or on a server that every PC you use shares.
+
+## A mod, not only a plugin
+
+A plugin adds skills, hooks and an output style. A mod changes the app itself, and AskerDo is both: most of what you see of it is drawn into the Claude desktop app's own window. Claude mods are new and there are few of them, and few reach this far into the desktop app:
+
+- **The Needs you band** above the prompt box: each open question with its answer chips, the calls only you can close (a look, a review due, an override), answers waiting, and a row naming what to fix when AskerDo on this PC needs it.
+- **The status row** on the band's last line: the context and usage rings, the agents running and their depth, the agent guard, the track and task this session holds, and the shelf.
+- **Question cards** under the reply that asked, answered with one press, with the reply's Needs you footer drawn under the last card.
+- **The AskerDo pane** beside the conversation, with **Home**, **Questions**, **Tracks**, **Settings** and **Guide** tabs.
+- **The station map** on Home: the held track drawn as stations with what waits on what, the finished work no review has read yet, and each review with what it covered.
+- **Links everywhere**: every track, task, question and decision name the pane and the band's hover cards draw opens its page on the board.
+- **The `/askerdo` command**, which answers in the app itself, most of it without starting a model turn.
+
+Claude Code in a terminal gets the same band, status row and `/askerdo` command, drawn in text. The reply shape, the skills and the board also work where the mod does not run ([Install](#install) says which releases carry it).
 
 ## What it looks like
 
@@ -40,6 +54,8 @@ The AskerDo mark on the status row shows what waits elsewhere; hover it for the 
 The track on the status row opens its card: progress, what is ready next, the longest chain, the question holding it and the last handoff.
 
 ![The track's hover card: 4 of 6 done, the task ready next, the longest chain, a blocking question and the last handoff](docs/img/readme/hover-track.png)
+
+**Reviews on the board.** Each commit is linked to the task it finished, and a review task records the code tasks it read. Once a track's unreviewed code tasks reach the review size (5 by default), the band and the Tracks tab say a review is due. The station map draws unreviewed work as amber beads on the track and each review as a diamond holding what it covered. At the full review depth, a review reopens when work it read changes, and a track finishes only once a review has read its code.
 
 **Tray popups.** On Windows, a tray icon shows whether anything is blocking and pops up a card when a question arrives, so a question reaches you while the app is in the background.
 
@@ -89,7 +105,9 @@ Then, in any Claude Code session:
 /askerdo:configure
 ```
 
-Configure asks for your options, installs the output style, then asks which board this PC uses: a board on this PC, a Docker board, or one you already have. It runs every step itself, with no file to edit by hand. The style loads at session start, so the new shape shows in your next session. [Getting started](docs/guide/getting-started.md) walks it through.
+A later release reaches a PC with `claude plugin update askerdo@askerdo` and a new session, or on its own once the Claude app's auto-update for AskerDo is on, which configure offers ([Updating](docs/guide/getting-started.md#updating)). Never remove the marketplace to update: a remove uninstalls the plugin with it.
+
+Configure asks for your options, installs the output style, then asks which board this PC uses: a board on this PC, a Docker board, or one you already have, and offers once to turn on the Claude app's auto-update for AskerDo and, on a board, to pick how closely the board tracks reviews. It runs every step itself, with no file to edit by hand. The style loads at session start, so the new shape shows in your next session. [Getting started](docs/guide/getting-started.md) walks it through.
 
 Requires Node.js on the plain `PATH` (any recent LTS: the hooks, skills and CLI run with `node`; a board on this PC needs Node 24 there, while a Docker board brings its own) and Claude Code 2.0.37 or newer, the release that added the `keep-coding-instructions` field this plugin's output style sets. On 2.1.91 and newer the style is picked by the `outputStyle` setting, which configure writes for you. The band above the prompt, the AskerDo pane and the `/askerdo` command come from the plugin's mod, measured on Claude Code 2.1.299 and later; an older release was not measured, so expect only the output style, the skills and the hooks there.
 
@@ -99,13 +117,13 @@ Requires Node.js on the plain `PATH` (any recent LTS: the hooks, skills and CLI 
 |-|-|
 |[Getting started](docs/guide/getting-started.md)|Install, configure, pick a board, your first question|
 |[Daily use](docs/guide/daily-use.md)|The band, the status line, the pane and every `/askerdo` command|
-|[Concepts](docs/guide/concepts.md)|Questions, workstreams, tracks, handoffs, profiles, knowledge, decisions, procedures|
+|[Concepts](docs/guide/concepts.md)|Questions, workstreams, tracks, handoffs, review coverage, profiles, knowledge, decisions, procedures|
 |[Set up a board](docs/guide/board-setup.md)|A board on this PC, with backups and restore, or a board in Docker; moving between them|
 |[Add a PC](docs/guide/add-a-pc.md)|Join another PC with a code; what each platform gets|
 |[Onboard a project](docs/guide/onboarding.md)|Move a project's old notes onto the board|
 |[Settings and rules](docs/guide/settings-and-rules.md)|Reply settings, profiles and rule lines|
 |[CLI reference](docs/guide/cli.md)|Every `askerdo` verb|
-|[Troubleshooting](docs/guide/troubleshooting.md)|The board offline, notifications, a stuck track, the logs|
+|[Troubleshooting](docs/guide/troubleshooting.md)|`askerdo status`, the board offline, notifications, a stuck track, the logs|
 |[Architecture](docs/guide/architecture.md)|The parts and how a question travels|
 
 The [docs index](docs/README.md) also lists the reference Claude reads and the build history.
@@ -118,7 +136,7 @@ Every option lives in the Settings tab of the AskerDo pane (`/askerdo pane`, the
 
 |Skill|What it does|
 |-|-|
-|`/askerdo:configure`|Set up the contract by interview, or from options pasted from another PC: eleven toggles, your own custom rules (without a board), dialog policy and the mod's command alias; writes each through `askerdo settings set`, installs, and puts this PC on a board: a board on this PC, a guided Docker board, or one you already have (text mode when you decline)|
+|`/askerdo:configure`|Set up the contract by interview, or from options pasted from another PC: eleven toggles, your own custom rules (without a board), dialog policy and the mod's command alias; writes each through `askerdo settings set`, installs, and puts this PC on a board: a board on this PC, a guided Docker board, or one you already have (text mode when you decline); offers the Claude app's auto-update for AskerDo once per PC, and on a board the review coverage depth|
 |`/askerdo:chat-preferences`|Print the claude.ai personal-preferences text for pasting into chat settings|
 |`/askerdo:measure`|Re-run the display-capability test cards and report deltas against the shipped docs|
 |`/askerdo:onboard`|Move one project's old handoff files, TODO lists, decision logs, CLAUDE.md rules and Claude memory onto the board, after a read-only survey, a review page you mark and a rehearsal on a scratch board; a manifest undoes the import|
@@ -128,7 +146,8 @@ Every option lives in the Settings tab of the AskerDo pane (`/askerdo pane`, the
 |Path|Content|
 |-|-|
 |`~/.claude/output-styles/askerdo.md`|the contract, as a generated output style ending with its desktop and terminal sections (where the mod runs it adds the session's one to the prompt); rewritten whole on every change|
-|`~/.claude/settings.json`|one key, `"outputStyle": "askerdo"`; every other setting is preserved|
+|`~/.claude/settings.json`|one key, `"outputStyle": "askerdo"`; every other setting is preserved. On a yes to the auto-update offer, also `autoUpdate` on the `askerdo` entry under `extraKnownMarketplaces` when that entry is there|
+|`~/.claude/plugins/known_marketplaces.json`|on a yes to the auto-update offer, `"autoUpdate": true` on the `askerdo` entry, the switch `/plugin` shows under Marketplaces; every other key is preserved|
 |`~/.claude/settings.json.bak` (then `.bak1`, ...)|copy taken before that key is written, which normally happens once|
 |`<data>/config.json`|your saved options, custom rules included|
 |`.claude/questions/<session-id>/` (in each project)|the session's question queue in text queue mode: one markdown file per registered question plus its index. Untracked working state the model never stages; add `.claude/questions/` to your repo's ignore rules if the git-status noise bothers you|
@@ -138,9 +157,10 @@ Every option lives in the Settings tab of the AskerDo pane (`/askerdo pane`, the
 |`<data>/queued-answers.json`|answers you queued on a question card until **Send**, by session; they stay on this PC|
 |`<data>/claude-chat-preferences.md`|the claude.ai text as last exported|
 |`<data>/sync.log`|one line per state change, warning, or error; a run that changes nothing logs nothing|
+|`<data>/commit-links.log`|a line for each time a handoff, a resume or `coverage --scan` could not link the commits whose messages name a task|
 |`<data>/last-sync`|zero-byte stamp, touched by every flagless sync run, that collapses the harness's duplicate hook spawns to one set of messages|
 
-`<data>` is the directory Claude Code passes as `CLAUDE_PLUGIN_DATA`, typically `~/.claude/plugins/data/askerdo-askerdo/`. The hub's folder is the deliberate exception: it lives at `~/.claude/askerdo/`, outside the data directory and outside the versioned plugin cache, so the launcher path and the inboxes survive plugin updates and reinstalls; the records live on the board server.
+`<data>` is this PC's folder, `~/.claude/askerdo/pc/`. It sits outside the plugin's own data directory and outside the versioned plugin cache, like the rest of `~/.claude/askerdo/`, so a plugin update, an uninstall or a marketplace remove never deletes your options, the launcher path or the inboxes; the records live on the board server. Where this PC's files are still in the plugin data directory (`~/.claude/plugins/data/askerdo-askerdo/` or a sibling holding `config.json`), they are read there until the next session start copies them into `pc/`, which leaves the old folder as it was.
 
 ## claude.ai chat preferences
 
@@ -148,7 +168,7 @@ The chat apps read nothing from disk, so the plugin also generates a companion t
 
 ## Uninstall
 
-`claude plugin uninstall askerdo@askerdo --keep-data`, then delete `~/.claude/output-styles/askerdo.md` and remove the `"outputStyle"` line from `~/.claude/settings.json`; the plugin never edits your settings on the way out, and Claude Code falls back to its default style once that line is gone. `--keep-data` preserves your saved options under `~/.claude/plugins/data/` for a later reinstall; leave it off for no trace, since a plain uninstall deletes the plugin's data directory with them. The hub store at `~/.claude/askerdo/` is never touched by an uninstall either way, a board on this PC under `board-host/` included: your questions are yours, so delete that directory by hand if you want them gone.
+`claude plugin uninstall askerdo@askerdo`, then delete `~/.claude/output-styles/askerdo.md` and remove the `"outputStyle"` line from `~/.claude/settings.json`; the plugin never edits your settings on the way out, and Claude Code falls back to its default style once that line is gone. An uninstall never touches `~/.claude/askerdo/`: your saved options and board join in `pc/` stay for a later reinstall, and a board on this PC under `board-host/` stays too. Your questions are yours, so delete that directory by hand if you want no trace.
 
 ## Development
 

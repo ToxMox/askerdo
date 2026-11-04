@@ -13,6 +13,8 @@ import { childEnv, tempDir } from './helpers/sandbox.mjs';
 const syncScript = join(pluginRoot, 'hooks', 'sync.mjs');
 const STYLE = join('.claude', 'output-styles', 'askerdo.md');
 const DATA = join('.claude', 'plugins', 'data', 'askerdo-askerdo');
+/* where the sync logs: this PC's own folder, a fresh one or the one the old DATA moved into */
+const PC = join('.claude', 'askerdo', 'pc');
 const STALE_LAUNCHER = '/* AskerDo launcher, maintained by the AskerDo sync; edits are overwritten */\n'
   + 'await import("file:///C:/nowhere/bin/askerdo.mjs");\n';
 
@@ -99,7 +101,7 @@ test('THE SANDBOX SEAM: with ASKERDO_ROOT set the home gets no writes and the sa
   /* the contract names that launcher, so the model's CLI calls run this copy's code */
   assert.ok(style.includes('node ' + join(rig, 'cli.mjs').replace(/\\/g, '/') + ' register'), 'the style names the sandbox launcher');
   assert.ok(!style.includes('~/.claude/askerdo/cli.mjs register'), 'and not the live one');
-  assert.ok(existsSync(join(sbxHome, DATA, 'sync.log')), 'the sync log lands in the sandbox data dir');
+  assert.ok(existsSync(join(sbxHome, PC, 'sync.log')), 'the sync log lands in the sandbox data dir');
   /* the /askerdo command file lands in the sandbox home too (the home's snapshot above holds none) */
   assert.match(readFileSync(join(sbxHome, '.claude', 'commands', 'askerdo.md'), 'utf8'), /^---\ndescription: /);
   /* the board ensure is skipped by name: it registers the one machine-wide task */
@@ -117,7 +119,7 @@ test('ASKERDO_SANDBOX_HOME alone moves the home, the data dir and the store unde
   assert.ok(out.includes('output style regenerated'), out);
   assert.ok(existsSync(join(sbxHome, STYLE)));
   assert.ok(existsSync(join(sbxHome, '.claude', 'askerdo', 'cli.mjs')), 'the store root moved with the home');
-  assert.ok(existsSync(join(sbxHome, DATA, 'sync.log')));
+  assert.ok(existsSync(join(sbxHome, PC, 'sync.log')));
 });
 
 test('a sandbox seam that cannot be used writes nothing anywhere and says so', () => {
@@ -156,7 +158,7 @@ test('a seam naming the live store is no sandbox; the sync runs as usual and say
   assert.ok(out.includes('output style regenerated'), out);
   assert.notEqual(readFileSync(join(home, STYLE), 'utf8'), 'stale style\n', 'the live style was written');
   assert.ok(!existsSync(live + '-home'), 'no sandbox home beside the live store');
-  assert.match(readFileSync(join(home, DATA, 'sync.log'), 'utf8'), /names the live store/);
+  assert.match(readFileSync(join(home, PC, 'sync.log'), 'utf8'), /names the live store/);
 });
 
 test('a refused seam has no claude home and no data dir, never the real ones', async () => {

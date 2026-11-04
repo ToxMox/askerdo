@@ -67,12 +67,13 @@ The verbs, in one table:
 | `ws edit <id>` | `--name`, `--add-label`/`--remove-label`, `--add-ref`/`--remove-ref`, `--add-project`/`--remove-project`, `--add-outcome`/`--remove-outcome`, `--handoff` |
 | `ws close <id>` | status closed plus the date; `--outcome <text>` |
 | `reopen <WS-n>` | a prematurely closed workstream back to open |
-| `task create` | payload on stdin; issues `T-n` |
+| `task create` | payload on stdin; issues `T-n`; a session's names its place, `--track TR-n` (with `--before`/`--after T-n`) or `--unplaced "why"` |
 | `task update <id>` | `--status open\|in_progress\|dropped\|completed`, `--agent "<job name>"`, `--reason` (starting a task that is not ready), `--note` (a journal paragraph in the same call), `--priority`, `--name`, `--add-label`/`--remove-label`, `--in-hand`/`--let-go`, `--take-over`; the mod's `task_update` tool |
-| `task edit <id>` | the field flips: `--status`, `--priority`, `--name`, `--workstream`, `--clear-workstream`, `--serves`, `--clear-serves`, the label and ref flags, `--in-hand`, `--let-go`, `--take-over`. A task has no plan or ordinal on the board (`--plan` and `--ordinal` are refused): its track and place are the track verbs |
+| `task edit <id>` | the field flips: `--status`, `--priority`, `--name`, `--workstream`, `--clear-workstream`, `--serves`, `--clear-serves`, the label and ref flags, `--in-hand`, `--let-go`, `--take-over`; `--track TR-n` (with `--before`/`--after T-n`) or `--unplaced "why"` moves it. A task has no plan or ordinal on the board (`--plan` and `--ordinal` are refused) |
 | `note <id>` | `--body "text"`, or the body on stdin; appends one stamped journal paragraph to a workstream, task, track or knowledge record |
-| `track new`, `list`, `show`, `mine`, `park`, `finish`, `drop`, `splinter`, `capture`, `promote`, `fold` | tracks (Tracks and handoffs, below) |
+| `track new`, `list`, `show`, `mine`, `park`, `finish`, `drop`, `splinter`, `capture`, `promote`, `fold`, `found` | tracks (Tracks and handoffs, below) |
 | `resume <TR-n>` | take a track with its kickoff |
+| `coverage <TR-n>`, `review covers`, `commit move` | review coverage (Tracks and handoffs, below) |
 | `handoff write <TR-n>` | payload on stdin; issues `TR-n.m` |
 | `shelf` | waiting and parked tracks everywhere, oldest first |
 | `edge add`, `edge remove` | "depends on" edges, each with `--reason` |
@@ -152,7 +153,7 @@ node ~/.claude/askerdo/cli.mjs task create --json < payload.json
 | Kind | Required | Optional |
 |-|-|-|
 | `ws create` | `name`, `description` | `projects` (array), `outcomes` (array of lines), `handoff`, `labels`, `refs`, `session`, `created` |
-| `task create` | `name`, `description` | `intent`, `workstream`, `track` (a TR-n id: the task lands on that track), `priority`, `status`, `serves` (outcome ids), `labels`, `refs`, `origin`, `session`, `created` |
+| `task create` | `name`, `description`; from a session, `track` or `unplaced` | `intent`, `workstream`, `track` (a TR-n id: the task lands on that track), `before` and `after` (T-n ids on that track: the steps that wait on it, the ones it waits on), `unplaced` (why it waits on no track), `priority`, `status`, `serves` (outcome ids), `labels`, `refs`, `origin`, `session`, `created` |
 | `track new` | `--workstream`, `--name` | `--goal`, `--task T-n`, `--label`, `--ref` (each repeatable; labels and refs come at birth only), `--session` (the session takes it) |
 
 `session` is your own session id, read from the scratchpad path the
@@ -162,10 +163,36 @@ where a converted record came from. A referenced workstream MUST already
 exist: a dangling reference is refused (exit 1), never created on the
 fly. A task created without `serves` in a workstream with outcomes is
 flagged with a warning, never refused. `create --json` returns `{id,
-key, kind, name}`. Use the returned id from then on. A new task lands in
-its workstream's inbox; `track capture --task T-n --track TR-n` puts it
-on a track, or create it there in one step with `track capture --track
-TR-n --name "..."`.
+key, kind, name}`. Use the returned id from then on.
+
+**Found work never goes quiet.** A task a session files names its
+place, judged from what the work is and what it blocks: a track (this one
+or another, `before` or `after` the steps around it, the release among
+them) or `unplaced` with the reason it waits on no track. The session is
+the payload's `session`, else `--session`, else the shell's
+`CLAUDE_CODE_SESSION_ID`, so a filing from a session's shell counts as
+the session's. A filing with neither place nor reason is refused, and the
+refusal names the board's hint: the open track sharing the most labels,
+files and words with the task (its name, goal, last handoff's focus and
+task names), the session's own track first among ties, with the matches
+it found. The hint is one input beside the session's judgment, never
+applied and never required; the result carries it as `suggested` when
+the task went elsewhere. A creation with no session (a person's own call,
+the import, the board's own verbs) keeps no such rule. `track capture`
+into the inbox takes `--unplaced` the same way, and `task edit T-n
+--track TR-n --before T-m` or `--unplaced "why"` moves a task later.
+
+`track found TR-n` lists the tasks the track's arc made: the ones on it
+since it began (`--since handoff`: since its last handoff) and the ones
+its sessions filed anywhere, each with where it went (this track before
+or after which step, another track, or unplaced with its reason) and the
+command that moves it. The handoff result and the kickoff say where each
+went and list the unplaced with their reasons; a question gating a
+release task (its name starts with Release, or it carries the label
+`release`) gets a line in its gist, "Found this arc: N tasks: M on TR-n
+before it, K on other tracks, U unplaced", naming the unplaced, so the
+card the user answers from shows it; the Tracks tab draws a "Found this
+arc" row per track that found any, the unplaced count first.
 
 ## Editing
 
@@ -394,7 +421,7 @@ node ~/.claude/askerdo/cli.mjs shelf
   --session <own-id>` prints the held track (renewing its lease) and its
   workstream's tracks.
 - **A new idea.** `track capture --track TR-4 --name "..."` adds a task
-  to a track (`--workstream WS-3` to its inbox, `--task T-20` to move an
+  to a track (`--workstream WS-3 --unplaced "why"` to its inbox, `--task T-20` to move an
   existing task) and the session carries on. `track splinter TR-4 --name
   "..."` starts a side track now: the parent parks with "splintered to
   TR-7 at T-41" as its reason (`--at T-n` names the task it leaves from,
@@ -403,7 +430,9 @@ node ~/.claude/askerdo/cli.mjs shelf
   the splinter's reply and each handoff.
 - **Ending one.** `track finish TR-4 --outcome "..."` (done) and `track
   drop TR-4 --reason "..."` end it, `--leftovers inbox` or `drop` for
-  tasks still open. When a side track finishes or parks, the result hands
+  tasks still open. At full review depth a finish waits for a review of
+  the track's finished code (Review coverage, below); `--waive
+  "<reason>"` goes ahead and records why. When a side track finishes or parks, the result hands
   back its junction and the reply asks the user whether to go back on track
   there; nothing moves on its own.
 - **Big tasks.** Any task may carry a checklist: `check add T-13 --text
@@ -492,6 +521,40 @@ said so, never guessed. A folder that does not exist yet is made from the
 plugin's `templates/handoff/` (README.md, now.md, rules.md, map.md;
 budgets 5, 10, 11 and 16 KB, no line over 400 characters); an existing
 one is only recorded.
+
+### Review coverage
+
+The board keeps the commits each task finished with and the reviews that
+read them. The mod links every commit a session or its agents make, with
+no call from you: a task id in the message first, else the committing
+agent's dispatched task, else the task in hand (the newest, marked a
+guess, when several are). So name the task in every commit message
+(`T-13: ...`). A handoff, a resume and `coverage TR-4 --scan` link
+commits made outside a session whose messages name a task; `commit move
+<sha> --to T-14 --reason "..."` relinks one by hand.
+
+- **Code task:** one with a linked commit that changed counted source
+  (code and tests; never lockfiles, generated files, Markdown, docs,
+  fixtures or binaries, nor the files `review.ignore` names).
+- **Review task:** labelled `review`, or named "Review ...". Placing it
+  is your judgment, by the built-in review-stations rule line, laid out
+  on the track like any step. Completing it covers every unreviewed code
+  task on its track that finished before it started; `review covers T-30
+  T-21 T-22` (the mod's `review_covers` tool) sets the list instead.
+  `task create --review-scope project` (or `reviewScope` in a layout
+  step) makes one that reads the project's code tasks since the last
+  project-wide review, and the commits no task owns: use it before a
+  release that ships other tracks' work.
+- **Due:** a track whose unreviewed code tasks reach `review.tasks` (5)
+  reads review due on the user's band, in the kickoff and the handoff.
+  `coverage TR-4` (`WS-n` for a workstream; the mod's `coverage` tool)
+  lists each code task with the review covering it.
+- **Depth:** `review.depth` `light` (the default) only nudges. At `full`
+  a completed review reopens, with a journal note, when a task it covers
+  gains a commit or a task before it finishes after it, so what depends
+  on it waits again; and `track finish` is refused while finished code
+  sits after the last completed review (`--waive "<reason>"`). `off`
+  computes nothing.
 
 ### Loose files (T-310)
 

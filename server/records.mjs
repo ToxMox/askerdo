@@ -232,9 +232,10 @@ export const KEY_ORDERS = Object.freeze({
   /* plans, threads and a task's plan and ordinal: the raw import reads them until the track merge */
   plan: ['id', 'key', 'name', 'workstream', 'status', 'outcome', 'created', 'updated', 'closed', 'labels', 'refs', 'origin', 'profiles',
     'profileDrops', 'steps', 'stepTasks', 'stepCloses', 'subscribers', 'legacyId', 'labelHistory'],
-  /* `inHandSince`, when the session took it (newest first), and `agent`, the now set's tag, after inHand */
+  /* `inHandSince`, when the session took it (newest first), and `agent`, the now set's tag, after inHand;
+     `reviewScope` (project; track is the default, no key) is what a review reads */
   task: ['id', 'key', 'name', 'workstream', 'plan', 'status', 'priority', 'ordinal', 'labels', 'refs', 'created', 'updated', 'closed',
-    'origin', 'profiles', 'profileDrops', 'serves', 'subscribers', 'claimants', 'inHand', 'inHandSince', 'agent', 'legacyId', 'labelHistory'],
+    'origin', 'profiles', 'profileDrops', 'serves', 'subscribers', 'claimants', 'inHand', 'inHandSince', 'agent', 'reviewScope', 'legacyId', 'labelHistory'],
   thread: ['id', 'key', 'name', 'status', 'goal', 'links', 'session', 'step', 'created', 'updated', 'closed', 'labels', 'refs',
     'profiles', 'profileDrops', 'subscribers', 'legacyId', 'labelHistory'],
   /* a decision's links (the work it governs, the user's words, the question it answers) after refs */

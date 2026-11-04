@@ -106,6 +106,23 @@ export function leavesLine(leaves, track, cli = CLI) {
     + cli + ' edge add <the later task> <this one> --reason "<why>"`).';
 }
 
+/* a track's review readout in one line, for the kickoff and the handoff:
+   due names the count and the tasks, not due one quiet count, none nothing. */
+export function reviewLine(review, track) {
+  if (!review || !Array.isArray(review.uncovered) || !review.uncovered.length) return '';
+  const n = review.uncovered.length;
+  const tasks = n + ' finished code task' + (n === 1 ? '' : 's');
+  const ids = listWords(review.uncovered, (t) => t.id + ' ' + flat(t.name));
+  if (review.due) {
+    return 'Review due on ' + track + ': ' + tasks + ' no review read (' + ids + '), ' + review.lines + ' counted lines. '
+      + (review.planned ? review.planned + ' covers them when it completes'
+        : 'Put a review task on the track after them (labelled review, or named "Review ..."); it covers them when it completes')
+      + (review.locked ? ', and the track finishes only after one.' : '.');
+  }
+  return 'Unreviewed on ' + track + ': ' + tasks + ' (' + ids + '); a review is due at ' + review.size
+    + (review.locked ? ', and the track finishes only after one.' : '.');
+}
+
 /* The inbox and the three ways to place each item, said alike by the kickoff, track finish
    and handoff write, the mod's results too; an empty inbox says nothing. */
 export function inboxLines(inbox, cli = CLI) {
@@ -128,17 +145,30 @@ export function waitingOf(f) {
 }
 const SECTION = /^## /;
 
+/* a name the tools do not take is most often a session whose tool list is from an
+   older AskerDo than the installed one (no refusing path knows the session's own version).
+   `before`, the release that stopped sending the name, says the caller is older than that. */
+export function staleToolsLine(installed, before) {
+  if (before) {
+    return 'that name comes from an AskerDo older than ' + before + (installed ? ', and the board runs ' + installed : '')
+      + ': update AskerDo on this PC (claude plugin update askerdo@askerdo) and start a new session';
+  }
+  return 'a name ' + (installed ? 'AskerDo ' + installed : 'AskerDo') + ' does not take usually means this session began before an update'
+    + ' and keeps the older tool names: start a new session, which takes the installed tools';
+}
+
 /* The ops' shape, as sentences; [] when they pass. `max`: { line } */
 export function opsProblems(ops, max) {
   if (!Array.isArray(ops) || !ops.length) return ['ops is a list of one or more changes: ' + OPS_HINT];
   const e = [];
+  let unknown = false;
   ops.forEach((o, i) => {
     const at = 'ops[' + i + ']';
     if (!o || typeof o !== 'object' || Array.isArray(o)) { e.push(at + ' is an object: ' + OPS_HINT); return; }
-    if (typeof o.op !== 'string' || !Object.hasOwn(OP_FIELDS, o.op)) { e.push(at + '.op is one of ' + UPDATE_OPS.join(', ')); return; }
+    if (typeof o.op !== 'string' || !Object.hasOwn(OP_FIELDS, o.op)) { if (typeof o.op === 'string') unknown = true; e.push(at + '.op is one of ' + UPDATE_OPS.join(', ')); return; }
     const { op } = o;
     const fields = OP_FIELDS[op];
-    if (fields) for (const k of Object.keys(o)) if (k !== 'op' && !fields.includes(k)) e.push(at + ' (' + o.op + ') has unknown field "' + k + '"');
+    if (fields) for (const k of Object.keys(o)) if (k !== 'op' && !fields.includes(k)) { unknown = true; e.push(at + ' (' + o.op + ') has unknown field "' + k + '"'); }
     if (op === 'state') {
       if (!oneLine(o.heading) || !SECTION.test(o.heading.trim()) || o.heading.trim().length > max.line) e.push(at + '.heading is one line starting "## ", at most ' + max.line + ' characters');
       else if (flat(o.heading).toLowerCase() === WHERE_HEAD.toLowerCase()) e.push(at + ': that section is whereWeWere; add a line with op whereWeWere');
@@ -152,6 +182,7 @@ export function opsProblems(ops, max) {
       if (l !== undefined && (!oneLine(l) || l.trim().length > max.line)) e.push(at + '.' + (o.add !== undefined ? 'add' : 'drop') + ' is one line of at most ' + max.line);
     } else if (!isText(o.path)) e.push(at + '.path is required: the repo directory');
   });
+  if (unknown) e.push(staleToolsLine(max.installed));
   return e;
 }
 

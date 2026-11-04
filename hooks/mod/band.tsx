@@ -17,7 +17,7 @@ export type ChipState = 'pending' | 'done' | 'failed'
 export type BandAnswer = { letter: string; token: string; option: string; gets?: string; catch?: string; undo?: string; state?: ChipState; error?: string }
 export type BandQuestion = { id: string; name: string; ask?: string; crux?: string; reverses?: string; blocking: boolean; pick: string | null; answers: BandAnswer[]; born?: number; version?: number }
 /* a call the board raises (callRows), any kind alike; a press runs its verb as the user or opens its page */
-export type BandPress = { label: string; verb: string | null; input?: any; url?: string; does?: string }
+export type BandPress = { label: string; verb: string | null; input?: any; url?: string; pane?: string; does?: string }
 /* short: the row's one line; the rest of callRows' facts ride along for the card (callCard) */
 export type BandCall = { key: string; kind: string; id?: string | null; text: string; short?: string; since?: string | null; until?: string | null; url?: string | null; mine?: boolean; presses: BandPress[]; [k: string]: any }
 
@@ -363,7 +363,8 @@ function callPress(els: any, c: BandCall, p: BandPress, i: number, opts: BandOpt
   const { Text, Button } = els
   const key = 'callpress-' + i + '-' + c.key
   const desk = opts.surface === 'desktop' && !!els.Svg
-  if (!p.verb) return p.url ? wordLink(els, key, p.url, p.label, desk) : null
+  /* a `pane` press opens the AskerDo pane there, the url its page elsewhere */
+  if (!p.verb && !p.pane) return p.url ? wordLink(els, key, p.url, p.label, desk) : null
   const act = () => { if (opts.press) opts.press(c, p) }
   if (desk) return pressFace(els, key + '-face', <Text>{p.label}</Text>, pressOver(els, key, cellWidth(p.label) + 1, act, undefined, onBand(opts)), { chip: {} })
   return <Button key={key} label={p.label} onPress={act} />

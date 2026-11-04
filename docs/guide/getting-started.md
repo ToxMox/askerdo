@@ -72,6 +72,8 @@ node ~/.claude/askerdo/cli.mjs settings
 
 `board` prints this PC's local server and, for a board on this PC, the board's address and the folder holding its database and backups; `list` reaches the board; `settings` lists your options as the board holds them.
 
+On a board, configure also asks once how closely the board tracks reviews of finished code: `light` (the default) says on the band when a track's code waits for a review, `full` also holds a track's finish until a review has read it, and `off` leaves reviews out ([Review coverage](concepts.md#review-coverage)).
+
 The style loads as a session starts, so it takes effect in your next session, or in this one after `/clear`. Configure also prints a shorter text for claude.ai's personal preferences, if you want the same habits in the chat apps.
 
 To change one option later, use the Settings tab of the AskerDo pane (`/askerdo pane`, then Settings), or see [Settings and rules](settings-and-rules.md). To start with a board on this PC and move it onto a server later, see [Move to a server](board-setup.md#move-to-a-server).
@@ -127,7 +129,11 @@ To leave text mode, run `/askerdo:configure` again and pick a board.
 claude plugin update askerdo@askerdo
 ```
 
-The next session start rewrites the style for the new version. Your options live in the data folder and a board on this PC in `~/.claude/askerdo/board-host/`, so updates keep both, and the local server starts the board from the new plugin folder. A Docker board is rebuilt on its own: see [Upgrade](board-setup.md#upgrade).
+Then start a new session. The update fetches the marketplace first, so this one command is the whole update (from a session's Bash tool, where `claude` may not be on the `PATH`: `"$CLAUDE_CODE_EXECPATH" plugin update askerdo@askerdo`). The new session rewrites the style and starts the local server from the new plugin folder. If the update says AskerDo is already at the latest version while a newer release is out, run `claude plugin marketplace update askerdo`, then the update again; a marketplace update alone leaves the installed plugin as it was.
+
+Never remove the marketplace to update: a remove uninstalls the plugin. Your options and board join live in `~/.claude/askerdo/pc/` and a board on this PC in `~/.claude/askerdo/board-host/`, where no plugin command reaches them. A Docker board is rebuilt on its own: see [Upgrade](board-setup.md#upgrade).
+
+For updates with no command, turn on the Claude app's auto-update for AskerDo: `/askerdo:configure` offers it once on each PC, and `askerdo settings set pluginUpdates on` (or the Settings tab's Plugin auto-update row) turns it on later. It sets the switch that `/plugin` shows under Marketplaces, which the desktop app has no panel for: `"autoUpdate": true` on the `askerdo` entry in `~/.claude/plugins/known_marketplaces.json`, and on the `askerdo` entry under `extraKnownMarketplaces` in `~/.claude/settings.json` when that entry is there. Claude Code then fetches a new release in the background as a session starts, and the next session runs it. `askerdo status` says whether it is on.
 
 ## Where to go next
 

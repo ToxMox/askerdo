@@ -11,8 +11,11 @@ import {
   CHAIN_NO, NEWEST_FIRST, acquireLease, chainOf, holderPlain, isStalled, layOut, noHandoff, openLeaves, parkTrack, projectInbox, quietSince, releaseLease, splinter, stateOf, takeOver, unparkOf, MOVES,
 } from './tracks.mjs';
 import { CLI, growthLines, kickoffInput, kickoffText, workstreamHead } from './kickoff.mjs';
+import { foundWork } from './found.mjs';
+import { reviewHead, trackReview } from './coverage.mjs';
 import { giveHand, letGoHand } from './work.mjs';
-import { RUN_BY_HINT, applyOps, opsProblems, runByOf, stateProblems, stepAt, waitingOf, whereProblems } from '../handoff-text.mjs';
+import { RUN_BY_HINT, applyOps, opsProblems, runByOf, staleToolsLine, stateProblems, stepAt, waitingOf, whereProblems } from '../handoff-text.mjs';
+import { boardVersion } from '../version.mjs';
 
 /* Today's budgets (lib/handoff-payload.mjs); the PC checks the same first, so
    these refusals only meet a caller that skipped it. */
@@ -89,12 +92,26 @@ function taskGrowth(db, trackKey, since, until) {
   const rows = db.stmt(`SELECT r.key, r.id, json_extract(r.fields, '$.created') AS created, json_extract(r.fields, '$.closed') AS closed
     FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ?`).all(trackKey);
   const added = rows.filter((r) => inside(r.created)).sort((a, b) => Date.parse(a.created) - Date.parse(b.created) || a.id - b.id);
-  return { tasksAdded: added.length, tasksClosed: rows.filter((r) => inside(r.closed)).length, added: added.map((r) => r.key).join(' ') || undefined };
+  /* the tasks the track's sessions filed off this track, so the handoff says where they went */
+  const here = new Set(rows.map((r) => r.key));
+  const found = foundWork(db, trackKey, { since: since || undefined, until: until || undefined }).tasks.filter((t) => !here.has(t.key)).map((t) => t.key);
+  return { tasksAdded: added.length, tasksClosed: rows.filter((r) => inside(r.closed)).length, added: added.map((r) => r.key).join(' ') || undefined,
+    found: found.join(' ') || undefined };
 }
 
 /* The payload as the PC's check left it; refusals name the field. */
+/* the keys a current caller sends; an older session's renamed key is refused, never dropped */
+const WRITE_KEYS = ['track', 'focus', 'state', 'whereWeWere', 'rulings', 'waitingOnUser', 'verify', 'depth', 'session', 'pc', 'status', 'parkReason', 'created', 'growth', 'leftovers'];
+
+/* the board never learns the caller's version, so a name a release stopped
+   sending is what says the caller is older: name, first release without it */
+const RETIRED_KEYS = { waitingOnUser: '0.8.13' };
+
 function checkPayload(input) {
   const e = [];
+  const odd = Object.keys(input).filter((k) => !WRITE_KEYS.includes(k));
+  const before = odd.map((k) => RETIRED_KEYS[k]).find(Boolean);
+  if (odd.length) e.push(odd.map((k) => 'unknown field "' + k + '"').join('; ') + '; ' + staleToolsLine(boardVersion(), before));
   if (!text(input.focus) || /[\r\n]/.test(input.focus) || input.focus.trim().length > FOCUS_MAX) e.push('focus is one line of at most ' + FOCUS_MAX);
   if (!text(input.state)) e.push('state is required');
   else if (bytes(input.state.trim()) > STATE_BYTES) e.push('state is over ' + STATE_BYTES + ' bytes');
@@ -273,6 +290,8 @@ function writeOn(db, input, actor) {
       ...(laid ? { laidOut: laid } : {}),
       /* read after the leftovers are laid, so the reply confirms or wires each */
       leaves: openLeaves(db, rec.key),
+      /* the review readout, worded by the PC (reviewLine) */
+      review: reviewHead(trackReview(db, rec.key)),
       workstream: workstreamHead(ws),
       /* the inbox the kickoff listed, so the reply places, carries or asks about each */
       inbox: projectInbox(db, after.fields.workstream),

@@ -126,12 +126,36 @@ export const SETTINGS = Object.freeze({
     changes: 'Switches a line off by its name at this layer and every narrower one; the line comes back when you drop the drop.',
     example: { kind: 'text', text: 'Drop opus-workers on a track, and its agents no longer hear the built-in line about Opus workers.' },
   },
+  /* review coverage, read by the board wherever it totals a track's code */
+  'review.depth': {
+    kind: 'choice', values: ['off', 'light', 'full'], def: 'light', label: 'Review coverage', takes: 'review',
+    line: 'How closely the board tracks which finished code a review has read.',
+    changes: "Off computes and shows nothing. Light nudges on the band and the Tracks tab once a track's unreviewed code tasks reach the review size. Full also reopens a completed review when work it read changes, so what waits on it waits again, and holds a track's finish until a review covers its finished code.",
+    choices: { off: 'off', light: 'a nudge', full: 'nudge and gates' },
+    example: { kind: 'values', values: {
+      off: 'Nothing about reviews on the band, the Tracks tab or a kickoff.',
+      light: 'Five code tasks on TR-4 since its last review: the band shows review due and the Tracks tab marks the track.',
+      full: 'T-12 gains a commit after its review T-14 completed: T-14 reopens and the tasks after it wait again; TR-4 finishes only once a review covers its code, or with a waiver.',
+    } },
+  },
+  'review.tasks': {
+    kind: 'count', def: 5, label: 'Review size', takes: 'review',
+    line: 'How many unreviewed code tasks on a track make a review due.',
+    changes: 'Once this many finished code tasks on a track wait for a review, a review reads as due.',
+    example: { kind: 'at', text: 'At {value}: once {value} finished code tasks on a track wait for a review, a review is due.' },
+  },
+  'review.ignore': {
+    kind: 'texts', def: [], label: 'Not counted', takes: 'review',
+    line: 'Files a review never needs to read, as globs.',
+    changes: 'A commit that changes only these files counts as no code, so its task needs no review. Lockfiles, generated files, docs and Markdown are never counted.',
+    example: { kind: 'text', text: 'build/generated/** and schema/*.gen.ts: a commit that only regenerates these needs no review.' },
+  },
   /* a board user's options (config.json less the board keys and the queue,
      which the join sets per PC), read from the profiles held on default */
   ...contractFamily(),
 });
 /* the depth settings the markers carry; ALL_KEYS resolves every scalar setting of a record */
-export const KEYS = Object.keys(SETTINGS).filter((k) => !SETTINGS[k].rule && !SETTINGS[k].contract);
+export const KEYS = Object.keys(SETTINGS).filter((k) => SETTINGS[k].takes === 'depth');
 const ALL_KEYS = Object.keys(SETTINGS).filter((k) => !SETTINGS[k].list && !SETTINGS[k].contract);
 
 function contractFamily() {
@@ -290,6 +314,14 @@ export const PC_SETTINGS = Object.freeze({
     choices: { confirm: 'confirm first', once: 'at once' },
     example: { kind: 'values', values: { confirm: 'Press b: the strip opens under b; Answer now records it, Queue answer keeps it on this PC until Send.', once: 'Press b: 12b is recorded and the asking session hears it at once.' } },
   },
+  /* configure asks once; on and off also set the app's own switch */
+  pluginUpdates: {
+    kind: 'choice', values: ['ask', 'on', 'off'], def: 'ask', pc: true, label: 'Plugin auto-update', takes: 'updates',
+    line: 'Whether the Claude app updates AskerDo on its own when a new version is out.',
+    changes: "On turns on the app's auto-update for the AskerDo marketplace, the switch /plugin shows under Marketplaces, and off turns it off. Ask means configure has not asked yet, and leaves the switch as it is.",
+    choices: { ask: 'not asked yet', on: 'on', off: 'off' },
+    example: { kind: 'values', values: { ask: '/askerdo:configure offers it once.', on: 'A new AskerDo installs itself as a session starts; the session after that runs it.', off: 'A new AskerDo waits until you update the plugin yourself.' } },
+  },
 });
 /* when a saved value takes effect, by the settings' `takes` family; replyPc is a reply option with no board */
 export const TAKES_EFFECT = Object.freeze({
@@ -298,11 +330,13 @@ export const TAKES_EFFECT = Object.freeze({
   /* a board page save runs no PC's sync */
   replyBoard: 'Each PC at its next session start, a /clear included: the PC takes it from the board and rewrites its output style, and Claude reads it as the session starts.',
   alias: 'Your next session, or this one after /clear: the mod registers the name as a session starts.',
+  review: "At once, on any PC: the board reads it each time it totals a track's code.",
   depth: 'Within seconds in every open session: each one reads the board again when a profile changes, and again before every agent it dispatches.',
   rules: 'From your next prompt in every open session, and in every agent dispatched after it.',
   join: 'Set when this PC joins a board; /askerdo:configure joins or rejoins.',
   backups: 'The next copy: askerdo backup, or the first session start of the next day.',
   presses: "This session's cards at once when saved from its Settings tab; other open sessions at their next start.",
+  updates: "The app's switch at once; the app looks for a new AskerDo as each session starts.",
 });
 /* settings that are gone; a stored value is ignored, a new set refused in these words */
 export const RETIRED = Object.freeze({ 'contract.name': 'The name setting is retired: the contract always says "the user" (contract.name)' });
@@ -353,6 +387,10 @@ function wordsValue(key, spec, raw) {
     if (!m || m[2] || n < 1 || n > 99) throw refuse(key, spec, 'is a whole percent from 1 to 99', raw);
     return n;
   }
+  if (spec.kind === 'count') {
+    if (!m || m[2] || n < 1 || n > 1000) throw refuse(key, spec, 'is a whole number from 1 to 1000', raw);
+    return n;
+  }
   if (!m || n < 1000 || n > 2000000) throw refuse(key, spec, 'is a token count from 1k to 2000k', raw);
   return n;
 }
@@ -367,7 +405,7 @@ export function checkSetting(key, value, neighbours = {}) {
   let words = value;
   if (typeof value !== 'string') {
     const k = spec.kind;
-    const fits = k === 'bool' ? typeof value === 'boolean' : k === 'percent' || k === 'tokens' ? Number.isInteger(value) : k === 'texts' ? Array.isArray(value) : false;
+    const fits = k === 'bool' ? typeof value === 'boolean' : k === 'percent' || k === 'tokens' || k === 'count' ? Number.isInteger(value) : k === 'texts' ? Array.isArray(value) : false;
     if (!fits) throw refuse(key, spec, 'takes ' + kindWords(spec), JSON.stringify(value));
     words = k === 'bool' ? (value ? 'on' : 'off') : k === 'texts' ? JSON.stringify(value) : String(value);
   }
@@ -377,7 +415,7 @@ export function checkSetting(key, value, neighbours = {}) {
 }
 
 const kindWords = (spec) => ({
-  bool: 'on or off', percent: 'a whole percent from 1 to 99', tokens: 'a token count from 1k to 2000k', choice: 'one of ' + (spec.values || []).join(', '),
+  bool: 'on or off', percent: 'a whole percent from 1 to 99', tokens: 'a token count from 1k to 2000k', count: 'a whole number from 1 to 1000', choice: 'one of ' + (spec.values || []).join(', '),
   texts: 'a list of strings', lines: 'rule lines', slugs: 'rule slugs',
 })[spec.kind] || 'one line of text';
 
@@ -627,11 +665,11 @@ export function effectiveText(eff) {
    where it comes from, and the values it takes (or why it is read only). */
 const rowValue = (r) => (r.kind === 'tokens' ? Math.floor(r.value / 1000) + 'k' : r.kind === 'bool' ? (r.value ? 'on' : 'off')
   : r.kind === 'percent' ? r.value + ' percent' : r.kind === 'text' ? JSON.stringify(r.value)
-    : r.kind === 'texts' ? (Array.isArray(r.value) ? r.value.length : 0) + ' rules' : String(r.value));
+    : r.kind === 'texts' ? (Array.isArray(r.value) ? r.value.length : 0) + (r.key === 'review.ignore' ? ' globs' : ' rules') : String(r.value));
 const rowFrom = (r) => (r.layer === 'built-in' ? 'built in' : r.layer === 'pc' ? 'this PC'
   : (r.layer === 'default' ? 'default' : r.layer + ' ' + r.record) + (r.profile ? ' (' + r.profile + ')' : ''));
 const rowTakes = (r) => (r.values ? r.values.join(', ') : r.kind === 'bool' ? 'on, off' : r.kind === 'percent' ? '1 to 99'
-  : r.kind === 'tokens' ? '1k to 2000k' : r.kind === 'text' ? 'one line, at most ' + r.max : r.kind === 'texts' ? 'a JSON list of strings' : '');
+  : r.kind === 'tokens' ? '1k to 2000k' : r.kind === 'count' ? '1 to 1000' : r.kind === 'text' ? 'one line, at most ' + r.max : r.kind === 'texts' ? 'a JSON list of strings' : '');
 
 export function settingsListText(r) {
   const lines = [r.board ? 'Settings for ' + r.record + ' (' + r.chain.map((c) => c.key).join(' < ') + '):' : 'Settings on this PC (no board):'];
@@ -672,6 +710,8 @@ export const BUILTIN_LINES = Object.freeze([
   { slug: 'every-part', text: 'Build every part of a task the user asks for: where a part needs a design call, make it with a stated pick and ask only what the user alone can decide; never recommend the cheap part now and the rest later.' },
   { slug: 'talk-before-filing', text: 'When the user reports a problem or asks for thoughts mid-arc, talk it through first: add a task only on their word, and make no unasked inline fix.' },
   { slug: 'lay-out-first', text: "Lay a line of work out on its track before starting it, each step a task with what it depends on, including the steps a working rule implies (a wave's review waits on its lanes, its fixes on the review, the user's look or checks on the fixes). Take the next task from the ready set, and put a step found later on the track before doing it." },
+  /* the session places review stations by judgement; the board keeps the ledger */
+  { slug: 'review-stations', text: "Put a review station on the track after each wave of parallel lanes, where work touched code another lane or track also touched, once five finished code tasks sit unreviewed, and before anything that ships, project-wide when it ships other tracks' work. A review task (labelled review, or named Review ...) covers what finished before it started, and the tasks after it wait on it." },
   { slug: 'process', text: "Add no gate, guard, review stage or safety rule the user did not ask for unless you can name the failure it prevents; a new standing one waits for their yes, and a struck rule's code comes out with it." },
   { slug: 'naming', text: "Never coin ids in the board's namespaces (Q, T-, K-, TR-, WS-, P-) for anything else: name rows and steps plainly ('Row 1 (email)') and tell agents so in briefs that label rows. Name generated things for what they are, never with pieces of the user's name or login." },
   { slug: 'asking', for: 'session', text: "Fix and report a defect in your own task that has one right fix, never offer it as a choice; deferral is the user's call. Offer no workaround, data-losing or broken option; every menu has a none-of-these way out, a declined topic drops, and a recorded go is never re-asked. Your own cleanup is never a question; other deletes wait for a dry-run count and the user's yes." },
@@ -801,11 +841,11 @@ export function contractHeld(data) {
 
 /* ---- the settings list: one row per setting for every renderer --- */
 
-export const FAMILIES = Object.freeze(['contract', 'handoffs and context', 'agents', 'tests', 'dispatch', 'rule lines', 'this PC']);
-const FAMILY_BY = { contract: 'contract', main: 'handoffs and context', agent: 'agents', tests: 'tests', dispatch: 'dispatch', rules: 'rule lines' };
+export const FAMILIES = Object.freeze(['contract', 'handoffs and context', 'agents', 'tests', 'reviews', 'dispatch', 'rule lines', 'this PC']);
+const FAMILY_BY = { contract: 'contract', main: 'handoffs and context', agent: 'agents', tests: 'tests', review: 'reviews', dispatch: 'dispatch', rules: 'rule lines' };
 /* the pane's sub-tabs and the board page's groups, in order */
 export const TABS = Object.freeze([['replies', 'Replies'], ['sessions', 'Sessions'], ['agents', 'Agents'], ['tests', 'Tests'], ['rules', 'Rules'], ['pc', 'This PC']]);
-const TAB_BY = { contract: 'replies', main: 'sessions', agent: 'agents', dispatch: 'agents', tests: 'tests', rules: 'rules' };
+const TAB_BY = { contract: 'replies', main: 'sessions', agent: 'agents', dispatch: 'agents', tests: 'tests', review: 'tests', rules: 'rules' };
 /* the scope chip's words for a layer, and whom a value set there reaches */
 const SCOPE = { 'built-in': 'built-in', default: 'everywhere', project: 'this project', workstream: 'this workstream', track: 'this track only', task: 'this task only', pc: 'this PC' };
 const REACH = {
@@ -826,6 +866,7 @@ function shapeOf(key, spec, board) {
   if (spec.kind === 'choice') Object.assign(row, { values: spec.values.slice(), choices: { ...spec.choices } });
   if (spec.kind === 'percent') Object.assign(row, { min: 1, max: 99 });
   if (spec.kind === 'tokens') Object.assign(row, { min: 1000, max: 2000000 });
+  if (spec.kind === 'count') Object.assign(row, { min: 1, max: 1000 });
   if (spec.kind === 'text') row.max = spec.max;
   if (spec.kind === 'texts') row.max = 64 * 1024;
   return row;
@@ -908,7 +949,7 @@ export function withPcRows(rows, config, { board } = {}) {
   for (const [key, spec] of Object.entries(PC_SETTINGS)) {
     const v = config[key] === undefined ? spec.def : config[key];
     const row = { ...shapeOf(key, spec, board), value: spec.kind === 'secret' ? (v ? 'set' : 'not set') : v, layer: 'pc', record: null, profile: null };
-    if ((key === 'queue' && !board) || key === 'boardBackups' || key === 'boardContainer' || key === 'answerPresses') Object.assign(row, { editable: true, changed: !same(v, spec.def) });
+    if ((key === 'queue' && !board) || key === 'boardBackups' || key === 'boardContainer' || key === 'answerPresses' || key === 'pluginUpdates') Object.assign(row, { editable: true, changed: !same(v, spec.def) });
     else Object.assign(row, { editable: false, why: key === 'queue' ? "a board PC's queue is hub, set by the join" : 'set by the join', changed: false });
     out.push(row);
   }

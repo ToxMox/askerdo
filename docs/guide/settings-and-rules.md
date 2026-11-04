@@ -73,6 +73,16 @@ On a board these are set at the default layer only.
 |`tests.fullRun`|Full test suite|`end`|`end`, `merge`, `never`|
 |`tests.pinWording`|Exact wording in tests|off|on, off|
 
+### Reviews
+
+|Key|Label|Built in|Takes|
+|-|-|-|-|
+|`review.depth`|Review coverage|`light`|`off`, `light`, `full`|
+|`review.tasks`|Review size|5|1 to 1000|
+|`review.ignore`|Not counted|none|a JSON list of globs|
+
+The board links each commit to the task it belongs to, and a review task (labelled `review`, or named "Review ...") covers the code tasks it read. `review.depth` says how much the board makes of it: `off` nothing, `light` a nudge once a track's unreviewed code tasks reach `review.tasks`, `full` the nudge, a completed review that reopens when work it read changes (so the tasks after it wait again), and a track finish held until a review covers its finished code (`track finish --waive "<reason>"` goes ahead). A review reads its own track, or with `--review-scope project` every code task in the project since the last project-wide review. `review.ignore` adds a project's own files to those never counted, such as `["dist/version.json", "src/generated/**"]`. The Settings tab shows them under **Tests**.
+
 ### This PC
 
 |Key|Label|Built in|
@@ -83,10 +93,13 @@ On a board these are set at the default layer only.
 |`boardBackups`|Board backups folder, for a board this PC hosts|empty: beside the database|
 |`boardContainer`|Docker board container, for a Docker board on this PC|empty: none|
 |`answerPresses`|Answer presses: `confirm` or `once`|`confirm`|
+|`pluginUpdates`|Plugin auto-update: `ask`, `on` or `off`|`ask`|
 
 `boardBackups` is where the first session start of each day copies a board this PC hosts, keeping the newest 30. Empty means `~/.claude/askerdo/board-host/backups/`, beside the database; a folder in OneDrive, Dropbox or on a NAS share keeps the copies off this PC. It takes a full folder path, creates the folder, and refuses one this PC cannot write (`Board backups folder must be a folder this PC can write, and <folder> is not (<why>)`), writing nothing. `settings unset boardBackups` goes back to the folder beside the database. Copies the board makes before a schema change stay beside the database whatever this says, so a board whose folder is offline still starts. A PC whose board runs elsewhere makes no copies: the board's host keeps its own ([Backups, export and the integrity check](board-setup.md#backups-export-and-the-integrity-check)).
 
 `answerPresses` says what pressing an option on a question card does. At `confirm`, the press opens a strip under the option with the note field, **Answer now**, **Queue answer** and **Cancel**; a queued answer stays on this PC, off the board, until **Send** records and delivers every queued answer together ([Queued answers](daily-use.md#queued-answers)). At `once`, the press records the answer straight away and the asking session hears it, as the band's chips always do. `askerdo settings set answerPresses once` writes this PC's `config.json`, board or not; the Settings tab's **This PC** sub-tab sets it too.
+
+`pluginUpdates` is this PC's answer to configure's offer of the Claude app's auto-update for AskerDo, and `ask` means configure has not asked yet. `on` and `off` also set the app's own switch, the one `/plugin` shows under Marketplaces: `autoUpdate` on the AskerDo marketplace's entry in `~/.claude/plugins/known_marketplaces.json`, and on its `extraKnownMarketplaces` entry in `~/.claude/settings.json` when that file has one, every other key kept. When the app knows no AskerDo marketplace (a plugin loaded with `--plugin-dir`), the set is refused and saves nothing. `settings unset pluginUpdates` goes back to `ask` and leaves the switch as it is. At each session start a switch the app no longer holds (a marketplace remove and add drops it) is set back to the saved `on`, and an on or off set in `/plugin` becomes the saved answer. `askerdo status` reports the switch on or off, and neither is a problem.
 
 `boardContainer` names a Docker board on this PC; configure sets it to `askerdo` when it starts one. The first session start of each day then runs the board's own backup inside that container, into its backups volume, keeping the newest 30. A day Docker or the container is not running goes without a copy, with a line in the log. It takes a container name; `settings unset boardContainer` stops the copies.
 

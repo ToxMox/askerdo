@@ -21,12 +21,12 @@ const OPTIONS = {
 
 function sandbox(t, saved) {
   const home = tempDir('ttd-home-', t);
-  /* dataDir() honours CLAUDE_PLUGIN_DATA only when its basename starts with the plugin name */
-  const data = tempDir('askerdo-data-', t);
-  mkdirSync(join(home, '.claude'), { recursive: true });
+  /* the options live in this PC's folder, which the save finds in-process through the sandbox seam */
+  const data = join(home, '.claude', 'askerdo', 'pc');
+  mkdirSync(data, { recursive: true });
   if (saved) writeFileSync(join(data, 'config.json'), JSON.stringify(saved));
   /* ASKERDO_NO_BOARD: the sync's board ensure would otherwise start a board */
-  const env = childEnv({ HOME: home, USERPROFILE: home, CLAUDE_PLUGIN_DATA: data, ASKERDO_NO_BOARD: '1' });
+  const env = childEnv({ ASKERDO_SANDBOX_HOME: home, ASKERDO_NO_BOARD: '1' });
   const runSync = (args) => {
     const r = spawnSync(process.execPath, [join(pluginRoot, 'hooks', 'sync.mjs'), ...args], { env, encoding: 'utf8' });
     return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };

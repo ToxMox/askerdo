@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync,
+  cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -19,17 +19,20 @@ const boardScript = join(pluginRoot, 'hooks', 'board-server.mjs');
 
 function sandbox(cfg) {
   const home = tempDir('ttd-hub-home-');
-  const data = join(home, '.claude', 'plugins', 'data', 'askerdo-askerdo');
-  mkdirSync(data, { recursive: true });
-  if (cfg) writeFileSync(join(data, 'config.json'), JSON.stringify(cfg));
   /* a fake home is a fresh machine, so the sync resolves the new root */
   const root = join(home, '.claude', 'askerdo');
+  /* the harness still names the plugin data dir; this PC's files live in pc/ */
+  const plugin = join(home, '.claude', 'plugins', 'data', 'askerdo-askerdo');
+  const data = join(root, 'pc');
+  mkdirSync(plugin, { recursive: true });
+  mkdirSync(data, { recursive: true });
+  if (cfg) writeFileSync(join(data, 'config.json'), JSON.stringify(cfg));
   return {
-    home, data, root,
+    home, data, plugin, root,
     launcher: join(root, 'cli.mjs'),
     run: (input, extraEnv = {}) => execFileSync(process.execPath, [syncScript], {
       env: {
-        ...childEnv(), HOME: home, USERPROFILE: home, CLAUDE_PLUGIN_DATA: data,
+        ...childEnv(), HOME: home, USERPROFILE: home, CLAUDE_PLUGIN_DATA: plugin,
         /* the board ensure is its own test surface (board-server.test.mjs) and
            would spawn a detached server per case here */
         ASKERDO_NO_BOARD: '1',
@@ -61,7 +64,7 @@ test('gate off: queue text, off, and widgets write no launcher and print no summ
     const out = sb.run(hookInput('sess-a', 'C:/repos/proj-a'));
     assert.deepEqual(summaryLines(out), [], 'queue=' + q);
     assert.equal(existsSync(sb.launcher), false, 'no launcher for queue=' + q);
-    assert.equal(existsSync(sb.root), false, 'the store root is never seeded for queue=' + q);
+    assert.deepEqual(readdirSync(sb.root), ['pc'], 'the store root holds only pc/ for queue=' + q);
     /* the existing sync work is unaffected */
     assert.ok(out.includes('output style regenerated'), out);
     assert.ok(out.includes('does not select it'), out);
@@ -99,7 +102,7 @@ test('the seam moves the launcher and the ensure to the copy', () => {
   mkdirSync(rig, { recursive: true });
   const out = execFileSync(process.execPath, [syncScript], {
     env: {
-      ...childEnv(), HOME: sb.home, USERPROFILE: sb.home, CLAUDE_PLUGIN_DATA: sb.data,
+      ...childEnv(), HOME: sb.home, USERPROFILE: sb.home, CLAUDE_PLUGIN_DATA: sb.plugin,
       ASKERDO_ROOT: rig,
       ASKERDO_SCHTASKS: join(sb.home, 'no-such-scheduler.exe'),
       ASKERDO_SID: FAKE_SID,
@@ -109,7 +112,7 @@ test('the seam moves the launcher and the ensure to the copy', () => {
   });
   assert.ok(out.includes('output style regenerated'), out);
   assert.ok(readFileSync(join(rig, 'cli.mjs'), 'utf8').includes('bin/askerdo.mjs'));
-  assert.equal(existsSync(sb.root), false, 'the home store was written to anyway');
+  assert.deepEqual(readdirSync(sb.root), ['pc'], 'the home store was written to anyway');
   /* a seam is a sandbox, so the ensure is skipped by name rather than handed the root
      and refused (the root guard still refuses it if reached) */
   const log = readFileSync(join(rig, 'log'), 'utf8');
@@ -120,7 +123,10 @@ test('the seam moves the launcher and the ensure to the copy', () => {
 });
 
 test('fail open: a file where the store root should be leaves sync intact', () => {
-  const sb = sandbox({ name: 'Probe', queue: 'hub' });
+  const sb = sandbox(null);
+  /* no pc/ can exist there, so the config stays in the old plugin data dir */
+  rmSync(sb.root, { recursive: true });
+  writeFileSync(join(sb.plugin, 'config.json'), JSON.stringify({ name: 'Probe', queue: 'hub' }));
   writeFileSync(sb.root, 'not a directory');
   const out = sb.run(hookInput('sess-a', 'C:/repos/proj-a'));
   assert.ok(out.includes('output style regenerated'), out);
@@ -181,7 +187,7 @@ test('the seam adopts a live board: no twin, no replace, and not a word about it
         ...childEnv(),
         HOME: sb.home,
         USERPROFILE: sb.home,
-        CLAUDE_PLUGIN_DATA: sb.data,
+        CLAUDE_PLUGIN_DATA: sb.plugin,
         ASKERDO_SID: FAKE_SID,
       },
       encoding: 'utf8',
@@ -213,7 +219,7 @@ test('a cold seam starts the board through the task, and says so when it cannot'
         ...childEnv(),
         HOME: sb.home,
         USERPROFILE: sb.home,
-        CLAUDE_PLUGIN_DATA: sb.data,
+        CLAUDE_PLUGIN_DATA: sb.plugin,
         ASKERDO_SCHTASKS: join(sb.home, 'no-such-scheduler.exe'),
         ASKERDO_SID: FAKE_SID,
       },
@@ -331,7 +337,7 @@ test('a replaced copy syncs nothing and says so', () => {
   writeFileSync(join(copy, '.orphaned_at'), String(Date.now()));
   const sb = sandbox({ name: 'Probe', queue: 'hub' });
   const out = execFileSync(process.execPath, [join(copy, 'hooks', 'sync.mjs')], {
-    env: { ...childEnv(), HOME: sb.home, USERPROFILE: sb.home, CLAUDE_PLUGIN_DATA: sb.data, ASKERDO_NO_BOARD: '1', ASKERDO_COPY_KIND: 'checkout' },
+    env: { ...childEnv(), HOME: sb.home, USERPROFILE: sb.home, CLAUDE_PLUGIN_DATA: sb.plugin, ASKERDO_NO_BOARD: '1', ASKERDO_COPY_KIND: 'checkout' },
     encoding: 'utf8', input: JSON.stringify(hookInput('sess-a', 'C:/repos/proj-a')),
   });
   assert.match(out, /^AskerDo: .*replaced/m, out);

@@ -11,6 +11,7 @@ import {
 import { ENDED, UsageError, canonLabel, pickLabel, refsFor, resolveRecord, shownFront, strList } from './labels.mjs';
 import { noteRead } from './history.mjs';
 import { onEnding } from './upkeep.mjs';
+import { isRelease, releaseLine } from './found.mjs';
 
 export { UsageError, byOf, canonLabel, snoozeFlat };
 
@@ -725,6 +726,11 @@ export function register(db, payload, actor, opts = {}) {
     const forced = rulings.length > 0 && !p.blocking;
     if (rulings.length) p.blocking = true;
     const inherited = opts.inherit ? inheritScope(db, p, at, d, who) : [];
+    /* a question gating a release says what the arc found, on the card the user answers from */
+    const rel = p.gates.map((k) => db.stmt("SELECT key, fields FROM records WHERE key = ? AND kind = 'task'").get(k)).filter(Boolean)
+      .map((r) => ({ key: r.key, fields: JSON.parse(r.fields) })).find((t) => isRelease(t.fields));
+    const relTrack = rel ? (db.stmt('SELECT track FROM track_items WHERE task = ?').get(rel.key) || {}).track || p.track : null;
+    if (relTrack) p.gist = [p.gist.trimEnd(), releaseLine(db, rel, relTrack)].join('\n');
     const key = mintKey(db);
     const id = pickLabel(db, 'question', d);
     p.ask = askWithTokens(id, p.ask, p.options);

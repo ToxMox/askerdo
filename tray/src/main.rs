@@ -350,10 +350,14 @@ fn main() {
        a missing shortcut costs Start its entry and nothing else. Every later
        start finds the link already right and costs one file read. */
     let scribe = app.clone();
-    std::thread::spawn(move || match shortcut::install() {
-        Ok(()) => scribe.journal.line("shortcut ok"),
-        Err(e) => scribe.journal.line(&format!("shortcut failed: {e}")),
-    });
+    if shortcut::from_other_store(open::store_root().as_deref()) {
+        scribe.journal.line("shortcut left alone: this copy runs from another store");
+    } else {
+        std::thread::spawn(move || match shortcut::install() {
+            Ok(()) => scribe.journal.line("shortcut ok"),
+            Err(e) => scribe.journal.line(&format!("shortcut failed: {e}")),
+        });
+    }
 
     /* Step 3: the icon, before the network, so a server that is slow to
        answer still leaves a tray the moment the process is up. A failure here

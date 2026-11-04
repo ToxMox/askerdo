@@ -9,6 +9,8 @@ import { sharesProject, wakeLinked } from './questions.mjs';
 import { createRecord, editRecord } from './work.mjs';
 import { RUN_BY_HINT, runByOf, stepAt } from '../handoff-text.mjs';
 import { holderWords } from '../web/feed.mjs';
+import { foundSummary, isReview, placeRefusal, suggestTrack } from './found.mjs';
+import { afterTask, finishGate, reviewHead, trackReview } from './coverage.mjs';
 import { countsText } from '../web/draw.mjs';
 import { BY as UPKEEP, afterLeaseDrop, unparkWhenOf, unparkWords, whenText } from './upkeep.mjs';
 import {
@@ -324,9 +326,10 @@ export function putOnTrack(db, task, trackRec_, c, note) {
   bumpVersion(db, trackRec_.key);
   if (was) bumpVersion(db, was.track);
   const changes = { track: [was ? was.track : null, trackRec_.key] };
-  /* a task takes the workstream of the track it lands on */
+  /* a task takes the workstream of the track it lands on, and a placed task is unplaced no more */
   const ws = trackRec_.fields.workstream;
-  if (ws && task.fields.workstream !== ws) Object.assign(changes, writeFront(db, task, { workstream: ws, updated: c.at }, TASK_KEYS));
+  const front = { ...(ws && task.fields.workstream !== ws ? { workstream: ws } : {}), ...(task.fields.unplaced !== undefined ? { unplaced: undefined } : {}) };
+  if (Object.keys(front).length) Object.assign(changes, writeFront(db, task, { ...front, updated: c.at }, TASK_KEYS));
   logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes, by: c.by, pc: c.pc, note });
   dropImported(db, task, trackRec_, c);
   return true;
@@ -348,6 +351,44 @@ function dropImported(db, task, trackRec_, c) {
 
 /* task create's track, placed inside its transaction */
 export const placeCreated = (db, key, line, c) => putOnTrack(db, loadRecord(db, key), line, c);
+
+const idList = (v, what) => {
+  const list = (Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]).map((s) => String(s ?? '').trim()).filter(Boolean);
+  for (const s of list) if (!TASK_ID.test(s)) throw new TrackRefusal(what + ' names T-n ids: ' + s);
+  return list;
+};
+
+/* a task's place as its filer judged it: a track, with the steps it comes before or
+   after laid as track layout lays them, or unplaced with the reason the found list shows. */
+export function placeTask(db, taskKey, place, actor) {
+  const c = ctx(actor);
+  const before = idList(place.before, 'before');
+  const after = idList(place.after, 'after');
+  const hasWhy = place.unplaced !== undefined && place.unplaced !== null;
+  if (place.track && hasWhy) throw new TrackRefusal('a task goes on a track or stays unplaced, not both');
+  let task = loadRecord(db, taskKey);
+  const row = () => db.stmt('SELECT track FROM track_items WHERE task = ?').get(taskKey);
+  if (hasWhy) {
+    if (before.length || after.length) throw new TrackRefusal('before and after place a task on a track; an unplaced one has no steps around it');
+    const why = needText(place.unplaced, 'unplaced', 'reason');
+    const was = row();
+    if (was) {
+      db.stmt('DELETE FROM track_items WHERE task = ?').run(taskKey);
+      bumpVersion(db, was.track);
+    }
+    const diff = writeFront(db, task, { unplaced: why, updated: c.at }, TASK_KEYS);
+    logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: { ...diff, ...(was ? { track: [was.track, null] } : {}) }, by: c.by, pc: c.pc, note: 'unplaced: ' + why });
+    return { unplaced: why };
+  }
+  if (place.track) putOnTrack(db, task, openTrack(db, place.track), c);
+  const on = row();
+  if ((before.length || after.length) && !on) throw new TrackRefusal(task.fields.id + ' is on no track: name the track it goes on with before and after');
+  task = loadRecord(db, taskKey);
+  const reason = on ? 'placed on ' + labelOf(db, on.track) : '';
+  for (const b of before) addEdge(db, { task: b, on: task.fields.id, reason }, actor);
+  for (const a of after) addEdge(db, { task: task.fields.id, on: a, reason }, actor);
+  return { ...(on ? { track: labelOf(db, on.track) } : {}), ...(before.length ? { before } : {}), ...(after.length ? { after } : {}) };
+}
 
 export function openTrack(db, ref) {
   const rec = trackRec(db, ref);
@@ -503,14 +544,26 @@ function captureOn(db, track, input, actor, c) {
   return { id: task.fields.id, key: task.key, name: task.fields.name, track: track ? track.fields.id : null, created };
 }
 
-/* A new idea onto a track, or into the workstream's inbox; an existing task moves. */
+/* A new idea onto a track, or into the workstream's inbox; an existing task moves. A session's capture into the inbox says why it waits on no track. */
 export function capture(db, input, actor) {
-  return tx(db, () => captureOn(db, input.track ? openTrack(db, input.track) : null, input, actor, ctx(actor)));
+  return tx(db, () => {
+    const c = ctx(actor);
+    const track = input.track ? openTrack(db, input.track) : null;
+    const why = typeof input.unplaced === 'string' && input.unplaced.trim() ? input.unplaced : null;
+    if (track && why) throw new TrackRefusal('a capture goes on a track or stays unplaced, not both');
+    if (!track && !why && c.session) {
+      const ws = input.workstream ? workstreamOf(db, input.workstream) : null;
+      throw new TrackRefusal(placeRefusal(input.task ? null : suggestTrack(db, { ...input, workstream: ws }, c.session)));
+    }
+    const r = captureOn(db, track, input, actor, c);
+    if (why) placeTask(db, r.key, { unplaced: why }, actor);
+    return why ? { ...r, unplaced: why.replace(/\s+/g, ' ').trim() } : r;
+  });
 }
 
 /* a line of work's steps, in its words; the PC's check (lib/handoff-payload.mjs
    stepProblems) runs first, so these refusals only meet a caller that skipped it. */
-const STEP_KEYS = ['name', 'task', 'after', 'before', 'description', 'priority', 'runBy'];
+const STEP_KEYS = ['name', 'task', 'after', 'before', 'description', 'priority', 'runBy', 'reviewScope'];
 const TASK_ID = /^T-\d+$/;
 const sameName = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
@@ -524,6 +577,9 @@ function checkSteps(steps) {
     if (s.task === undefined && (typeof s.name !== 'string' || !s.name.trim() || /[\r\n]/.test(s.name))) throw new TrackRefusal(at + ' needs a name of one line, or a task');
     if (s.after !== undefined && !Array.isArray(s.after)) throw new TrackRefusal(at + '.after is a list of T-n ids and earlier step numbers');
     if (s.runBy !== undefined && !runByOf(s.runBy)) throw new TrackRefusal(at + '.runBy names who runs it: ' + RUN_BY_HINT);
+    if (s.reviewScope !== undefined && !['track', 'project'].includes(String(s.reviewScope).trim().toLowerCase())) {
+      throw new TrackRefusal(at + '.reviewScope is track or project');
+    }
     for (const a of s.after || []) {
       const ok = (typeof a === 'string' && TASK_ID.test(a.trim())) || (Number.isInteger(a) && a >= 1 && a <= i);
       if (!ok) throw new TrackRefusal(at + '.after names ' + JSON.stringify(a) + ': a T-n id, or the number of an earlier step (1 to ' + i + ')');
@@ -561,7 +617,9 @@ export function layOut(db, input, actor) {
       /* the step's runBy lands on its task, a matched one too, logged with the old value */
       const runBy = runByOf(s.runBy);
       if (runBy) editRecord(db, { id: r.key, kind: 'task', runBy }, actor);
-      out.push({ id: r.id, key: r.key, name: r.name, created: r.created, ...(runBy ? { runBy } : {}), edges: [] });
+      /* a review step's scope lands the same way */
+      if (s.reviewScope !== undefined) editRecord(db, { id: r.key, kind: 'task', reviewScope: s.reviewScope }, actor);
+      out.push({ id: r.id, key: r.key, name: r.name, created: r.created, ...(runBy ? { runBy } : {}), ...(s.reviewScope !== undefined ? { reviewScope: s.reviewScope } : {}), edges: [] });
     }));
     steps.forEach((s, i) => stepped(i, s, () => {
       for (const a of s.after || []) {
@@ -709,10 +767,12 @@ function closeTrack(db, input, actor, status) {
   const rec = trackRec(db, input.track);
   if (CLOSED.includes(rec.fields.status)) throw new TrackRefusal(rec.fields.id + ' is already ' + rec.fields.status);
   const why = status === 'dropped' ? needText(input.reason, 'dropping a track') : input.outcome ? needText(input.outcome, 'an outcome') : undefined;
+  /* at full depth a finish waits for a review of its finished code, or a waiver */
+  const waived = status === 'done' ? finishGate(db, rec, input, c) : null;
   const left = settleLeftovers(db, rec, input.leftovers, c, why || rec.fields.id + ' finished');
   const held = leaseOf(db, rec.key);
   if (held) dropLease(db, held, c, status);
-  setStatus(db, rec, status, why ? { outcome: why } : {}, c, status === 'dropped' ? 'drop' : 'close', why);
+  setStatus(db, rec, status, why ? { outcome: why } : {}, c, status === 'dropped' ? 'drop' : 'close', [why, waived].filter(Boolean).join('; ') || undefined);
   wakeLinked(db, { ...rec.fields, key: rec.key }, status, c);
   const j = junctionOf(db, rec.key);
   /* a promoted task's done follows its side track; the stored status is kept in step */
@@ -721,12 +781,13 @@ function closeTrack(db, input, actor, status) {
     if (status === 'done' && !ENDED_TASK.includes(pointer.fields.status)) {
       const diff = writeFront(db, pointer, { status: 'completed', updated: c.at, closed: c.at, inHand: undefined, inHandSince: undefined }, TASK_KEYS);
       logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(pointer), changes: diff, by: c.by, pc: c.pc, note: 'done as ' + rec.fields.id + ' finished' });
+      afterTask(db, pointer.key, { completed: true }, actor);
       wakeLinked(db, { ...pointer.fields, key: pointer.key }, 'completed', c);
     }
     if (status === 'dropped') addNote(db, pointer.key, { at: c.at, actor: c.by, body: rec.fields.id + ' was dropped: ' + why + '. ' + pointer.fields.id + ' is a plain task again.' });
   }
   /* the inbox the kickoff listed, so the reply places, carries or asks about each */
-  return { id: rec.fields.id, key: rec.key, state: status, leftovers: left, junction: junctionBack(db, rec), inbox: projectInbox(db, rec.fields.workstream) };
+  return { id: rec.fields.id, key: rec.key, state: status, leftovers: left, junction: junctionBack(db, rec), inbox: projectInbox(db, rec.fields.workstream), ...(waived ? { waived } : {}) };
 }
 
 export const finishTrack = (db, input, actor) => tx(db, () => closeTrack(db, input || {}, actor, 'done'));
@@ -904,11 +965,24 @@ export function trackView(db, input, opts) {
     const lease = leaseOf(db, s.key);
     /* the layout breaks ties by position (server/layout.mjs layoutInput) */
     const pos = new Map(db.stmt('SELECT task, position FROM track_items WHERE track = ?').all(s.key).map((r) => [r.task, r.position]));
-    const tasks = g.tasks.map((t) => ({ ...t, position: pos.get(t.key) ?? null }));
+    const r = trackReview(db, s.key);
+    /* an open review station says so and what it reads */
+    const scopeOf = new Map(db.stmt(`SELECT key, fields FROM records WHERE key IN (SELECT value FROM json_each(?))`).all(JSON.stringify(g.tasks.map((t) => t.key)))
+      .map((x) => [x.key, JSON.parse(x.fields)]));
+    const tasks = g.tasks.map((t) => {
+      const f = scopeOf.get(t.key);
+      /* a review back open after it completed draws as reopened */
+      const again = f && isReview(f) && !!db.stmt(`SELECT 1 FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[0]') = 'completed' LIMIT 1`).get(t.key);
+      return { ...t, position: pos.get(t.key) ?? null, ...(f && isReview(f) ? { review: true, reviewScope: f.reviewScope === 'project' ? 'project' : 'track', ...(again ? { reopened: true } : {}) } : {}) };
+    });
     return {
       ...s, holder: lease ? holderOf(lease) : null, readySet: g.ready, critical: g.critical, tasks, edges: g.edges, names: g.names,
       done: g.done, total: g.total, junction: junctionOf(db, s.key),
       sideTracks: sideTracksOf(db, s.key).map((t) => ({ id: t.label, key: t.key, state: stateOf(db, loadRecord(db, t.key)) })),
+      /* what its arc found, for the Tracks tab's row */
+      found: foundSummary(db, s.key),
+      /* the review readout and, apart from the open stations, the finished code tasks and the reviews, for the station map */
+      review: reviewHead(r), finished: r ? [...r.finished, ...r.reviews.filter((v) => v.status === 'completed')].sort((a, b) => a.position - b.position) : [],
     };
   });
 }

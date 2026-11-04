@@ -20,6 +20,9 @@ export const INBOX_FILE = 'tracks/inbox.json';
 export const HISTORY_DIR = 'history';
 export const READS_FILE = 'reads/reads.json';
 export const READS_SINCE = 'reads.since';
+/* the commits each task finished with and the reviews' covers, one row per line */
+export const COMMITS_FILE = 'coverage/commits.jsonl';
+export const COVERS_FILE = 'coverage/covers.jsonl';
 /* the override requests waiting at the export, one per line; a scrub's seal never leaves the database */
 export const OVERRIDES_FILE = 'overrides/pending.jsonl';
 /* the board's settings (meta rows), so automatic upkeep stays on through an export and import */
@@ -128,6 +131,10 @@ export function* storeFiles(db) {
   const since = db.prepare('SELECT value FROM meta WHERE name = ?').get(READS_SINCE);
   const reads = db.prepare('SELECT record, session, site, at FROM reads ORDER BY record, session').all().map((r) => ({ ...r }));
   yield { path: READS_FILE, text: readsText(since ? since.value : null, reads) };
+  const commits = db.prepare('SELECT repo, sha, task, at, via, session, agent_job, files, added, removed, linked FROM commits ORDER BY repo, sha, task').all();
+  if (commits.length) yield { path: COMMITS_FILE, text: commits.map((r) => JSON.stringify({ ...r, files: JSON.parse(r.files) })).join('\n') + '\n' };
+  const covers = db.prepare('SELECT review, task, at, through, through_at FROM covers ORDER BY review, task').all();
+  if (covers.length) yield { path: COVERS_FILE, text: covers.map((r) => JSON.stringify({ ...r })).join('\n') + '\n' };
   const set = db.prepare(`SELECT name, value FROM meta WHERE name IN (${SETTINGS.map(() => '?').join(', ')}) ORDER BY name`).all(...SETTINGS);
   if (set.length) yield { path: SETTINGS_FILE, text: JSON.stringify(Object.fromEntries(set.map((r) => [r.name, r.value])), null, 2) + '\n' };
   const reqs = db.prepare('SELECT id, kind, summary, reason, session, at, reversal, measure, changed FROM overrides ORDER BY id').all();

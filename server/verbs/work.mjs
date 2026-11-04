@@ -16,7 +16,10 @@ import { addHistory, historyRef, inUseRefusal, noteRead, usedBy } from './histor
 import { closeChanges, editClose, followHand } from './upkeep.mjs';
 import { RUN_BY_HINT, runByOf } from '../handoff-text.mjs';
 import { holderWords } from '../web/feed.mjs';
-import { openTrack, placeCreated } from './tracks.mjs';
+import { openTrack, placeCreated, placeTask } from './tracks.mjs';
+import { placeRefusal, suggestTrack } from './found.mjs';
+import { afterTask, reviewScopeOf } from './coverage.mjs';
+import { isReview } from './found.mjs';
 
 export { UsageError };
 /* the record moved since the caller read it */
@@ -321,6 +324,11 @@ function validateWorkPayload(kind, raw) {
     if (!PRIORITIES.includes(p.priority)) throw new UsageError('priority must be one of ' + PRIORITIES.join(', '));
     p.intent = optStr('intent') || '';
     p.serves = outcomeIds(strArray('serves'), 'serves');
+    /* a review reads its track (the default, stored as no key) or the whole project */
+    if (raw.reviewScope !== undefined && reviewScopeOf(raw.reviewScope) === 'project') {
+      if (!isReview(p)) throw new UsageError('only a review task has a review scope: label it review, or name it "Review ..."');
+      p.reviewScope = 'project';
+    }
   }
   return p;
 }
@@ -337,10 +345,16 @@ function handoffPath(v, flag) {
 export function createRecord(db, input = {}, actor) {
   const kind = input && input.kind !== undefined ? String(input.kind) : 'task';
   if (!WORK_KINDS[kind] || kind === 'knowledge') throw new UsageError(refusal[kind] || 'unknown record kind: ' + kind);
-  const { kind: _k, track: trackRef, ...raw } = input || {};
+  const { kind: _k, track: trackRef, before, after, unplaced, ...raw } = input || {};
   if (trackRef !== undefined && (kind !== 'task' || typeof trackRef !== 'string' || !trackRef.trim())) {
     throw new UsageError('track names a TR-n id, and only a task goes on one');
   }
+  /* unplaced is the reason a task waits on no track, which the found list shows */
+  if (unplaced !== undefined && (kind !== 'task' || typeof unplaced !== 'string' || !unplaced.trim())) {
+    throw new UsageError('unplaced is the reason a task waits on no track, a line of text');
+  }
+  if (unplaced !== undefined && trackRef !== undefined) throw new UsageError('a task goes on a track or stays unplaced, not both');
+  if ((before !== undefined || after !== undefined) && trackRef === undefined) throw new UsageError('before and after place a task among the steps of the track it names');
   const p = validateWorkPayload(kind, raw);
   const ctx = actorOf(actor);
   return tx(db, () => {
@@ -368,7 +382,7 @@ export function createRecord(db, input = {}, actor) {
       : {
         id, key, name: p.name, workstream: p.workstream, status: p.status, priority: p.priority,
         labels: p.labels, refs: p.refs, created, updated: ctx.at, closed: TERMINAL.task.includes(p.status) ? ctx.at : undefined,
-        origin: p.origin, serves: p.serves, labelHistory,
+        origin: p.origin, serves: p.serves, reviewScope: p.reviewScope, labelHistory, unplaced: unplaced === undefined ? undefined : unplaced.replace(/\s+/g, ' ').trim(),
       };
     const fields = orderFront(WORK_KINDS[kind], front);
     putRecord(db, { key, kind, slug: kebab(p.name, kind), fields, body: workBody(kind, p) });
@@ -376,11 +390,30 @@ export function createRecord(db, input = {}, actor) {
     const note = typeof raw.note === 'string' && raw.note.trim() ? raw.note.trim() : undefined;
     writeLine(db, ctx, { verb: 'create', kind, front: fields, changes: changesOf({}, fields), note });
     if (line) placeCreated(db, key, line, ctx);
+    if (line && (before !== undefined || after !== undefined)) placeTask(db, key, { before, after }, actor);
+    /* created done, it runs the shared check as a completion would */
+    if (kind === 'task' && fields.status === 'completed') afterTask(db, key, { completed: true }, actor);
     const warnings = ws && !p.serves.length && Object.keys(outcomeMap(ws)).length
       ? [id + ' serves none of ' + ws.id + "'s outcomes (" + outcomesText(ws) + '): name one with task edit ' + id
         + ' --serves ' + Object.keys(outcomeMap(ws))[0]] : [];
-    return { id, key, kind, name: p.name, ...(line ? { track: line.fields.id } : {}), ...(warnings.length ? { warnings } : {}) };
+    return { id, key, kind, name: p.name, ...(line ? { track: line.fields.id } : {}), ...(fields.unplaced ? { unplaced: fields.unplaced } : {}),
+      ...(warnings.length ? { warnings } : {}) };
   });
+}
+
+/* the board's createRecord verb (server/verbs/index.mjs). A session's task names its
+   place, a track or unplaced with a reason, else it is refused with both ways; the board's
+   hint of the best-fitting track rides the refusal and the result, never applied for it. */
+export function fileRecord(db, input = {}, actor) {
+  const kind = input && input.kind !== undefined ? String(input.kind) : 'task';
+  if (kind !== 'task') return createRecord(db, input, actor);
+  const c = actorOf(actor);
+  const said = (v) => typeof v === 'string' && v.trim();
+  const ws = said(input.workstream) ? resolveRecord(db, input.workstream.trim(), { day: c.day }) : null;
+  const hint = suggestTrack(db, { ...input, workstream: ws && ws.kind === 'workstream' ? ws.key : null }, c.session);
+  if (c.session && !said(input.track) && !said(input.unplaced)) throw new UsageError(placeRefusal(hint));
+  const r = createRecord(db, input, actor);
+  return hint && hint.track !== r.track ? { ...r, suggested: hint } : r;
 }
 
 /* ---- edit ---- */
@@ -401,6 +434,7 @@ function applyEdit(k, front, c) {
   else if (c.workstream !== undefined) setScalar('workstream', c.workstream);
   if (c.handoff !== undefined) setScalar('handoff', c.handoff);
   if (c.clearRunBy) { if (front.runBy) { delete front.runBy; changed.push('runBy'); } } else if (c.runBy !== undefined) setScalar('runBy', c.runBy);
+  if (c.reviewScope === 'track') { if (front.reviewScope) { delete front.reviewScope; changed.push('reviewScope'); } } else if (c.reviewScope !== undefined) setScalar('reviewScope', c.reviewScope);
   /* --add-project and --remove-project edit the shared names */
   const names = (l) => l && l.map(projectName);
   for (const [key, add, remove] of [['labels', c.addLabel, c.removeLabel], ['refs', c.addRef, c.removeRef], ['projectRepos', names(c.addProject), names(c.removeProject)]]) {
@@ -554,9 +588,28 @@ function editTexts(db, e, k, c) {
   return { body, moved };
 }
 
+const fieldNamed = (c) => ['name', 'status', 'priority', 'workstream', 'handoff', 'serves', 'projectRepos', 'runBy', 'reviewScope', 'intent', 'description'].some((key) => c[key] !== undefined)
+  || c.clearRunBy || c.close !== undefined || c.clearClose || c.landed || c.clearWorkstream || c.inHand || c.letGo || c.clearServes || c.addOutcome?.length || c.removeOutcome?.length
+  || ['addLabel', 'removeLabel', 'addRef', 'removeRef', 'addProject', 'removeProject'].some((key) => c[key]?.length);
+
 /* Field flips, and a task's intent and description while its work has not started.
-   `input` is { id, kind?, version?, ...today's change flags }. */
+   `input` is { id, kind?, version?, ...today's change flags }; track (with before
+   and after) or unplaced moves a task to the place its filer judged. */
 export function editRecord(db, input = {}, actor) {
+  const { track, before, after, unplaced, ...rest } = input || {};
+  const place = { track, before, after, unplaced };
+  if (Object.values(place).every((v) => v === undefined)) return editFields(db, rest, actor);
+  if (rest.kind !== undefined && rest.kind !== 'task') throw new UsageError('only a task has a place on a track');
+  return tx(db, () => {
+    const out = fieldNamed(rest) ? editFields(db, rest, actor) : null;
+    const e = target(db, rest.id, ['task'], actorOf(actor).day, 'edit');
+    const placed = placeTask(db, e.key, place, actor);
+    const version = db.stmt('SELECT version FROM records WHERE key = ?').get(e.key).version;
+    return { ...(out || { id: e.front.id, kind: 'task', name: e.front.name }), changed: [...(out ? out.changed : []), 'place'], placed, version };
+  });
+}
+
+function editFields(db, input, actor) {
   const c = { ...input };
   const ctx = actorOf(actor);
   if (c.kind !== undefined && !WORK_KINDS[c.kind]) throw new UsageError(refusal[c.kind] || 'unknown record kind: ' + c.kind);
@@ -588,16 +641,14 @@ export function editRecord(db, input = {}, actor) {
   /* who runs the task, as a handoff's leftover names it */
   if (c.runBy !== undefined && c.clearRunBy) throw new UsageError('pick one of --run-by and --clear-run-by');
   if (c.runBy !== undefined && !(c.runBy = runByOf(c.runBy))) throw new UsageError('--run-by names who runs it: ' + RUN_BY_HINT);
+  if (c.reviewScope !== undefined) c.reviewScope = reviewScopeOf(c.reviewScope, '--review-scope');
   c.addOutcome = c.addOutcome?.length ? outcomeLines(c.addOutcome, '--add-outcome') : [];
   c.removeOutcome = c.removeOutcome?.length ? outcomeIds(c.removeOutcome, '--remove-outcome') : [];
   if (c.serves !== undefined) {
     c.serves = outcomeIds(c.serves, '--serves');
     if (!c.serves.length) throw new UsageError('--serves needs outcome ids (o1,o2); --clear-serves empties the list');
   }
-  const named = ['name', 'status', 'priority', 'workstream', 'handoff', 'serves', 'projectRepos', 'runBy', 'intent', 'description'].some((key) => c[key] !== undefined)
-    || c.clearRunBy || c.close !== undefined || c.clearClose || c.landed || c.clearWorkstream || c.inHand || c.letGo || c.clearServes || c.addOutcome.length || c.removeOutcome.length
-    || ['addLabel', 'removeLabel', 'addRef', 'removeRef', 'addProject', 'removeProject'].some((key) => c[key]?.length);
-  if (!named) throw new UsageError('edit needs at least one field flag');
+  if (!fieldNamed(c)) throw new UsageError('edit needs at least one field flag');
 
   return tx(db, () => {
     const e = target(db, c.id, c.kind ? [c.kind] : ['workstream', 'task'], ctx.day, 'edit');
@@ -618,6 +669,7 @@ export function editRecord(db, input = {}, actor) {
     if ((c.serves !== undefined || c.clearServes) && k.kind !== 'task') throw new UsageError('only a task serves outcomes');
     if (c.handoff !== undefined && k.kind !== 'workstream') throw new UsageError('only a workstream carries a handoff folder');
     if ((c.runBy !== undefined || c.clearRunBy) && k.kind !== 'task') throw new UsageError('only a task is run by someone');
+    if (c.reviewScope !== undefined && k.kind !== 'task') throw new UsageError('only a review task has a review scope');
     checkVersion(e, c);
     const texts = editTexts(db, e, k, c);
     const early = k.kind === 'task' && c.status !== undefined && c.status !== e.front.status ? statusGate(db, e, c) : undefined;
@@ -627,6 +679,7 @@ export function editRecord(db, input = {}, actor) {
     const front = normalize(k, { ...e.front });
     const before = snap(front);
     const changed = applyEdit(k, front, c);
+    if (c.reviewScope === 'project' && !isReview(front)) throw new UsageError(front.id + ' is not a review task: only a review has a review scope (label it review, or name it "Review ...")');
     if (texts) changed.push(...texts.moved.map((m) => m.field));
     const warnings = [];
     let handNote;
@@ -652,9 +705,12 @@ export function editRecord(db, input = {}, actor) {
     /* in progress follows the hand, unless this edit named a status */
     const followed = changed.includes('inHand') && c.status === undefined && followHand(db, e.key, ctx);
     if (ending) wakeLinked(db, { ...fields, key: e.key }, ending, ctx);
+    /* the shared check, a review's default covers and the reviews its work reopens */
+    const after = ending === 'completed' ? afterTask(db, e.key, { completed: true }, actor) : null;
+    const covers = after && after.covers;
     /* taking and letting go answer in their own words; an ending that lets go is no hand move asked */
     const hand = changed.includes('inHand') && (c.inHand || c.letGo) ? (fields.inHand ? 'taken' : 'let go') : null;
-    return { id: fields.id, kind: k.kind, name: fields.name, changed, ...(hand ? { hand } : {}), version: e.version + (followed ? 2 : 1), ...(warnings.length ? { warnings } : {}) };
+    return { id: fields.id, kind: k.kind, name: fields.name, changed, ...(hand ? { hand } : {}), ...(covers ? { covers } : {}), ...(after && after.reopened.length ? { reopened: after.reopened } : {}), version: e.version + (followed ? 2 : 1), ...(warnings.length ? { warnings } : {}) };
   });
 }
 

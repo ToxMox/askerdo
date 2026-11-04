@@ -38,13 +38,13 @@ This page is built from the CLI's help by `node scripts/build.mjs`, so it matche
 - Questions: [register](#register), [answer](#answer), [drop](#drop), [snooze](#snooze), [wake](#wake), [surface](#surface), [list](#list), [question edit](#question-edit)
 - Any record: [show](#show), [read](#read), [resolve](#resolve), [search](#search), [activity](#activity), [note](#note), [reopen](#reopen), [subscribe](#subscribe)
 - Workstreams and tasks: [ws create](#ws-create), [ws edit](#ws-edit), [ws close](#ws-close), [task create](#task-create), [task edit](#task-edit), [task update](#task-update), [check add](#check-add), [check done](#check-done), [check move](#check-move), [edge add](#edge-add), [edge remove](#edge-remove)
-- Tracks and handoffs: [resume](#resume), [shelf](#shelf), [track list](#track-list), [track show](#track-show), [track mine](#track-mine), [track new](#track-new), [track park](#track-park), [track finish](#track-finish), [track drop](#track-drop), [track splinter](#track-splinter), [track capture](#track-capture), [track layout](#track-layout), [track promote](#track-promote), [track fold](#track-fold), [track reorder](#track-reorder), [handoff write](#handoff-write), [handoff update](#handoff-update)
+- Tracks and handoffs: [resume](#resume), [shelf](#shelf), [track list](#track-list), [track show](#track-show), [track mine](#track-mine), [track new](#track-new), [track park](#track-park), [track finish](#track-finish), [track drop](#track-drop), [track splinter](#track-splinter), [track capture](#track-capture), [track layout](#track-layout), [track promote](#track-promote), [track fold](#track-fold), [track reorder](#track-reorder), [track found](#track-found), [handoff write](#handoff-write), [handoff update](#handoff-update)
+- Commits and reviews: [commit link](#commit-link), [commit move](#commit-move), [review covers](#review-covers), [coverage](#coverage)
 - Knowledge and decisions: [knowledge new](#knowledge-new), [knowledge supersede](#knowledge-supersede), [knowledge amend](#knowledge-amend), [knowledge edit](#knowledge-edit), [decide](#decide), [decisions](#decisions), [decisions triggers](#decisions-triggers)
 - Settings and profiles: [settings](#settings), [settings set](#settings-set), [settings unset](#settings-unset), [settings rule](#settings-rule), [profile add](#profile-add), [profile remove](#profile-remove), [profile show-effective](#profile-show-effective), [profile rule-add](#profile-rule-add), [profile rule-drop](#profile-rule-drop), [profile rule-clear](#profile-rule-clear), [profile define](#profile-define), [profile list](#profile-list), [profile guard](#profile-guard)
 - Procedures: [proc scan](#proc-scan), [proc ran](#proc-ran), [proc find](#proc-find), [proc triggers](#proc-triggers)
 - Overrides: [override request](#override-request), [override decide](#override-decide), [override unscrub](#override-unscrub)
-- This PC and the board: [board](#board), [board here](#board-here), [timings](#timings), [projects](#projects), [projects scan](#projects-scan), [projects forget](#projects-forget), [projects rename](#projects-rename), [login](#login), [join-code](#join-code), [join](#join), [upkeep](#upkeep), [upkeep on](#upkeep-on), [upkeep off](#upkeep-off), [legacy](#legacy), [help](#help)
-- Other verbs: [board move](#board-move), [backup](#backup), [restore](#restore)
+- This PC and the board: [board](#board), [board here](#board-here), [timings](#timings), [projects](#projects), [projects scan](#projects-scan), [projects forget](#projects-forget), [projects rename](#projects-rename), [login](#login), [join-code](#join-code), [join](#join), [upkeep](#upkeep), [upkeep on](#upkeep-on), [upkeep off](#upkeep-off), [status](#status), [board move](#board-move), [backup](#backup), [restore](#restore), [legacy](#legacy), [help](#help)
 
 ## Questions
 
@@ -290,8 +290,14 @@ askerdo ws close <WS-n id>
 
 ```text
 askerdo task create
-  create a task
+  create a task; a session's names its place (track, with before or after a step, or unplaced with a reason), judged from what the work is and what it blocks
   stdin: JSON payload
+  --track <value>: TR-n: the track it goes on
+  --before <value> (repeatable): a T-n on that track that waits on it (repeatable)
+  --after <value> (repeatable): a T-n on that track it waits on (repeatable)
+  --unplaced <value>: why it waits on no track (the found list shows it)
+  --review-scope <value>: a review task reads track (its own track, the default) or project (every code task in the project since the last project-wide review)
+  --session <value>: your own session id
   --json: print JSON
 ```
 
@@ -308,10 +314,15 @@ askerdo task edit <T-n id>
   --plan <value>
   --serves <value>: o1,o2: the outcomes of its workstream it serves
   --run-by <value>: who runs it: orchestrator, fork or agent:<model> (agent:opus)
+  --review-scope <value>: a review task reads track (its own track, the default) or project (every code task in the project since the last project-wide review)
   --close <value>: "with T-n" (it closes when T-n completes), look (it closes at the look of the user) or "when <a checkable fact>"
   --session <value>: your own session id
   --intent <value>: rewrite its Intent in place, before its work starts (no session held it, no agent ran it, no journal note); after that note amends it
   --description <value>: rewrite its Description in place, on the same terms as --intent
+  --track <value>: TR-n: the track it goes on
+  --before <value> (repeatable): a T-n on that track that waits on it (repeatable)
+  --after <value> (repeatable): a T-n on that track it waits on (repeatable)
+  --unplaced <value>: why it waits on no track (the found list shows it)
   --add-label <value> (repeatable)
   --remove-label <value> (repeatable)
   --add-ref <value> (repeatable)
@@ -485,6 +496,7 @@ askerdo track finish <TR-n id>
   finish a track; its junction comes back
   --outcome <value>
   --leftovers <value>: inbox or drop, for tasks still open
+  --waive <value>: finish with finished code no review read (full review depth), and why; the reason goes to its journal and the activity log
   --session <value>: your own session id
   --json: print JSON
 ```
@@ -526,6 +538,7 @@ askerdo track capture
   --task <value>: an existing T-n to move
   --description <value>
   --priority <value>
+  --unplaced <value>: into the inbox: why it waits on no track (a session's capture says)
   --session <value>: your own session id
   --json: print JSON
 ```
@@ -535,7 +548,7 @@ askerdo track capture
 ```text
 askerdo track layout <TR-n id>
   lay a line of work out on its track: each step a task; after (T-n ids and earlier step numbers) and before (T-n ids alone, the tasks that wait on the step) are "depends on" edges, so the next task comes from the ready set
-  stdin: JSON payload { "steps": [{ "name", "task", "after", "before", "description", "priority", "runBy" }] }
+  stdin: JSON payload { "steps": [{ "name", "task", "after", "before", "description", "priority", "runBy", "reviewScope" }] }
   --session <value>: your own session id
   --json: print JSON
 ```
@@ -575,6 +588,15 @@ askerdo track reorder <T-n id>
   --json: print JSON
 ```
 
+### track found
+
+```text
+askerdo track found <TR-n id>
+  the tasks a track's arc filed, on it or anywhere by its sessions, each with where it went and the command that moves it
+  --since <value>: handoff: since its last handoff (default: since the track began)
+  --json: print JSON
+```
+
 ### handoff write
 
 ```text
@@ -593,6 +615,50 @@ askerdo handoff update <TR-n or TR-n.m id>
   stdin: JSON ops, a list or { ops }: { op: "state", heading: "## ...", text }, { op: "whereWeWere", line }, { op: "waitingOnUser", add or drop }, { op: "verifyFirst", path }
   --session <value>: your own session id
   --json: print JSON
+```
+
+## Commits and reviews
+
+### commit link
+
+```text
+askerdo commit link
+  link one commit to the task it belongs to (task empty: no task owns it); the mod's own write, and linking the same commit and task again updates it
+  stdin: JSON { repo, sha, task, via, session, agent_job, at, files: [{ path, added, removed, counted }], added, removed }
+  --session <value>: your own session id
+  --json: print JSON
+```
+
+### commit move
+
+```text
+askerdo commit move <commit sha>
+  link a commit to another task by hand; the reason goes to the activity log
+  --repo <value>: the repo, when the sha is in more than one
+  --from <value>: the T-n it is linked to now, when it is linked to two
+  --to <value>: the T-n it belongs to
+  --reason <value>: why, one line
+  --session <value>: your own session id
+  --json: print JSON
+```
+
+### review covers
+
+```text
+askerdo review covers <review T-n id, then the T-n ids it covers>
+  set a review task's covers list: the code tasks it read, each through its newest commit now; with no list, every uncovered code task on its track finished before the review started
+  --session <value>: your own session id
+  --json: print JSON
+```
+
+### coverage
+
+```text
+askerdo coverage <TR-n or WS-n id>
+  a track's or workstream's code tasks with the review that covers each, its reviews, the commits no task owns in its repos, and whether a review is due
+  --session <value>: your own session id
+  --json: print JSON
+  --scan: first link the commits here whose messages name a task, in each repo its handoffs name, from the first baseline to HEAD
 ```
 
 ## Knowledge and decisions
@@ -936,6 +1002,7 @@ askerdo board
   start or adopt this PC's local server and print its URL, the board's address and database folder when this PC hosts the board, and this PC's AskerDo version and the board's, with a line when the board runs an older one
   --port <value>
   --json: print JSON
+  --restart: stop the running local server (through its own stop route, else by its process id) and start a fresh one on the same port
 ```
 
 ### board here
@@ -1057,25 +1124,13 @@ askerdo upkeep off
   --json: print JSON
 ```
 
-### legacy
+### status
 
 ```text
-askerdo legacy <old brain id>
-  what an old brain id maps to
-  --project <value>: the project slug it belongs to
-  --json: print JSON
+askerdo status
+  check AskerDo on this PC: the store, the settings and board join, the board, this PC's local server and tray, and a copy an update replaced; one line each, every problem with the one command or step that fixes it
+  --json: { ok, checks: [{ key, ok, says }], problems: [{ key, says, fix, command?, copy? }] }, command being the askerdo verb that fixes it here, copy a command to run on another PC
 ```
-
-### help
-
-Works with no board.
-
-```text
-askerdo help <words>
-  every verb, or one verb in full: help <verb>
-```
-
-## Other verbs
 
 ### board move
 
@@ -1106,4 +1161,22 @@ Works with no board.
 askerdo restore
   with no copy named, list the board's dated copies and those taken before a schema change, with dates and sizes; with one, stop the board this PC hosts, move its database and its -wal and -shm files aside into before-restore/ beside it, copy the copy in, run the integrity check and start the board again. A copy that fails the check is taken out and the old files put back
   --json: print JSON
+```
+
+### legacy
+
+```text
+askerdo legacy <old brain id>
+  what an old brain id maps to
+  --project <value>: the project slug it belongs to
+  --json: print JSON
+```
+
+### help
+
+Works with no board.
+
+```text
+askerdo help <words>
+  every verb, or one verb in full: help <verb>
 ```

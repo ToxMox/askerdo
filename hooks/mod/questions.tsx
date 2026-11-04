@@ -539,10 +539,16 @@ export function overrideTellingTree(els: any, m: any, press: (decision: string) 
   )
 }
 
-/* The reply as the engine draws it, the cards of the asks its turn made under it. */
-export function underReply(els: any, reply: any, cards: any[]): any {
-  const { Box } = els
-  return <Box key="askerdo-reply" flexDirection="column">{reply}{cards}</Box>
+/* The reply as the engine draws it, the cards of the asks its turn made under it, and under the
+   last card the reply's footer, drawn as the reply's own text is. */
+export function underReply(els: any, reply: any, cards: any[], footer = ''): any {
+  const { Box, Text, Markdown } = els
+  const foot = !footer ? null : (
+    <Box key="askerdo-reply-foot" flexDirection="column" marginTop={1}>
+      {Markdown ? <Markdown key="askerdo-reply-foot-text" text={footer} /> : <Text key="askerdo-reply-foot-text">{footer}</Text>}
+    </Box>
+  )
+  return <Box key="askerdo-reply" flexDirection="column">{reply}{cards}{foot}</Box>
 }
 
 export function questionsLoading(els: any): any {
