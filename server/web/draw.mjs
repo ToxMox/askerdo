@@ -675,7 +675,7 @@ export function drawGraph(L, D, g, S, opt) {
   }
   function reviewTip(id) {
     var t = task[id], n = RV.count[id];
-    if (t.review && D.tasks[id].kind === 'done') return ', covered ' + ((t.covers || []).map(function (c) { return c.id; }).join(', ') || 'nothing') + (opt.reviewPress ? '. Press to list them.' : '');
+    if (t.review && D.tasks[id].kind === 'done') return ', covered ' + ((t.covers || []).map(function (c) { return c.id; }).join(', ') || 'nothing');
     var s = !t.review ? '' : t.reopened ? '; reopened, ' + n + ' to review' : n ? '; will cover ' + n + ' finished code ' + (n === 1 ? 'task' : 'tasks') : '';
     return s + (RV.lock[id] !== undefined ? '; the finish waits on a review of ' + RV.lock[id] : '');
   }
@@ -688,7 +688,6 @@ export function drawGraph(L, D, g, S, opt) {
     out.push('<g class="stn" data-task="' + id + '"><title>' + esc(id + ' ' + (t.full || t.title) + stationWords(t, k, g) + reviewTip(id)) + '</title>');
     // a review is a diamond: done, filled grey and holding what it covered; open, outlined in its state's colour
     if (t.review && k.kind !== 'pointer') {
-      if (opt.pressed === id) out.push('<path d="' + diamondD(x, yy, r + 6.5) + '" fill="none" stroke="' + C.sky + '" stroke-width="1.6" stroke-linejoin="round"/>');
       if (k.kind === 'done') out.push('<path d="' + diamondD(x, yy, r + 2.5) + '" fill="' + C.cross + '" stroke="' + C.bg + '" stroke-width="2" stroke-linejoin="round"/>');
       else if (k.kind === 'now') {
         out.push('<circle cx="' + x + '" cy="' + yy + '" r="' + (r + 6) + '" fill="' + C.sky + '" opacity="0.2"/>');
@@ -734,7 +733,7 @@ export function drawGraph(L, D, g, S, opt) {
     ex.forEach(function (e, i) { txt += '<tspan x="' + x + '" y="' + (ly + (lines.length + i) * S.lh + 1) + '" font-size="' + S.fs.extra + '" fill="' + C[e[0]] + '" font-weight="550">' + esc(e[1]) + '</tspan>'; });
     out.push(txt + '</text></g>' + (opt.interactive ? '</a>' : ''));
     marks.push({ line: s.line, x: x, top: k.kind === 'now' && t.agent ? yy - r - S.tagH - 2 : yy - r - 7, bottom: ly + (lines.length + ex.length - 1) * S.lh + 5 });
-    hits.push({ id: id, kind: t.review && k.kind === 'done' ? 'review' : 'task', line: s.line, x: x, y: yy, r: r + 6, url: t.url || null, key: t.key || id,
+    hits.push({ id: id, kind: 'task', line: s.line, x: x, y: yy, r: r + 6, url: t.url || null, key: t.key || id,
       wx: x - S.labelW / 2, wy: yy + r + 2, ww: S.labelW, wh: (lines.length + ex.length) * S.lh + 2 });
     ((dimLine(s.line) && !crit[id]) || (k.kind === 'done' && !t.review) ? dimS : stn).push(out.join(''));
   });
@@ -774,7 +773,7 @@ export function drawGraph(L, D, g, S, opt) {
   var body = (split ? '' : under.join('')) + '<g opacity="0.42">' + dimL.join('') + dimS.join('') + '</g>' + liveL.join('') + top.join('') + beadsOut.join('') + stn.join('') + caps.join('');
   if (opt.parts) {
     return { w: W, h: H, body: body, pitch: P, padX: S.padX, cols: L.cols, marks: marks, split: split, between: between, rails: rails, skin: S, nameW: fits(S.fs.sub, 600), boxes: boxes,
-      hits: hits.concat(L.lines.map(function (ln) { var b = band[ln.id]; return { id: ln.id, kind: 'track', line: ln.id, x: b.cx, y: b.top + 4, w: b.capW, h: S.fs.cap + 8, url: trk[ln.id].url || null, key: trk[ln.id].key || ln.id }; })),
+      hits: hits.concat(L.lines.map(function (ln) { var b = band[ln.id]; return { id: ln.id, kind: 'track', line: ln.id, x: b.cx, y: b.top + 4, w: b.capW, h: S.fs.cap + 8 + (b.nameL.length - 1) * (S.fs.cap + 4), url: trk[ln.id].url || null, key: trk[ln.id].key || ln.id }; })),
       reviews: RV,
       bands: L.lines.map(function (ln) { var b = band[ln.id]; return { id: ln.id, top: b.top, h: b.h, rows: b.rows, x1: b.x1, x2: b.x2, cx: b.cx, look: b.look, more: ln.id + ' ' + trk[ln.id].name }; }) };
   }
@@ -880,12 +879,21 @@ export function stripSvg(P, f, inner) {
         '" fill="none" stroke="' + C.sec + '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>');
     });
   });
-  var m = f.fx2 - f.fx1 - 24, more = P.nameW(b.more) > m ? clip(b.more, m, P.nameW, false) : b.more, sp = more.indexOf(' ');
-  if (!f.cap && m > 20) {
-    out.push('<text x="' + (f.fx1 + 12) + '" y="' + (f.fy1 + S.fs.sub + 6) + '" font-size="' + S.fs.sub + '" font-weight="600" stroke="' + C.bg + '" stroke-width="4" stroke-linejoin="round" paint-order="stroke">' +
+  var hd = stripHead(P, f);
+  if (hd) {
+    var more = hd.words, sp = more.indexOf(' ');
+    out.push('<text x="' + hd.x + '" y="' + (f.fy1 + S.fs.sub + 6) + '" font-size="' + S.fs.sub + '" font-weight="600" stroke="' + C.bg + '" stroke-width="4" stroke-linejoin="round" paint-order="stroke">' +
       '<tspan fill="' + C.id + '">' + esc(sp < 0 ? more : more.slice(0, sp)) + '</tspan>' + (sp < 0 ? '' : '<tspan dx="5" fill="' + C.dim + '">' + esc(more.slice(sp + 1)) + '</tspan>') + '</text>');
   }
   return out.join('');
+}
+// past a card's first strip, its line's small name: the words and the box they take, which the pane's press covers
+export function stripHead(P, f) {
+  if (!P.split || !f.line || f.cap) return null;
+  var b = P.bands.filter(function (x) { return x.id === f.line; })[0], m = f.fx2 - f.fx1 - 24;
+  if (!b || m <= 20) return null;
+  var more = P.nameW(b.more) > m ? clip(b.more, m, P.nameW, false) : b.more;
+  return { words: more, x: f.fx1 + 12, y: f.fy1 + 4, w: Math.min(m, P.nameW(more) + 4), h: P.skin.fs.sub + 8 };
 }
 // the web's picture at its box's width: whole when its columns fit, else the pane's strips
 // stacked, each its own svg, so every line's stations show and nothing scrolls sideways

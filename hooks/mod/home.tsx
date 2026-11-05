@@ -3,7 +3,7 @@
  * them on every tab; Home holds a copy of the band, then this project's activity as the
  * tray's console shows it, the filter widening it to every project. Drawn from the model
  * alone; index.ts owns the reads and the writes. */
-import { PANE_TABS, PANE_TITLE, cellWidth, clampWords, fillGlyph, graphLegend, markPicture, paneMeasure, reviewPictures } from '../../lib/mod-core.mjs'
+import { PANE_TABS, PANE_TITLE, cellWidth, clampWords, fillGlyph, graphLegend, markPicture, paneMeasure } from '../../lib/mod-core.mjs'
 import { agentRow, linkLine, linkOver, pressFace, pressOver, wordLink } from './status.tsx'
 import { FOLD_CELLS, fitWords, foldHead, liftPress, paneCells } from './fold.tsx'
 
@@ -148,8 +148,7 @@ export function standLine(held: any, gm: any): string {
    draws mod-core homeGraph's picture, the terminal one line per drawn line; the lines left out
    named with their state. Nothing to draw: one plain line why. The heading is the fold
    (the switch keeps its own presses), shut it keeps one line. */
-export function graphTree(els: any, gm: any, onScope: (s: string) => void, surface?: string, fold?: { open: boolean; toggle: () => void; line: string; columns?: number },
-  review?: (id: string | null) => void): any {
+export function graphTree(els: any, gm: any, onScope: (s: string) => void, surface?: string, fold?: { open: boolean; toggle: () => void; line: string; columns?: number }): any {
   const { Box, Text, Button, Svg } = els
   const desk = surface === 'desktop' && !!Svg
   const open = !fold || fold.open
@@ -183,9 +182,8 @@ export function graphTree(els: any, gm: any, onScope: (s: string) => void, surfa
   const pic = surface === 'desktop' && Svg && gm.picture
   if (pic) {
     const p = gm.picture
-    const zones = (p.hits || []).map((z: any) => zoneOver(els, z, review))
+    const zones = (p.hits || []).map((z: any) => zoneOver(els, z))
     parts.push(<Box key="graph-pic" flexShrink={0}><Svg source={p.source} alt={p.alt} width={p.width} height={p.height} />{zones}</Box>)
-    if (gm.pressed) parts.push(reviewList(els, gm.pressed, () => { if (review) review(null) }, cols))
   } else {
     /* each line's track name opens its page */
     for (const l of gm.lines) {
@@ -231,51 +229,18 @@ function legendTree(els: any, cols: number, marks?: any): any {
   )
 }
 
-/* a press laid over the picture where a name or a review's diamond is drawn (an Svg takes
-   no press): a review's opens its list, the rest their board page; offsets by margins, in cells and lines */
-const PX_CELL = 8.453, PX_LINE = 20
-function zoneOver(els: any, z: any, review?: (id: string | null) => void): any {
+/* a link laid over the picture where a name is drawn (an Svg takes no press), opening its
+   board page; offsets by margins, across in cells, down in the engine's half-line rows
+   (desktop-capabilities: a Box's vertical margin), the height in lines */
+const PX_CELL = 8.453, PX_LINE = 20, PX_ROW = PX_LINE / 2
+function zoneOver(els: any, z: any): any {
   const { Box } = els
   const cells = z.w / PX_CELL
-  const press = z.kind === 'review' ? (review ? pressOver(els, 'gzp-' + z.id, cells, () => review(z.id)) : null) : linkOver(els, 'gzl-' + z.kind + '-' + z.id, cells, z.href)
-  if (!press) return null
+  const press = linkOver(els, 'gzl-' + z.kind + '-' + z.id, cells, z.href)
   return (
-    <Box key={'gz-' + z.kind + '-' + z.id + '-' + z.x + '-' + z.y} position="absolute" top={0} left={0} marginLeft={z.x / PX_CELL} marginTop={z.y / PX_LINE}
+    <Box key={'gz-' + z.kind + '-' + z.id + '-' + z.x + '-' + z.y} position="absolute" top={0} left={0} marginLeft={z.x / PX_CELL} marginTop={z.y / PX_ROW}
       width={cells} height={z.h / PX_LINE} overflow="hidden">{press}</Box>
   )
-}
-
-/* a pressed review's list under the map: its name opening its page, when it was done and how
-   much it covered, the close X, then each covered task by id and name, the name its board page */
-function reviewList(els: any, r: any, close: () => void, cols: number): any {
-  const { Box, Text, Svg } = els
-  const pics = reviewPictures()
-  const n = r.covers.length
-  const head = (
-    <Box key="rvl-head" flexDirection="row" columnGap={1} alignItems="flex-start">
-      <Box key="rvl-lead" flexShrink={0}><Svg source={pics.diamond.source} alt={pics.diamond.alt} width={20} height={20} /></Box>
-      <Box key="rvl-words" flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
-        <Box key="rvl-name" flexDirection="row" columnGap={1} flexWrap="wrap">
-          <Text key="rvl-id" dimColor>{r.id}</Text>
-          {r.url ? wordLink(els, 'rvl-link', r.url, clampWords(r.name, Math.max(12, cols - 12), 2), true) : <Text key="rvl-n" weight="semibold" wrap="wrap">{r.name}</Text>}
-        </Box>
-        <Text key="rvl-sum" dimColor wrap="wrap">{(r.day ? 'Done ' + r.day + ' · ' : '') + 'covered ' + n + ' finished code ' + (n === 1 ? 'task' : 'tasks')}</Text>
-      </Box>
-      {pressFace(els, 'rvl-close', <Svg source={pics.close.source} alt={pics.close.alt} width={16} height={16} />, pressOver(els, 'rvl-close-p', 2, close))}
-    </Box>
-  )
-  const rows = r.covers.map((c: any) => {
-    const p = markPicture('task', 'dim')
-    const room = Math.max(12, cols - 8 - cellWidth(c.id))
-    return (
-      <Box key={'rvl-' + c.id} flexDirection="row" columnGap={1} alignItems="center" paddingLeft={3}>
-        <Box key={'rvl-ic-' + c.id} flexShrink={0}><Svg source={p.source} alt={p.alt} width={p.width} height={p.height} /></Box>
-        <Text key={'rvl-cid-' + c.id} dimColor>{c.id}</Text>
-        {c.url ? wordLink(els, 'rvl-c-' + c.id, c.url, clampWords(c.name || c.id, room, 1), true) : <Text key={'rvl-cn-' + c.id} wrap="truncate-end">{c.name}</Text>}
-      </Box>
-    )
-  })
-  return <Box key={'rvl-' + r.id} flexDirection="column" rowGap={0.5} borderStyle="round" borderDimColor paddingX={1}>{[head, ...rows]}</Box>
 }
 
 function dayRow(els: any, label: string): any {

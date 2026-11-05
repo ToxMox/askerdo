@@ -245,8 +245,9 @@ function keptJunctions(list) {
 
 /* The track verbs' workstream view into the layout's graph: view.tracks holds each track's
    trackView (server/verbs/tracks.mjs), in listTracks order. A view lists only open tasks, so
-   the done count rides on the track; without a position, a task keeps the view's order. */
-export function layoutInput(view) {
+   the done count rides on the track; without a position, a task keeps the view's order.
+   keepReview false: no completed review stays drawn (Home's map). */
+export function layoutInput(view, { keepReview = true } = {}) {
   const list = Array.isArray(view) ? view : (view && view.tracks) || [];
   const tracks = [], tasks = [], edges = [], seen = new Set();
   const kept = new Set();
@@ -255,7 +256,7 @@ export function layoutInput(view) {
     tasks.push({ id: k.id, track: k.track, pos: 0, status: 'completed', kept: true });
   }
   /* a track's last completed review stays drawn (web/graph.mjs keptReviews) */
-  for (const tv of list) {
+  for (const tv of keepReview ? list : []) {
     if (!(tv.tasks || []).length) continue;
     const last = (tv.finished || []).filter((f) => f && f.review && f.status === 'completed')
       .reduce((m, f) => (!m || (f.position ?? 0) > (m.position ?? 0) ? f : m), null);

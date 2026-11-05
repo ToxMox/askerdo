@@ -62,14 +62,15 @@ export const viewNameOf = (view) => (id) => {
    moved(tv, front) its last movement { last, days }; days null when it is not known;
    since(tv), optional, when it entered waiting (its live handoff), else `last` stands in.
    Optional: wsOf(id) a far dependency's workstream when it is another, neededBy(t) the open
-   tasks outside the views that wait on t, each { id, track, ws }. */
-export function graphOf(views, now, look) {
+   tasks outside the views that wait on t, each { id, track, ws }. keepReview false: no completed
+   review stays drawn (Home's map), as layout.mjs layoutInput. */
+export function graphOf(views, now, look, { keepReview = true } = {}) {
   const trackOf = new Map();
   for (const tv of views) for (const t of tv.tasks) trackOf.set(t.id, tv.id);
   const g = { tracks: [], tasks: [], edges: [] };
   const D = { tasks: {}, tracks: {}, critical: { len: 0, path: [], track: null } };
   const seen = new Set();
-  const reviews = keptReviews(views);
+  const reviews = keepReview ? keptReviews(views) : [];
   const keptR = new Set(reviews.map((k) => k.id));
   for (const k of reviews) if (!trackOf.has(k.id)) trackOf.set(k.id, k.track);
   for (const tv of views) {

@@ -861,7 +861,7 @@ test("Home with no track held draws the project's workstream the band carries, w
   assert.equal(homeGraph({ graph: { ...graph, unheld: false }, mine, local: true }).lines.length, 0, "a held track's graph is never drawn for a session without one");
 });
 
-test('a completed review folds the code it covered into its diamond, and the legend lists a review mark only where the map draws it', async () => {
+test("a completed review takes the code it covered off the rail and leaves Home's map itself, and the legend lists a review mark only where the map draws it", async () => {
   const { runVerb } = await import('../server/verbs/index.mjs');
   const { putRecord } = await import('../server/records.mjs');
   const { graphLegend } = await import('../lib/mod-core.mjs');
@@ -879,17 +879,16 @@ test('a completed review folds the code it covered into its diamond, and the leg
     runVerb(db, 'editRecord', { id: c.id, status: 'completed' }, at(9));
   });
   const draw = () => homeGraph({ graph: { workstream: 'WS-1', view: t.workstreamView(db, { workstream: 'WS-1' }), layout: null },
-    mine: { held: true, track: line.id, workstream: 'WS-1', tracks: [] }, local: true, columns: 52, pressed: review.id });
+    mine: { held: true, track: line.id, workstream: 'WS-1', tracks: [] }, local: true, columns: 52 });
   const before = draw();
   assert.equal((before.picture.source.match(/class="bead"/g) || []).length, 2, 'two finished code tasks wait as beads');
-  assert.ok(graphLegend(before.marks).some((m) => m.key === 'bead') && !graphLegend(before.marks).some((m) => m.key === 'reviewed'));
+  assert.ok(graphLegend(before.marks).some((m) => m.key === 'bead') && graphLegend(before.marks).some((m) => m.key === 'review'));
   runVerb(db, 'editRecord', { id: review.id, status: 'completed' }, at(11));
   const after = draw();
   assert.ok(!/class="bead"/.test(after.picture.source), 'what the review covered draws no bead');
-  assert.deepEqual(after.pressed.covers.map((c) => c.id), code.map((c) => c.id), 'its press lists what it covered');
-  assert.ok(after.picture.hits.some((h) => h.kind === 'review' && h.id === review.id), 'its diamond takes a press');
+  assert.ok(!after.picture.source.includes('data-task="' + review.id + '"') && !after.picture.hits.some((h) => h.id === review.id), 'the finished review leaves the map');
   const keys = graphLegend(after.marks).map((m) => m.key);
-  assert.ok(keys.includes('reviewed') && !keys.includes('bead'), keys.join(','));
+  assert.ok(!keys.some((k) => /^(bead|review|reviewed)$/.test(k)), keys.join(','));
 });
 
 test("Home's strips each close their own card, and a wait on another line ends at each card's edge (in-app run 3)", async () => {
@@ -901,13 +900,13 @@ test("Home's strips each close their own card, and a wait on another line ends a
   const task = (name) => w.createRecord(db, { kind: 'task', name, description: 'd', workstream: ws.id }, 'cli');
   const main = ['Web views', 'The look', 'Command file', 'The move', 'Release'].map(task);
   const side = ['Strips', 'Cards', 'Last web view'].map(task);
-  const line = t.newTrack(db, { name: 'Main line', workstream: ws.id, tasks: [...main, ...side].map((x) => x.id) }, 'cli');
+  const line = t.newTrack(db, { name: 'Main line through the web views, the look, the command file and the move', workstream: ws.id, tasks: [...main, ...side].map((x) => x.id) }, 'cli');
   main.forEach((x, i) => i && gr.addEdge(db, { task: x.id, on: main[i - 1].id, reason: 'o' }, 'cli'));
   const branch = t.splinter(db, { from: line.id, name: 'Before the look', park: false, tasks: side.map((x) => x.id) }, 'cli');
   side.forEach((x, i) => i && gr.addEdge(db, { task: x.id, on: side[i - 1].id, reason: 'o' }, 'cli'));
   gr.addEdge(db, { task: main[1].id, on: side[2].id, reason: 'the look after the web views' }, 'cli');
   const graph = { workstream: ws.id, name: 'Board', view: t.workstreamView(db, { workstream: ws.id }), layout: null };
-  const gm = homeGraph({ graph, mine: { held: true, track: branch.id, workstream: ws.id, tracks: [] }, local: true, columns: 28 });
+  const gm = homeGraph({ graph, mine: { held: true, track: branch.id, workstream: ws.id, tracks: [] }, local: 'http://localhost:1/' + 'ab'.repeat(16) + '/', columns: 28 });
   assert.ok(gm.picture.strips > 2, 'drawn in strips: ' + gm.picture.strips);
   const src = gm.picture.source;
   const frames = [...src.matchAll(/<svg x="[\d.]+" y="[\d.]+" width="[\d.]+" height="[\d.]+" viewBox="([-\d. ]+)"><rect x="([-\d.]+)" y="([-\d.]+)" width="([\d.]+)" height="([\d.]+)"/g)];
@@ -920,6 +919,11 @@ test("Home's strips each close their own card, and a wait on another line ends a
   assert.ok(!/stroke-dasharray="5 4"/.test(shared), 'the wait between lines is not in the drawing every strip shows');
   const leaving = shared.slice(shared.indexOf('data-task="' + side[2].id + '"'));
   assert.ok(leaving.slice(0, leaving.indexOf('</g>')).includes(main[1].id), 'the station it leaves names the far end');
+  /* every strip's line name opens the track, a continuation's small one too, and a wrapped name on all its lines */
+  const heads = gm.picture.hits.filter((h) => h.kind === 'track');
+  assert.equal(heads.length, gm.picture.strips, 'one head press per strip: ' + JSON.stringify(heads));
+  const tallest = (id) => Math.max(...heads.filter((h) => h.id === id).map((h) => h.h));
+  assert.ok(tallest(line.id) > tallest(branch.id), 'the wrapped name presses on every line it draws');
 });
 
 test('the mark names this PC\'s version in both shapes; the board is behind only when older by number', async () => {

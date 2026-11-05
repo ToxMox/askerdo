@@ -309,8 +309,8 @@ export const PC_SETTINGS = Object.freeze({
   /* a card press confirms under the pressed option, or records at once as it always did */
   answerPresses: {
     kind: 'choice', values: ['confirm', 'once'], def: 'confirm', pc: true, label: 'Answer presses', takes: 'presses',
-    line: 'Whether pressing an option on a question card asks first or answers at once.',
-    changes: "Confirm opens a strip under the pressed option with your note, Answer now, Queue answer and Cancel; a queued answer stays off the board until Send. At once records the press straight away, as the band's chips always do.",
+    line: "Whether pressing an option on a question card or a chip on the band asks first or answers at once.",
+    changes: 'Confirm opens a strip under the pressed option or chip with your note, Answer now, Queue answer and Cancel; a queued answer stays off the board until Send. At once records the press straight away.',
     choices: { confirm: 'confirm first', once: 'at once' },
     example: { kind: 'values', values: { confirm: 'Press b: the strip opens under b; Answer now records it, Queue answer keeps it on this PC until Send.', once: 'Press b: 12b is recorded and the asking session hears it at once.' } },
   },

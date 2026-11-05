@@ -134,9 +134,12 @@ describe('the AskerDo pane', () => {
         expect([open.includes(ask), open.includes('one file'), open.includes('many files')]).toEqual([true, true, true])
         await pressAgain(ui, 'unfold-Q106')
         expect(await ui.find({ key: 'qunfold-Q106' })).toBeUndefined()
-        /* a press anywhere on an unfolded option's tile answers it through the band's path */
+        /* a press anywhere on an unfolded option's tile answers it through the band's path;
+           on confirm it opens the strip in that tile first, and Answer now records */
         await pressAgain(ui, 'unfold-Q106')
         await ui.press({ key: 'qu-tile-106a' })
+        expect(JSON.stringify(await ui.find({ key: 'qu-opt-106a' })).includes('"qnow-Q106"')).toBe(true)
+        await ui.press({ key: 'qnow-Q106' })
         expect(w.last('answer').args.slice(0, 4)).toEqual(['answer', 'Q106', '--pick', 'a'])
         if (await ui.find({ key: 'qunfold-Q106' })) await pressAgain(ui, 'unfold-Q106')
         /* a call's arrow unfolds its fact card under its row, kept across the redraw */
@@ -191,9 +194,11 @@ describe('the AskerDo pane', () => {
     const tv = (id: string, name: string, state: string, tasks: any[], edges: any[] = []) => ({ id, key: 'trk' + id, name, state, stalled: false,
       noHandoff: false, parkReason: null, done: 0, critical: { length: tasks.length, path: tasks.map((t) => t.id) }, tasks, edges, junction: null, holder: null })
     const task = (id: string, name: string, status: string, waitsOn: string[] = []) => ({ id, key: 'k' + id, name, status, ready: status === 'open' && !waitsOn.length, waitsOn })
+    /* TR-3 holds a finished review, which Home leaves off, and a review to do */
     const view = { workstream: 'WS-11', inbox: 0, tracks: [
-      tv('TR-3', 'mod core', 'active', [task('T-41', 'band row', 'in_progress'), task('T-42', 'home picture', 'open', ['after T-41', 'after T-50 on TR-5'])],
-        [{ task: 'T-42', on: 'T-41', done: false }, { task: 'T-42', on: 'T-50', done: false }]),
+      { ...tv('TR-3', 'mod core', 'active', [task('T-41', 'band row', 'in_progress'), { ...task('T-42', 'home picture', 'open', ['after T-41', 'after T-50 on TR-5']), review: true }],
+        [{ task: 'T-42', on: 'T-41', done: false }, { task: 'T-42', on: 'T-50', done: false }, { task: 'T-41', on: 'T-40', done: true }]),
+      finished: [{ id: 'T-40', key: 'kT-40', name: 'review the start', position: 0, status: 'completed', closed: '2026-11-04T09:00:00Z', review: true, covers: [{ id: 'T-39', key: 'kT-39', name: 'start' }] }] },
       tv('TR-5', 'local route', 'active', [task('T-50', 'graph route', 'in_progress')]),
       tv('TR-6', 'next line', 'waiting', [task('T-60', 'write the tests', 'open')]),
     ] }
@@ -219,6 +224,7 @@ describe('the AskerDo pane', () => {
       if (surface === 'desktop') {
         const p = await pic(ui)
         expect(['TR-3', 'TR-5', 'TR-6'].map((id) => p.source.includes('data-track="' + id + '"'))).toEqual([true, true, false])
+        expect(p.source.includes('data-task="T-40"')).toBe(false)
         /* every legend entry leads with its mark as a picture the graph's own code drew */
         const kinds: string[] = []
         const walk = (n: any) => { if (n && typeof n === 'object') { kinds.push(n.type === 'Svg' && /stroke="p-/.test(n.props.source) ? 'mark' : n.type === 'Text' ? 'words' : ''); (n.children || []).flat().forEach(walk) } }
@@ -232,7 +238,17 @@ describe('the AskerDo pane', () => {
       /* the workstream's name beside its id */
       expect(await textOf(ui, 'graph-off')).toMatch(/WS-11 the board.*TR-6/)
       await ui.press({ key: 'graph-all' })
-      if (surface === 'desktop') expect((await pic(ui)).source).toContain('data-track="TR-6"')
+      if (surface === 'desktop') {
+        expect((await pic(ui)).source).toContain('data-track="TR-6"')
+        /* each name's press lies where it is drawn, down the whole picture: a Box's top margin
+           counts the engine's half-line rows, 10 px on the pane's 20 px line */
+        const zones = (await ui.findAll({ type: 'Box' })).filter((z: any) => /^gz-/.test(String(z.key)))
+        const tops = zones.map((z: any) => [Number(String(z.key).split('-').pop()), z.props.marginTop * 10])
+        expect([tops.some(([y]) => y > 40), tops.filter(([y, top]) => Math.abs(y - top) > 0.5)]).toEqual([true, []])
+        /* no finished review drawn in the whole workstream either; the review to do opens its own page */
+        expect((await pic(ui)).source.includes('data-task="T-40"')).toBe(false)
+        expect((await ui.findAll({ type: 'Link' })).map((l: any) => String(l.props.href).split('/').pop())).toContain('kT-42')
+      }
       else expect(await has(ui, 'TR-6')).toBe(true)
       expect(await ui.find({ key: 'graph-off' })).toBeUndefined()
       await ui.press({ key: 'graph-mine' })

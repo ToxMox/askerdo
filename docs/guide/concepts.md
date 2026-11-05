@@ -50,7 +50,7 @@ Use tracks so the next session never has to work out what comes next from prose:
 
 On screen: the track name on the status line, the held track's card and graph on the pane's Home and Tracks tabs, and the track's page on the board:
 
-![The board's page for TR-29: 4 open, 2 ready, the critical path T-577 to T-579, the track's graph and legend, what is ready, its handoff TR-29.1 with the resume command, and Q617 holding T-579](img/board-track.png)
+![The board's page for TR-29: 8 open, 1 running, 3 ready, the critical path T-577 to T-580, the track's graph with amber beads for finished work no review has read, T-585 as a grey diamond with 1 covered and the line naming what it covered, T-586 as an outlined diamond still to do, the legend, and the session running T-577 beside its handoff TR-29.1](img/board-track.png)
 
 ## Handoffs and kickoffs
 
@@ -84,7 +84,7 @@ The board keeps which code each task finished with and which reviews read it, so
 - **Due.** Once a track's unreviewed code tasks reach the review size (`review.tasks`, 5), a review is due. Where reviews go is the session's judgment; a built-in rule line asks for one after each wave of parallel work, where work touched code another lane also touched, and before anything that ships.
 - **Depth.** `review.depth` is `light` by default: the due nudge, and nothing held. At `full`, a completed review reopens when work it read changes or a task before it finishes after it, so what waits on it waits again, and a track finishes only once a review has read its finished code (`track finish --waive "<reason>"` goes ahead and records why). At `off`, nothing is counted or shown.
 
-On screen: a **review due** row on the band, whose press opens the Tracks tab at the track; a line in the kickoff and the handoff; on the Tracks tab, amber cells for unreviewed work in the track's progress bar, "N to review" beside the count, and a padlock on a finish that waits for a review; on Home's station map, unreviewed work as amber beads between the stations and each review as a diamond: outlined while to do, grey with "N covered" once done (press it for the list, each a link), amber with "N to review" when it reopened. `askerdo coverage TR-n` prints the same as text. The settings are in [Settings and rules](settings-and-rules.md#reviews).
+On screen: a **review due** row on the band, whose press opens the Tracks tab at the track; a line in the kickoff and the handoff; on the Tracks tab, amber cells for unreviewed work in the track's progress bar, "N to review" beside the count, and a padlock on a finish that waits for a review; on Home's station map, unreviewed work as amber beads between the stations and each review still to do as an outlined diamond, amber with "N to review" when it reopened; a finished review leaves Home's map, and the track's board page keeps the last one as a grey diamond with what it covered. `askerdo coverage TR-n` prints the same as text. The settings are in [Settings and rules](settings-and-rules.md#reviews).
 
 ## The depth meter
 

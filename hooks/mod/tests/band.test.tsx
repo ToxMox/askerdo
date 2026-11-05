@@ -122,6 +122,18 @@ describe('the band', () => {
       const cards = (await ui.findAll({ type: 'Box' })).filter((b: any) => b.props.position === 'absolute' && b.props.display === 'none')
       expect(cards.length).toBeGreaterThan(2)
       expect(cards.every((c: any) => c.props.width <= BAND.bodyColumns && c.props.right === undefined && c.props.left <= 0)).toBe(true)
+      /* on confirm (the default) a chip opens the card's strip under the row, the chip lit, and records nothing;
+         Queue answer puts it in the card's queue, which the band's row counts; Unqueue takes the band back to its one row */
+      const answered = () => w.cliRuns().filter((r: any) => r.args[0] === 'answer').length
+      await ui.press({ key: 'answer-106a' })
+      expect([await rowKeys(ui), !!(await ui.find({ key: 'qnow-Q106' })), answered(), w.prompts.length]).toEqual([['q-Q106', 'qbandstrip-Q106'], true, 0, 0])
+      if (surface === 'desktop') expect((await ui.find({ key: 'chipface-106a' }))!.props.borderColor).toBe(SKY)
+      else expect((await ui.find({ key: 'answer-106a' }))?.props.variant).toBe('primary')
+      await ui.press({ key: 'qqueue-Q106' })
+      expect([await rowKeys(ui), !!(await ui.find({ key: 'queued-send' })), answered()]).toEqual([['q-Q106', 'band-foot'], true, 0])
+      await pressAgain(ui, 'answer-106a')
+      await ui.press({ key: 'qunqueue-Q106' })
+      expect([await rowKeys(ui), answered()]).toEqual([['q-Q106'], 0])
       await ui.unmount()
     }
     /* Home's copy keeps the words it has room for; narrower, the pick keeps its star
@@ -250,6 +262,8 @@ describe('the band', () => {
     test('pressing the starred chip accepts the pick through the CLI answer, toasts, and redraws (' + surface + ')', async ($: any, on: any) => {
       const w = world(on)
       oneQuestion(w)
+      /* Answer presses at once: the chip records with no strip */
+      w.alias = { alias: '', presses: 'once' }
       await start($, w)
       const ui = await mount($, surface)
       await ui.press({ key: 'answer-106b' })
@@ -355,6 +369,7 @@ describe('the band', () => {
     await start($, w)
     const ui = await mount($, 'desktop')
     await ui.press({ key: 'answer-106b' })
+    await ui.press({ key: 'qnow-Q106' })
     expect(w.last('answer').env.ASKERDO_ROOT).toBe('C:/sandbox/askerdo')
     expect(w.runs.every((r: any) => r.env && r.env.ASKERDO_ROOT === 'C:/sandbox/askerdo')).toBe(true)
     await ui.unmount()

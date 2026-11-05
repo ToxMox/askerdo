@@ -412,7 +412,9 @@ describe('the mod section', () => {
     expect((await $.tool.call({ tool: 'Bash', command: 'node ~/.claude/askerdo/cli.mjs register --json < q.json' })).deny).toContain('ask tool')
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND })
     expect(await ui.find({ key: 'answer-L1c' })).toBeDefined()
+    /* the chip opens the strip; its Answer now answers the kept label */
     await ui.press({ key: 'answer-L1b' })
+    await ui.press({ key: 'qnow-L1' })
     await w.clock.settle()
     /* the press is the user's act: this idle session starts one turn carrying it */
     expect(w.prompts.at(-1)).toContain('L1b')

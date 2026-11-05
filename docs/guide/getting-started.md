@@ -98,7 +98,7 @@ Q106: how long should failed webhooks retry?
 
 The icons read left to right: what happened (done), how the work is going (minor bumps), whether you are needed (yes, now). The star marks Claude's pick.
 
-A question is asked in full once and waits on the board. The band above the prompt shows it with one chip per option: press one to answer at once, with no model turn. You can also type the token, `106a`, in your message, and an answer given from another session or PC reaches the asking session at its next prompt or step. [Daily use](daily-use.md#answering) lists every way to answer.
+A question is asked in full once and waits on the board. The band above the prompt shows it with one chip per option: press one and the strip under it answers (**Answer now**) or queues (**Queue answer**) with no model turn; with **Answer presses** at `once`, the chip answers at once. You can also type the token, `106a`, in your message, and an answer given from another session or PC reaches the asking session at its next prompt or step. [Daily use](daily-use.md#answering) lists every way to answer.
 
 ## Text mode: when there is no board
 

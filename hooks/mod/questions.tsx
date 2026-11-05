@@ -63,7 +63,7 @@ const OUT = '↗', DOT = '●', SEP = ' · '
 /* the strip's keys, digits so they never take an option's letter or n */
 const STRIP_KEYS = { now: '1', queue: '2', cancel: '3', unqueue: '4', send: '5' }
 /* a queued answer's terminal chip carries the mark after its letter */
-const QUEUED_MARK = '‖'
+export const QUEUED_MARK = '‖'
 /* the terminal's pick row tint: a theme key, so it follows the person's theme */
 const TINT = 'userMessageBackground'
 /* a tile press's blank label when the card's width is not known: wider than any card */
@@ -335,8 +335,8 @@ function noteField(els: any, c: any, view: QuestionsView, act: QuestionsActions,
 
 /* the strip under the pressed option: the note field, Answer now (records and
    delivers as a press always did), Queue answer (off the board until Send), Unqueue on a queued
-   card, Cancel. The pane's pinned card keys them by digit. */
-function stripTree(els: any, c: any, o: any, view: QuestionsView, act: QuestionsActions, opts: CardOpts, desk: boolean): any {
+   card, Cancel. The pane's pinned card keys them by digit; the band's chips open it too. */
+export function stripTree(els: any, c: any, o: any, view: QuestionsView, act: QuestionsActions, opts: CardOpts, desk: boolean): any {
   const { Box, Text, Button, Input } = els
   const keys = !!opts.hotkeys
   const queued = queuedOf(c, view)

@@ -14,13 +14,13 @@ From the top, a band can hold:
 
 | Row | What it says | What a press does |
 |-|-|-|
-| A question | One open question this session asked: the mark (amber when it blocks work, blue when it does not), its id in bold, its name, one chip per option with the recommended one starred, and its age. | A chip records that answer at once. No model turn starts, and the row goes. |
+| A question | One open question this session asked: the mark (amber when it blocks work, blue when it does not), its id in bold, its name, one chip per option with the recommended one starred, and its age. | A chip opens the card's strip under the row: the chip lit, the note field, **Answer now**, **Queue answer** and **Cancel** (**Unqueue** when the question is queued). **Answer now** records the answer; no model turn starts, and the row goes. With **Answer presses** at `once` ([Settings](settings-and-rules.md)), the chip records at once. |
 | The count line | With two or more of this session's questions open, one line instead: `3 open`, and `1 blocking` in amber when any block. | Opens the pane on Questions. |
 | This PC's health | When something in AskerDo on this PC is wrong (the local server down, the board join lost, a copy an update replaced), its first problem with the fix, as `askerdo status` reports it. | **Start**, **Restart** or **Run** runs the fix here; **Copy** copies a command to run on another PC. A fix only you can make, such as starting a new session, has no press. |
 | A board call | Something only you can close: a look ("its work landed, and it closes at your look" with **Close** and **Not yet**), a judgment call (**Close it**, **Park it**, **Keep**), or an override request (**Allow**, **Keep**). Several override requests fold into one line. | Records your call on the board at once. |
 | Review due | A track whose finished code tasks wait for a review, once they reach the review size ([Review coverage](concepts.md#review-coverage)). | **Open the track** opens the Tracks tab at that track. |
 | Answers waiting | `1 answer waiting` (or `2 updates waiting`): answers and board news this session has not heard yet, with a **submit 1** chip (the count of what waits). | **submit 1** starts one turn carrying them. Nothing starts a turn by itself; a prompt you type also carries them. |
-| Answers queued | `2 answers queued` in amber, with **Send**: answers you queued on a card, kept on this PC and off the board ([Queued answers](#queued-answers)). | **Send** records them all and delivers them together. |
+| Answers queued | `2 answers queued` in amber, with **Send**: answers you queued on a card or the band, kept on this PC and off the board ([Queued answers](#queued-answers)). | **Send** records them all and delivers them together. |
 | Board offline | `board offline: drawn from this PC's last copy`, when the board cannot be reached. | None. See [Troubleshooting](troubleshooting.md#the-board-is-offline). |
 
 Each row comes and goes on its own, so the band usually holds one or two of them over the status line. A look call on a task whose work landed:
@@ -72,11 +72,11 @@ The pane opens beside the conversation. Open it from the band (the mark, the cou
 
 ### Home
 
-![The pane on Home: the band's copy with Q617's row over the status line, Agents unfolded with two running agents, Where we stand with TR-29's graph and its legend, and the Activity feed under its filter field](img/pane-home.png)
+![The pane on Home: the band's copy with Q617's row over the status line, Agents unfolded with two running agents, Where we stand with TR-29's graph, an amber bead before T-577 and another before T-586, the review still to do drawn as an outlined diamond, and the legend naming finished, not reviewed and a review to do, then the Activity feed under its filter field](img/pane-home.png)
 
 - **The band's copy** at the top: the same rows and status line, at the pane's width.
 - **Agents**, while any run. Shut, it is one line: the deepest agent's depth meter, how many run and the longest running time; press the ring to unfold a row per agent with its depth meter, job, model, running time, tool calls, current tool and depth.
-- **Where we stand**: the held track drawn as a station map of its tasks, running ones lit, ready ones ringed, waiting ones joined by the edges they wait on. Finished code no review has read sits between the stations as amber beads, and each review is a diamond: press a done one for the list of what it covered, closed with its X ([Review coverage](concepts.md#review-coverage)). **My track's lines** draws your track; **Whole workstream** draws every track in it. Every name on the map opens its board page, and the legend under it names the marks.
+- **Where we stand**: the held track drawn as a station map of its tasks, running ones lit, ready ones ringed, waiting ones joined by the edges they wait on. Finished code no review has read sits between the stations as amber beads, and a review still to do is a diamond, amber once reopened; a finished review leaves the map like any finished station, and its track's board page lists what it covered ([Review coverage](concepts.md#review-coverage)). **My track's lines** draws your track; **Whole workstream** draws every track in it. Every name on the map opens its board page, and the legend under it names the marks.
 - **Activity**: the board's changes in this project, newest first, grouped by day. The filter takes words, a kind (`task`, `question`) or an id, and widening it reaches every project.
 - **Versions** at the foot: this PC's AskerDo version and the board's, under the line **How it all works: the Guide tab**, which opens the Guide tab. When the board runs an older one, a line at the top of Home says so.
 
@@ -90,7 +90,7 @@ The header counts the open questions. One is pinned as a full card (below): the 
 
 ### Tracks
 
-![The pane on Tracks: the bottom line, TR-29's card, TR-30 Moon phase column ready to pick up, TR-31 Storm warnings running on the laptop, and one track parked](img/pane-tracks.png)
+![The pane on Tracks: the bottom line, TR-29's card with 4 of 12 done, two amber cells in its progress bar and 2 to review in amber, TR-30 Moon phase column ready to pick up, TR-31 Storm warnings running on the laptop, and one track parked](img/pane-tracks.png)
 
 - **The bottom line** says where this session is, which tracks wait on your answer, and the counts: how many tracks to pick up, how many running elsewhere, how many parked.
 - **The held track's card**: its workstream, how long it has been held, its progress, what runs now (and which agent runs it), what is ready next, its longest chain, the questions and handoff lines it waits on you for, and its last handoff. In the progress bar, finished work no review has read shows amber with "N to review" beside the count, a finish waiting for a review shows a padlock, and the card's state reads **review due** when one is due.
@@ -153,7 +153,9 @@ Queue answers when you want a session to read several of them together instead o
 
 **Send**, on the band and in every open strip, records each queued answer on the board with its note, as **Answer now** would, then delivers them together: the ones this session asked arrive as one prompt, one turn carrying them all, and an answer to another session's question goes to that session, which reads it at its next turn. One toast says what was sent. A queued answer whose question was answered, dropped or reworded elsewhere since is not recorded: it leaves the queue with a line saying so. One that fails to record (the board not answering, say) stays queued, and the toast names it.
 
-Band chips are not part of the queue: a chip records at once.
+The band's chips share the queue: an answer queued from the band shows queued on its card and in the pane, and one queued on a card shows on the band's chip (an amber badge). A chip pressed on the band opens the same strip under the question's row:
+
+![The band with Q617's chip a pressed: the chip lit, and under the row the note field, Answer now, Queue answer and Cancel, over the status line](img/band-strip.png)
 
 ## Answering
 
@@ -161,7 +163,7 @@ Every answer is a question number and an option letter: `106b` answers question 
 
 | Where | How | A model turn? |
 |-|-|-|
-| The band | Press a chip. | No: recorded at once. |
+| The band | Press a chip, then **Answer now** or **Queue answer** (at `once`, the chip records). | No. |
 | The card or the pane | Press an option tile, then **Answer now**; or queue several and press **Send**. | No. |
 | The command | `/askerdo 106b` or `/askerdo 106b a note for the session`. | No. |
 | The chat | Type `106b` in your message; the session records it. | Yes, it rides your prompt. |

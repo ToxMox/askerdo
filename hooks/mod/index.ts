@@ -2331,8 +2331,7 @@ const commandFailed = () => ({ text: PLUGIN + ': /' + COMMAND + ' failed before 
 /* graph: Home's scope, the held track's lines until the user switches */
 /* done: Home's fold of finished agents, shut until pressed, held for the session only */
 /* filterSeed: the text the filter field is drawn with, the filter as the field last mounted */
-/* review: the review whose covered list Home shows, pane state only */
-const view: { tab: PaneTab; filter: string; filterSeed: string; chosen?: boolean; unfolded: Set<string>; graph: string; done: boolean; seeded?: PaneTab; review?: string | null } = { tab: 'home', filter: '', filterSeed: '', unfolded: new Set(), graph: 'mine', done: false, review: null }
+const view: { tab: PaneTab; filter: string; filterSeed: string; chosen?: boolean; unfolded: Set<string>; graph: string; done: boolean; seeded?: PaneTab } = { tab: 'home', filter: '', filterSeed: '', unfolded: new Set(), graph: 'mine', done: false }
 const TAB_NAMES: Record<PaneTab, string> = { home: 'Home', questions: 'Questions', tracks: 'Tracks', settings: 'Settings', guide: 'Guide' }
 
 /* Every opener, command or press: an open pane redraws on the tab asked for. Questions
@@ -2627,17 +2626,27 @@ async function healthFix($: any, input?: any): Promise<void> {
 }
 
 /* The band's model and presses, one set for the band over the prompt and Home's copy. */
-function bandParts($: any): { model: any; answer: (q: any, a: any) => void; open: (q?: any) => void; submit: () => void; send: () => void; press: (c: any, p: any) => void; fold: { open: boolean; toggle: () => void } } {
+function bandParts($: any): { model: any; answer: (q: any, a: any) => void; open: (q?: any) => void; submit: () => void; send: () => void; press: (c: any, p: any) => void; fold: { open: boolean; toggle: () => void }; strip?: { view: QuestionsView; act: QuestionsActions } } {
   void queueRead($).catch(() => {})
+  /* the questions this session keeps draw ahead of the board's; the queued count beside what waits */
+  const model = withHealth(withWaiting(withPresses(withChipStates(withLocal(band.model, localOpen(), mem.id), answers.chips)), { inbox: band.inbox, closed: closedLine(closedAs(mem.id), savedHere()), saved: savedHere().length > 0,
+    queued: answerQueue.items.size }), healthNow($))
+  /* a strip left open on a question the band no longer draws closes */
+  const drawn = new Set(((model && model.questions) || []).map((q: any) => q.id))
+  for (const id of Object.keys(bandStrips)) if (!drawn.has(id)) delete bandStrips[id]
   return {
-    /* the questions this session keeps draw ahead of the board's; the queued count beside what waits */
-    model: withHealth(withWaiting(withPresses(withChipStates(withLocal(band.model, localOpen(), mem.id), answers.chips)), { inbox: band.inbox, closed: closedLine(closedAs(mem.id), savedHere()), saved: savedHere().length > 0,
-      queued: answerQueue.items.size }), healthNow($)),
+    /* on confirm a chip opens the card's strip under the band's row, sharing the card's note and queue */
+    strip: qpane.confirm ? { view: { ...qpane, strip: bandStrips }, act: cardActions($, (id, letter, version) => { void qpanePick($, id, letter, version, 'band') }, undefined, { site: 'band' }, bandStrips) } : undefined,
+    model,
     press: (c: any, p: any) => pressed($, () => {
       void (p && p.pane === 'tracks' ? openPane($, 'tracks', (c && c.id) || undefined, true) : c && c.kind === 'health' ? healthFix($, p && p.input) : bandCall($, c, p)).catch(() => {})
     })(),
     fold: { open: callFold.open, toggle: pressed($, () => { callFold.open = !callFold.open }) },
-    answer: (q: any, a: any) => pressed($, () => { void bandAnswer($, q, a) })(),
+    answer: (q: any, a: any) => pressed($, () => {
+      if (!qpane.confirm) return void bandAnswer($, q, a)
+      bandStrips[q.id] = a.letter
+      noteSeed(q.id)
+    })(),
     open: (q?: any) => pressed($, () => { void openPane($, 'questions', q && q.id).catch(() => {}) })(),
     submit: pressed($, () => { void submitWaiting($).catch(() => {}) }),
     send: pressed($, () => { void sendQueued($).catch(() => {}) }),
@@ -2785,7 +2794,7 @@ async function paneDraw($: any, e: any): Promise<any> {
     /* the copy's border and padding: a cell each on the terminal; the desktop's round border is
        1 px a side, so the padding's two cells and under one more */
     const inside = Number.isFinite(cols) ? cols - (surface === 'desktop' ? 3 : 4) : undefined
-    const ours = b.model && bandTree(els, b.model, b.answer, { columns: inside, now, surface, open: b.open, submit: b.submit, send: b.send, cards: false, unfold, press: b.press, fold: b.fold })
+    const ours = b.model && bandTree(els, b.model, b.answer, { columns: inside, now, surface, open: b.open, submit: b.submit, send: b.send, cards: false, unfold, press: b.press, fold: b.fold, strip: b.strip })
     const sm = statusOf($)
     /* the guard's press under its own name, so `guard` below is still the guard's state */
     const { guard: guardTap, shelf, agents: openAgents, health: fixHealth } = statusPresses($)
@@ -2801,14 +2810,12 @@ async function paneDraw($: any, e: any): Promise<any> {
     /* drawn for the width this draw reports, so a pane dragged wider draws more columns */
     let gm: any
     try {
-      gm = homeGraph({ graph: band.graph, mine: band.mine, shelf: band.shelf, local: band.near ? band.local || true : false, scope: view.graph, columns: cols, draw: surface === 'desktop', pressed: view.review })
+      gm = homeGraph({ graph: band.graph, mine: band.mine, shelf: band.shelf, local: band.near ? band.local || true : false, scope: view.graph, columns: cols, draw: surface === 'desktop' })
     } catch {
       gm = { scope: view.graph, lines: [], off: [], why: 'The picture could not be drawn from what the local board holds.' }
     }
     const graph = graphTree(els, gm, (s: string) => { view.graph = s; qpaneRedraw($) }, surface,
-      { open: foldOpen($, 'graph'), toggle: () => foldSet($, 'graph', !foldOpen($, 'graph')), line: standLine(heldNow(), gm), columns: cols },
-      /* one list open at a time; a second press on its diamond, or the X, closes it */
-      (id: string | null) => { view.review = id && id !== view.review ? id : null; qpaneRedraw($) })
+      { open: foldOpen($, 'graph'), toggle: () => foldSet($, 'graph', !foldOpen($, 'graph')), line: standLine(heldNow(), gm), columns: cols })
     const am = agentsModel(flightList(), guard.state, Date.now())
     const agents = am ? agentsTree(els, am, foldOpen($, 'agents'), () => foldSet($, 'agents', !foldOpen($, 'agents')), surface, cols,
       { open: view.done, toggle: () => { view.done = !view.done; qpaneRedraw($) } }) : null
@@ -2899,6 +2906,8 @@ function shelfGraphs($: any): any[] {
 
 /* What the person unfolded, typed, expanded and asked about: the tab's own, kept across redraws. */
 const qpane: QuestionsView = { unfolded: new Set(), notes: {}, drawn: {}, strip: {}, queued: {}, confirm: true }
+/* the band's open strips, its own so a band press opens none on the pane's card; notes and queue are shared */
+const bandStrips: Record<string, string> = {}
 
 /* a field moved or mounted afresh is drawn with the words typed so far; a cleared note
    leaves both copies */
@@ -3070,10 +3079,10 @@ function qpaneRedraw($: any): void {
   try { $.ui.invalidate('ui.render') } catch {}
 }
 
-/* The band's answer path, with the card's note. */
-async function qpanePick($: any, id: string, letter: string, version?: number): Promise<void> {
+/* The band's answer path, with the card's note; the band's strip records as the band */
+async function qpanePick($: any, id: string, letter: string, version?: number, site: PressSite = 'pane'): Promise<void> {
   const note = (qpane.notes[id] || '').trim()
-  const r = await pressAnswer($, id, letter, () => recordAnswer($, id, letter, 'pane', note || undefined, undefined, version))
+  const r = await pressAnswer($, id, letter, () => recordAnswer($, id, letter, site, note || undefined, undefined, version))
   if (!r) return
   if (r.ok) { noteGone(id); queueDrop($, id) }
   await refresh($)
@@ -3129,25 +3138,26 @@ async function fullCard($: any, id: string): Promise<void> {
 /* The card's view writes, one set for the pane and the first telling. `where`: what a queued
    answer keeps of its card, with the version a reply's card answers by. */
 type CardWhere = { site: PressSite; useId?: string; key?: string; local?: boolean; version?: number }
-function cardActions($: any, pick: QuestionsActions['pick'], end: QuestionsActions['end'], where: CardWhere = { site: 'pane' }): QuestionsActions {
+function cardActions($: any, pick: QuestionsActions['pick'], end: QuestionsActions['end'], where: CardWhere = { site: 'pane' },
+  strips: Record<string, string> = qpane.strip as Record<string, string>): QuestionsActions {
   return {
     /* Answer now, or a press on at once: the strip closes as it records */
-    pick: (id, letter, version) => { delete (qpane.strip as any)[id]; noteSeed(id); pick(id, letter, version) },
+    pick: (id, letter, version) => { delete strips[id]; noteSeed(id); pick(id, letter, version) },
     end,
     strip: (id: string, letter?: string) => {
-      if (letter) (qpane.strip as any)[id] = letter
-      else delete (qpane.strip as any)[id]
+      if (letter) strips[id] = letter
+      else delete strips[id]
       noteSeed(id)
       qpaneRedraw($)
     },
     queue: (id: string, letter: string, version?: number) => {
       const { version: drawn, ...at } = where
       queueSet($, { id, letter, note: (qpane.notes[id] || '').trim(), version: 'version' in where ? drawn : version, ...at })
-      delete (qpane.strip as any)[id]
+      delete strips[id]
       noteSeed(id)
       qpaneRedraw($)
     },
-    unqueue: (id: string) => { queueDrop($, id); delete (qpane.strip as any)[id]; noteSeed(id); qpaneRedraw($) },
+    unqueue: (id: string) => { queueDrop($, id); delete strips[id]; noteSeed(id); qpaneRedraw($) },
     send: () => { void sendQueued($).catch(() => {}) },
     ask: (id: string, tok: string) => { qpane.asking = undefined; qpaneAsk($, tok); qpaneRedraw($) },
     asking: (id: string) => { qpane.asking = qpane.asking === id ? undefined : id; qpaneRedraw($) },
@@ -5244,7 +5254,7 @@ export const register: Register = (on: any) => {
     const b = band.loaded ? bandParts($) : null
     const ours = b && b.model && handedKeys(bandTree(els, b.model, b.answer, {
       columns: e.props.bodyColumns, rows: e.props.maxRows - (status ? 1 : 0), now: Date.now(), short, surface: e.surface,
-      open: b.open, submit: b.submit, send: b.send, press: b.press, fold: b.fold,
+      open: b.open, submit: b.submit, send: b.send, press: b.press, fold: b.fold, strip: b.strip,
     }), e.surface)
     /* nothing open or waiting: no band, and the app's content still draws */
     if (!ours && !status) return next(e)

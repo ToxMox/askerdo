@@ -106,13 +106,14 @@ export function pressOver(els: any, key: string, cells: number, act: () => void,
 /* a face and its press as one, the one grey highlight: the face drawn on
    its own Box (PRESS_LIT), whose hover lights behind the icon and label, inside PRESS_RIM, which
    cuts the light to a subtle corner and gives the room back. shrink: the face may be cut. */
-export function pressFace(els: any, key: string, face: any, press: any, o: { shrink?: boolean; gap?: number; chip?: { pick?: boolean; only?: boolean } } = {}): any {
+export function pressFace(els: any, key: string, face: any, press: any, o: { shrink?: boolean; gap?: number; chip?: { pick?: boolean; only?: boolean; lit?: boolean } } = {}): any {
   const { Box } = els
   if (o.chip) {
-    /* a band chip is one Box, its own fill lit grey, 28 px on the 20 px line, the kit's corner by a border sky on the pick */
+    /* a band chip is one Box, its own fill lit grey, 28 px on the 20 px line, the kit's corner by a border sky on the pick;
+       the chip whose strip is open stays lit, rimmed in sky */
     const pad = o.chip.only ? { paddingX: CHIP_ONLY_X } : { paddingLeft: CHIP_LEFT, paddingRight: CHIP_RIGHT }
     return (
-      <Box key={key} {...CHIP} borderColor={o.chip.pick ? SKY : CLEAR} {...pad} flexShrink={0}>{face}{press}</Box>
+      <Box key={key} {...CHIP} borderColor={o.chip.pick || o.chip.lit ? SKY : CLEAR} {...(o.chip.lit ? { backgroundColor: CHIP_LIT } : {})} {...pad} flexShrink={0}>{face}{press}</Box>
     )
   }
   const size = o.shrink ? { flexShrink: 1, minWidth: 0 } : { flexShrink: 0 }

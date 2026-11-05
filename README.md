@@ -4,7 +4,7 @@
 
 <table>
 <tr>
-<td valign="top" width="40%"><img src="docs/guide/img/pane-home.png" alt="The AskerDo pane on Home: the band's copy, two agents running, the held track drawn as a graph with what waits on what, and the project's activity"></td>
+<td valign="top" width="40%"><img src="docs/guide/img/pane-home.png" alt="The AskerDo pane on Home: the band's copy, two agents running, the held track drawn as a graph with what waits on what, amber beads for finished work no review has read and an outlined diamond for the review to do, and the project's activity"></td>
 <td valign="top"><img src="docs/img/readme/reply-card.png" alt="A reply in the AskerDo style: three anchor emoji and a bold bottom line, a Needs you footer, and under it the question's card with its options, the pick starred"><br><br><img src="docs/guide/img/band.png" alt="The band above the prompt: question Q617 with its answer chips, the status line with the context and weekly rings and the held track"></td>
 </tr>
 <tr>
@@ -23,7 +23,7 @@ A plugin adds skills, hooks and an output style. A mod changes the app itself, a
 - **The status row** on the band's last line: the context and usage rings, the agents running and their depth, the agent guard, the track and task this session holds, and the shelf.
 - **Question cards** under the reply that asked, answered with one press, with the reply's Needs you footer drawn under the last card.
 - **The AskerDo pane** beside the conversation, with **Home**, **Questions**, **Tracks**, **Settings** and **Guide** tabs.
-- **The station map** on Home: the held track drawn as stations with what waits on what, the finished work no review has read yet, and each review with what it covered.
+- **The station map** on Home: the held track drawn as stations with what waits on what, the finished work no review has read yet, and each review still to do.
 - **Links everywhere**: every track, task, question and decision name the pane and the band's hover cards draw opens its page on the board.
 - **The `/askerdo` command**, which answers in the app itself, most of it without starting a model turn.
 
@@ -55,7 +55,7 @@ The track on the status row opens its card: progress, what is ready next, the lo
 
 ![The track's hover card: 4 of 6 done, the task ready next, the longest chain, a blocking question and the last handoff](docs/img/readme/hover-track.png)
 
-**Reviews on the board.** Each commit is linked to the task it finished, and a review task records the code tasks it read. Once a track's unreviewed code tasks reach the review size (5 by default), the band and the Tracks tab say a review is due. The station map draws unreviewed work as amber beads on the track and each review as a diamond holding what it covered. At the full review depth, a review reopens when work it read changes, and a track finishes only once a review has read its code.
+**Reviews on the board.** Each commit is linked to the task it finished, and a review task records the code tasks it read. Once a track's unreviewed code tasks reach the review size (5 by default), the band and the Tracks tab say a review is due. The station map draws unreviewed work as amber beads on the track and each review still to do as a diamond; the track's board page keeps the last finished review with what it covered. At the full review depth, a review reopens when work it read changes, and a track finishes only once a review has read its code.
 
 **Tray popups.** On Windows, a tray icon shows whether anything is blocking and pops up a card when a question arrives, so a question reaches you while the app is in the background.
 
@@ -63,7 +63,7 @@ The track on the status row opens its card: progress, what is ready next, the lo
 
 **The AskerDo pane.** A pane beside the conversation has Home, Questions, Tracks, Settings and Guide tabs; the Guide tab lists these docs, each opening on GitHub at the version you run. `/askerdo` drives it all.
 
-![The AskerDo pane on Home: the band's copy, two agents running, the held track drawn as a graph with its legend, and the project's activity](docs/guide/img/pane-home.png)
+![The AskerDo pane on Home: the band's copy, two agents running, the held track drawn as a graph with amber beads for finished work no review has read, an outlined diamond for the review to do and a legend naming the marks, and the project's activity](docs/guide/img/pane-home.png)
 
 Home holds a copy of the band, the agents this session has running, where the held track stands drawn as a graph of its tasks, and the project's activity, newest first.
 

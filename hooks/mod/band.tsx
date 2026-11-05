@@ -7,6 +7,7 @@
  * Drawn from the model alone; index.ts owns every read and write. */
 import { CARD_CELLS, SKY, TILE_GAP, cardColors, factTip, pressFace, pressOver, tileLook, tilePress, wordLink } from './status.tsx'
 import { OPEN, SHUT, foldEnd, foldRing } from './fold.tsx'
+import { QUEUED_MARK, type QuestionsActions, type QuestionsView, stripTree } from './questions.tsx'
 import {
   COUNT_MARK, STAR, ageText, answerLabels, badgePicture, callCard, cardText, cellWidth, chipCard, chipText, countCard, countTip, facePicture, foldCard,
   inboxCard, markPicture, paneMeasure, queuedLabel, rowGap, rowNeed, submitTip, waitingLabel,
@@ -33,6 +34,8 @@ export type BandOpts = {
   unfold?: { open: (id: string) => boolean; toggle: (id: string) => void }
   /* press: a call's verb press; fold: several override requests' count line, unfolded or not */
   press?: (c: BandCall, p: BandPress) => void; fold?: { open: boolean; toggle: () => void }
+  /* Answer presses on confirm: the band's open strips (view.strip), the queued answers and the card's strip presses */
+  strip?: { view: QuestionsView; act: QuestionsActions }
 }
 
 /* the hovered question row's tint on the terminal, the Questions pane's pick-row theme key */
@@ -45,6 +48,23 @@ const ONE_WAY = 'one-way'.length
 const chipWidth = (label: string) => cellWidth(label) + 4
 /* Home's copy draws no cards: it is the pane's, off the band */
 const onBand = (opts: BandOpts) => opts.cards !== false
+
+/* the letter whose strip is open on this question, and the letter queued for it */
+function stripOf(q: BandQuestion, opts: BandOpts): string | undefined {
+  const at = opts.strip && opts.strip.view.strip ? opts.strip.view.strip[q.id] : undefined
+  return at && q.answers.some((a) => a.letter === at) ? at : undefined
+}
+const queuedOf = (q: BandQuestion, opts: BandOpts): string | undefined => {
+  const qd = opts.strip && opts.strip.view.queued
+  return qd && qd[q.id] ? qd[q.id].letter : undefined
+}
+/* the card's strip under the pressed chip; the band's own row carries the queued count and Send */
+function bandStrip(els: any, q: BandQuestion, letter: string, opts: BandOpts): any {
+  const s = opts.strip!
+  const a = q.answers.find((x) => x.letter === letter)
+  const { send, ...act } = s.act
+  return stripTree(els, { id: q.id, version: q.version, options: q.answers }, a, s.view, act, {}, opts.surface === 'desktop' && !!els.Svg)
+}
 
 /* a mark, the desktop's picture or the terminal's glyph */
 function mark(els: any, opts: BandOpts, kind: 'blocking' | 'open' | 'inbox', glyph: any): any {
@@ -117,9 +137,9 @@ function questionCard(els: any, q: BandQuestion, now?: number, open?: () => void
 /* an option's desktop card: the option in bold (the pick starred), what happens
    and the catch in the warning color, a one-way line when hard to undo, the press it names.
    the title leads with the option's badge; the token stays in the press line. */
-function optionCard(els: any, a: BandAnswer, pick: boolean, press: boolean): any[] {
+function optionCard(els: any, a: BandAnswer, pick: boolean, press: boolean, confirm = false): any[] {
   const { Box, Text, Svg } = els
-  const c = chipCard(a, pick)
+  const c = chipCard(a, pick, confirm)
   const k = a.token
   const p = badgePicture(a.letter)
   return [
@@ -142,11 +162,18 @@ function optionCard(els: any, a: BandAnswer, pick: boolean, press: boolean): any
    each a tile that answers on a press anywhere on it */
 function unfoldTree(els: any, q: BandQuestion, onAnswer: (q: BandQuestion, a: BandAnswer) => void, opts: BandOpts): any {
   const { Box } = els
-  const options = q.answers.map((a) => (
-    <Box key={'qu-opt-' + a.token} flexDirection="column" paddingX={1} {...tileLook(q.pick === a.letter, true)}>
-      {[tilePress(els, 'qu-tile-' + a.token, opts.columns || 200, () => onAnswer(q, a)), ...optionCard(els, a, q.pick === a.letter, false)]}
-    </Box>
-  ))
+  /* the tile whose strip is open stays lit and holds it, as a card's option does */
+  const at = stripOf(q, opts), queued = queuedOf(q, opts)
+  const options = q.answers.map((a) => {
+    const lit = a.letter === at
+    const edge = lit ? SKY : queued === a.letter ? 'warning' : q.pick === a.letter
+    return (
+      <Box key={'qu-opt-' + a.token} flexDirection="column" paddingX={1} {...tileLook(edge, !lit, lit)}>
+        {[lit ? null : tilePress(els, 'qu-tile-' + a.token, opts.columns || 200, () => onAnswer(q, a)), ...optionCard(els, a, q.pick === a.letter, false),
+          lit ? bandStrip(els, q, a.letter, opts) : null].filter(Boolean)}
+      </Box>
+    )
+  })
   return (
     <Box key={'qunfold-' + q.id} flexDirection="column" rowGap={1} paddingLeft={3}>
       {questionCard(els, q, opts.now, opts.open ? () => opts.open!(q) : undefined)}
@@ -221,14 +248,16 @@ function questionRow(els: any, q: BandQuestion, onAnswer: (q: BandQuestion, a: B
   )
   /* the name sits one cell from its chips, as the chips from each other; the row's gap parts the rest */
   let x = 2 + cellWidth(said.name) + 1
+  const lit = stripOf(q, opts), queued = queuedOf(q, opts)
   const chips = q.answers.map((a, i) => {
     const pick = q.pick === a.letter
     const named = labels[i] !== (pick ? STAR + ' ' : '') + a.letter
     const at = x
     /* the terminal's letter takes a cell of sky each side */
     x += chipWidth(labels[i]) + 3
-    const card = hoverCard(els, chipText(a, pick), at, opts, 0, desk ? optionCard(els, a, pick, true) : undefined)
-    return <Box key={'chip-' + a.token} flexShrink={0}>{chipFace(els, a, pick, named, () => onAnswer(q, a), opts)}{card}</Box>
+    const card = hoverCard(els, chipText(a, pick), at, opts, 0, desk ? optionCard(els, a, pick, true, !!opts.strip) : undefined)
+    const look = { lit: a.letter === lit, queued: a.letter === queued }
+    return <Box key={'chip-' + a.token} flexShrink={0}>{chipFace(els, a, pick, named, () => onAnswer(q, a), opts, look)}{card}</Box>
   })
   const chipRow = <Box key={'qchips-' + q.id} flexDirection="row" columnGap={1} flexShrink={0}>{chips}</Box>
   const parts: any[] = [chipRow]
@@ -256,19 +285,20 @@ const rowLook = (opts: BandOpts) => (opts.surface === 'desktop' ? {} : { alignSe
 /* a desktop chip is a face, the letter's sky badge then the star and words
    where the row has room, its press laid over and keyed answer-<token>; the terminal's a Button,
    the letter on a sky ground, the pick's primary. Letters only, the pick keeps its star */
-function chipFace(els: any, a: BandAnswer, pick: boolean, named: boolean, press: () => void, opts: BandOpts): any {
+/* lit, its strip is open (the terminal's arrow says the strip is under it); queued, the card's amber badge or mark */
+function chipFace(els: any, a: BandAnswer, pick: boolean, named: boolean, press: () => void, opts: BandOpts, look: { lit?: boolean; queued?: boolean } = {}): any {
   const { Text, Button, Svg } = els
   if (opts.surface === 'desktop' && Svg) {
-    const p = badgePicture(a.letter)
+    const p = look.queued ? badgePicture(a.letter, 'queued') : badgePicture(a.letter)
     const said = (pick ? STAR + (named ? ' ' : '') : '') + (named ? a.option : '')
     const words = said ? <Text>{pick ? <Text color={SKY}>{named ? STAR + ' ' : STAR}</Text> : null}{named ? a.option : null}</Text> : null
     const cells = Math.ceil(p.width / 8) + (said ? cellWidth(said) + 1 : 0)
     return pressFace(els, 'chipface-' + a.token, [<Svg source={p.source} alt={p.alt} width={p.width} height={p.height} />, words],
-      pressOver(els, 'answer-' + a.token, cells, press, undefined, onBand(opts)), { chip: { pick, only: !said } })
+      pressOver(els, 'answer-' + a.token, cells, press, undefined, onBand(opts)), { chip: { pick, only: !said, ...(look.lit ? { lit: true } : {}) } })
   }
   return (
-    <Button key={'answer-' + a.token} onPress={press} {...(pick ? { variant: 'primary' } : {})}>
-      {pick ? STAR + ' ' : ''}<Text backgroundColor={SKY} color="#0b0b0b">{' ' + a.letter + ' '}</Text>{named ? ' ' + a.option : ''}
+    <Button key={'answer-' + a.token} onPress={press} {...(pick || look.lit ? { variant: 'primary' } : {})}>
+      {pick ? STAR + ' ' : ''}<Text backgroundColor={SKY} color="#0b0b0b">{' ' + a.letter + ' '}</Text>{look.queued ? ' ' + QUEUED_MARK : ''}{named ? ' ' + a.option : ''}{look.lit ? ' ' + OPEN : ''}
     </Button>
   )
 }
@@ -475,7 +505,10 @@ export function bandTree(els: any, m: any, onAnswer: (q: BandQuestion, a: BandAn
     /* a pressed chip vanishes at once, its row with it; no pressed or saving look */
     if (!qs[0].answers.some((a) => a.state === 'pending' || a.state === 'done')) {
       rows.push(questionRow(els, qs[0], onAnswer, opts, closed))
+      const at = stripOf(qs[0], opts)
       if (opts.surface === 'desktop' && opts.unfold && opts.unfold.open(qs[0].id)) rows.push(unfoldTree(els, qs[0], onAnswer, opts))
+      /* the strip on a row of its own under the question's, under the label; closed, the band is as before */
+      else if (at) rows.push(<Box key={'qbandstrip-' + qs[0].id} flexDirection="column" paddingLeft={opts.surface === 'desktop' ? 3 : 0}>{bandStrip(els, qs[0], at, opts)}</Box>)
     }
     if (inbox || queued) foot = [inbox ? waitingGroup(els, inbox, opts, 0, 1, false) : null, queued ? queuedGroup(els, queued, opts) : null].filter(Boolean)
   } else if (m.total || inbox || queued) {
