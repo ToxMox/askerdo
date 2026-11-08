@@ -2,7 +2,6 @@
    from the track verbs' views plus the few rows only a page shows. Read only. */
 import { readTx } from '../db.mjs';
 import { WEB } from '../paths.mjs';
-import { layoutGraph, layoutInput, linesTouching } from '../layout.mjs';
 import { graphOf, shortTitle } from './graph.mjs';
 import { clockOf, isKey, labelOf } from '../records.mjs';
 import {
@@ -16,6 +15,8 @@ import { answeredPick, parseOptions, questionSections } from '../verbs/questions
 import { lastSeq } from '../verbs/snapshot.mjs';
 import { NEWEST_FIRST, listTracks, stallDays, trackView, workstreamView } from '../verbs/tracks.mjs';
 import { bandCalls, closeText, unparkWords, whenText } from '../verbs/upkeep.mjs';
+import { inboxDueOf, pictureOverview, pictureView } from '../verbs/picture-view.mjs';
+import { pictureOf } from './picture-model.mjs';
 
 const DAY = 86400000;
 const LIVE_HANDOFF = ['waiting', 'parked'];
@@ -79,8 +80,7 @@ function neededOf(db, keys, home) {
 
 const wsOfRecord = (db, key) => (db.stmt('SELECT workstream FROM records WHERE key = ?').get(key) || {}).workstream || null;
 
-/* The drawn graph's three inputs from the track views: g and D (server/web/graph.mjs, its
-   look read from the tables) and L (server/layout.mjs). */
+/* g and D from the track views (server/web/graph.mjs), the look read from the tables. */
 /* each track, station, finished task, review and covered task carries its board page */
 const pageOf = (x) => (x && x.id ? { ...x, url: x.url || WEB.record(x.id) } : x);
 export const withPages = (views) => views.map((tv) => ({
@@ -88,7 +88,7 @@ export const withPages = (views) => views.map((tv) => ({
   finished: (tv.finished || []).map((f) => ({ ...pageOf(f), ...(Array.isArray(f.covers) ? { covers: f.covers.map(pageOf) } : {}) })),
 }));
 
-export function graphFrom(db, views, now, { layout = true } = {}) {
+export function graphFrom(db, views, now) {
   views = withPages(views);
   const keyOf = new Map();
   for (const tv of views) for (const t of tv.tasks) keyOf.set(t.id, t.key);
@@ -110,7 +110,7 @@ export function graphFrom(db, views, now, { layout = true } = {}) {
     /* waiting since its handoff, not its last movement */
     since: (tv) => (tv.state === 'waiting' ? (liveHandoff(db, tv.key) || {}).created || null : null),
   });
-  return { ...G, L: layout ? layoutGraph(layoutInput(views)) : null };
+  return G;
 }
 
 /* ---- what waits on the user: one reading every view counts from ------------- */
@@ -156,7 +156,7 @@ export const withoutSessionIds = (s) => String(s || '').replace(SESSION_ID, 'a s
 /* Everything waiting on the user, each item with the workstreams it belongs to (wss): open
    questions, blocking first; the live handoffs' waiting-on-user lines; then the band's
    calls as bandCalls reads them, override requests apart from upkeep's own. */
-function waitingItems(db, now) {
+export function waitingItems(db, now) {
   const uniq = (xs) => [...new Set(xs.filter(Boolean))];
   const qs = openQuestions(db).map((q) => ({
     kind: 'question', id: q.label, key: q.key, text: q.title, blocking: q.blocking, created: q.created,
@@ -199,23 +199,18 @@ export function overviewModel(db, opts = {}) {
     const quiet = [];
     for (const w of db.stmt("SELECT key, label, title FROM records WHERE kind = 'workstream' AND status = 'open' ORDER BY id").all()) {
       const ls = listTracks(db, { workstream: w.key }, { now });
-      if (!ls.tracks.length) { quiet.push({ id: w.label, name: w.title, inbox: ls.inbox, inboxStalled: ls.inboxStalled, needs: needsIn(all, w.key).count }); continue; }
+      if (!ls.tracks.length) {
+        quiet.push({ id: w.label, name: w.title, inbox: ls.inbox, inboxStalled: ls.inboxStalled, inboxDue: ls.inbox ? inboxDueOf(db, w, now) : 0, needs: needsIn(all, w.key).count });
+        continue;
+      }
       const views = ls.tracks.map((t) => trackView(db, { track: t.key }, { now }));
-      const G = graphFrom(db, views, now, { layout: false });
-      const needs = needsIn(all, w.key);
-      /* each track's newest by chain, then the latest of those */
-      const last = G.g.tracks
-        .map((t) => db.stmt('SELECT key, label, created, focus FROM handoffs WHERE track = ? ORDER BY ' + NEWEST_FIRST + ' LIMIT 1').get(t.key))
-        .filter(Boolean).sort((x, y) => String(y.created).localeCompare(String(x.created)))[0];
-      const moved = G.g.tracks.map((t) => Date.parse(t.last) || 0).reduce((a, b) => Math.max(a, b), 0);
-      /* each track's next step, as the Tracks tab shows it */
-      const handoffs = Object.fromEntries(G.g.tracks.map((t) => [t.id, liveHandoff(db, t.key)]));
-      cards.push({ ws: { id: w.label, key: w.key, name: w.title, inbox: ls.inbox, inboxStalled: ls.inboxStalled }, ...G, needs, lastHandoff: last || null, moved, handoffs });
+      /* the stats strip counts from each workstream's g and D */
+      cards.push({ ws: { id: w.label, key: w.key, name: w.title }, ...graphFrom(db, views, now), needs: needsIn(all, w.key) });
     }
-    const live = (c) => c.g.tracks.some((t) => c.D.tracks[t.id].state === 'active');
-    cards.sort((a, b) => (live(b) - live(a)) || (b.needs.count - a.needs.count) || (b.moved - a.moved));
     const needs = needsFrom(all);
-    return { now, seq: lastSeq(db), cards, quiet, stallDays: stallDays(db), procedures: proceduresOf(db), needs, face: needs.face };
+    /* the redrawn picture's data, P, its Overview level */
+    const picture = pictureOf({ overview: pictureOverview(db, {}, null, { now }), at: new Date(now).toISOString() });
+    return { now, seq: lastSeq(db), cards, quiet, stallDays: stallDays(db), procedures: proceduresOf(db), needs, face: needs.face, picture };
   });
 }
 
@@ -239,21 +234,24 @@ function openWorkstreams(db) {
     .map((w) => ({ id: w.label, name: w.title }));
 }
 
-/* The workstream's inbox: its open tasks on no track, oldest first (tracks.mjs INBOX). */
-const inboxOf = (db, wsKey) => db.stmt(`SELECT r.key, r.label AS id, r.title AS name, r.status, r.created FROM records r
-  WHERE r.kind = 'task' AND r.workstream = ? AND coalesce(r.status, '') NOT IN ('completed', 'dropped')
-    AND NOT EXISTS (SELECT 1 FROM track_items ti WHERE ti.task = r.key) ORDER BY r.created, r.label`).all(wsKey);
-
 export function workstreamModel(db, wsKey, opts = {}) {
   return readTx(db, () => {
     const now = nowOf(opts);
     const w = wsRow(db, wsKey);
     const view = workstreamView(db, { workstream: w.key }, { now });
     const G = graphFrom(db, view.tracks, now);
-    return { now, seq: lastSeq(db), stallDays: stallDays(db), ws: { id: w.label, key: w.key, name: w.title, status: w.status, inbox: view.inbox, inboxStalled: view.inboxStalled }, ...G,
-      needs: needsIn(waitingItems(db, now), w.key), switcher: openWorkstreams(db), inboxList: inboxOf(db, w.key) };
+    /* the inbox's tasks as workstreamView lists them (each with its wake, the due first) */
+    const due = view.inboxList.filter((t) => t.due).length;
+    return { now, seq: lastSeq(db), stallDays: stallDays(db), ws: { id: w.label, key: w.key, name: w.title, status: w.status, inbox: view.inbox, inboxStalled: view.inboxStalled, inboxDue: due }, ...G,
+      needs: needsIn(waitingItems(db, now), w.key), switcher: openWorkstreams(db), inboxList: view.inboxList,
+      picture: pictureFor(db, w.key, view.workstream, view.tracks, now) };
   });
 }
+
+/* a workstream's picture data, P, from its views (with their pages) and the picture's extras */
+const pictureFor = (db, wsKey, wsId, tracks, now) => pictureOf({
+  views: { workstream: wsId, tracks: withPages(tracks) }, extras: pictureView(db, { workstream: wsKey }, null, { now }), at: new Date(now).toISOString(),
+});
 
 /* Questions asked on a track: by a session while it held the track, gating its tasks,
    or naming it. Lease spans come from the activity rows the lease verbs write. */
@@ -310,9 +308,8 @@ export function trackModel(db, trackKey, opts = {}) {
     const all = workstreamView(db, { workstream: rec.front.workstream }, { now }).tracks;
     const tv = all.find((v) => v.key === trackKey) || trackView(db, { track: trackKey }, { now });
     if (!all.includes(tv)) all.push(tv);
-    /* the page draws this line with its parents, side lines and the lines it waits on or holds */
-    const keep = linesTouching(layoutInput(all), tv.id);
-    const G = graphFrom(db, all.filter((v) => keep.has(v.id)), now);
+    /* every line of the workstream, so a critical path through another line names it */
+    const G = graphFrom(db, all, now);
     const done = db.stmt(`SELECT r.key, r.label AS id, r.title AS name, r.status FROM track_items ti JOIN records r ON r.key = ti.task
       WHERE ti.track = ? AND r.status IN ('completed', 'dropped') ORDER BY ti.position`).all(trackKey);
     const since = {};
@@ -335,6 +332,7 @@ export function trackModel(db, trackKey, opts = {}) {
       before: parent ? handoffsOf(db, parent.key, rec.front.created) : [],
       questions: trackQuestions(db, trackKey, tv.tasks.map((t) => t.key)),
       parent, jtask, promoted: rec.front.origin === 'promote', sides, pickList,
+      picture: ws ? pictureFor(db, ws.key, ws.label, all, now) : null,
     };
   });
 }

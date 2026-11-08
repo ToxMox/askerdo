@@ -61,15 +61,21 @@ describe('the first telling', () => {
     const r = await $.tool.call({ tool: ASK, tool_use_id: 'tu-1', name: 'store shape', ask: ASKED, gist: 'One or many?', blocking: true,
       crux: 'Two writers at once.', stakes: 'A migration later.', options: OPTIONS, pick: 'b' })
     expect(r.result).toContain('Registered Q512')
-    /* a reversal beside another ask of the turn is registered and flagged, never refused */
+    /* a reversal beside another ask of the turn keeps its marker and raises no flag */
     const second = await $.tool.call({ tool: ASK, tool_use_id: 'tu-2', name: 'back to one file', ask: ASKED, gist: 'g', blocking: true,
       revisits: ['Q500'], reversal: 'Two machines write now.', options: OPTIONS, pick: 'b' })
     expect(second.deny).toBeUndefined()
-    expect(second.result).toContain('Q512')
+    expect(second.result).toContain('Reversal of Q500')
+    expect(second.result).not.toContain('Q512')
     await replyRow($, 'msg-1')
     await replyRow($, 'msg-2', 'And one more thing.')
+    /* a reply on screen before its card is placed draws the card when the turn ends */
+    const onScreen = await mountReply($, 'desktop', 'msg-2', 'And one more thing.')
+    expect(await onScreen.find({ key: 'qhead-Q512' })).toBeUndefined()
     await turnEnd($, 't1')
     await w.clock.settle()
+    expect((await onScreen.find({ key: 'qhead-Q512' }))?.text).toContain('store shape')
+    await onScreen.unmount()
     for (const surface of SURFACES) {
       const ui = await mountReply($, surface, 'msg-2')
       expect(await ui.find({ key: 'engine-reply' })).toBeDefined()
@@ -81,9 +87,6 @@ describe('the first telling', () => {
       expect((await ui.find({ key: 'otitle-512b' }))?.text).toContain('\u2605')
       expect((await ui.find({ key: 'ocatch-512b' }))?.text).toContain('one-way')
       expect(await ui.find({ key: 'ask-Q512' })).toBeDefined()
-      /* both cards of the reply say they were asked together */
-      expect((await ui.find({ key: 'qbeside-Q512' }))?.text).toContain('Q513')
-      expect((await ui.find({ key: 'qbeside-Q513' }))?.text).toContain('Q512')
       /* no hotkeys in the transcript */
       expect((await ui.find({ key: 'pick-512a' }))?.props.hotkey).toBeUndefined()
       await ui.unmount()
@@ -126,7 +129,6 @@ describe('the first telling', () => {
       const first = await mountReply($, surface, 'msg-2')
       expect(await first.find({ key: 'qchanged-Q512' })).toBeDefined()
       expect(await first.find({ key: 'pick-512a' })).toBeUndefined()
-      expect(await first.find({ key: 'qbeside-Q513' })).toBeDefined()
       await first.unmount()
       const later = await mountReply($, surface, 'msg-3', 'Q512 again, reworded.')
       expect((await later.find({ key: 'otitle-512c' }))?.text).toContain('a table')
@@ -218,6 +220,11 @@ describe('the first telling', () => {
         /* an answered card's ring redraws under its other key on each press, as an open card's */
         const rings = async () => (await ui.findAll({ type: 'Button' })).map((b: any) => String(b.key)).filter((k: string) => k.startsWith('unfold-77b'))
         await ui.press({ key: 'unfold-77b' })
+        expect([await rings(), !!(await ui.find({ key: 'slot-77b-headline' }))]).toEqual([['unfold-77b~'], true])
+        await ui.press({ key: 'unfold-77b~' })
+        expect([await rings(), !!(await ui.find({ key: 'slot-77b-headline' }))]).toEqual([['unfold-77b'], false])
+        /* a second press before the redraw (a double click) neither shuts it again nor puts the key out of step */
+        await Promise.all([ui.press({ key: 'unfold-77b' }), ui.press({ key: 'unfold-77b' })])
         expect([await rings(), !!(await ui.find({ key: 'slot-77b-headline' }))]).toEqual([['unfold-77b~'], true])
         await ui.press({ key: 'unfold-77b~' })
         expect([await rings(), !!(await ui.find({ key: 'slot-77b-headline' }))]).toEqual([['unfold-77b'], false])

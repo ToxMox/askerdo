@@ -126,16 +126,24 @@ function closure(db, seeds) {
     ) SELECT k FROM c`).all(JSON.stringify(seeds)).map((r) => r.k);
 }
 
+/* how a task's agent ended, `finished` or `stopped`; the mark of an agent the task no longer names is none */
+const AGENT_ENDS = ['finished', 'stopped'];
+function endOf(json, agent) {
+  let e = null;
+  try { e = json ? JSON.parse(json) : null; } catch {}
+  return e && agent && e.job === agent && AGENT_ENDS.includes(e.how) ? { how: e.how, at: e.at || null } : null;
+}
+
 /* Everything the views need, in a handful of indexed reads. */
 export function loadGraph(db, seeds) {
   const keys = closure(db, seeds);
   const J = JSON.stringify(keys);
   const nodes = new Map();
   for (const r of db.stmt(`SELECT r.key, r.label, r.title, r.status, json_extract(r.fields, '$.agent') AS agent,
-      json_extract(r.fields, '$.inHand') AS inHand, ti.track, ti.position
+      json_extract(r.fields, '$.agentEnd') AS agentEnd, json_extract(r.fields, '$.inHand') AS inHand, ti.track, ti.position
       FROM records r LEFT JOIN track_items ti ON ti.task = r.key WHERE r.key IN (${IN}) AND r.kind = 'task'`).all(J)) {
     nodes.set(r.key, {
-      key: r.key, id: r.label, name: r.title, status: r.status, agent: r.agent || null, inHand: r.inHand || null,
+      key: r.key, id: r.label, name: r.title, status: r.status, agent: r.agent || null, agentEnd: endOf(r.agentEnd, r.agent), inHand: r.inHand || null,
       track: r.track || null, position: r.position ?? Infinity, deps: [], side: null, sideDone: false, gates: [], checklist: null, progress: null,
     });
   }
@@ -265,7 +273,7 @@ export function trackGraph(db, trackKey) {
     const mine = seeds.map((k) => g.nodes.get(k)).filter(Boolean);
     const open = mine.filter((n) => !isEnded(n));
     const brief = (n) => ({ id: n.id, key: n.key, name: n.name });
-    const tagOf = (n) => (n.agent ? { agent: n.agent } : n.inHand || holder ? { session: n.inHand || holder } : {});
+    const tagOf = (n) => (n.agent ? { agent: n.agent, ...(n.agentEnd ? { agentEnd: n.agentEnd } : {}) } : n.inHand || holder ? { session: n.inHand || holder } : {});
     /* a promoted task's work is its side track's, so it is not running itself */
     const now = open.filter((n) => statusOf(n) === 'in_progress' && !n.side).map((n) => ({ ...brief(n), ...tagOf(n) }));
     const ready = open.filter((n) => isReady(g, n)).map(brief);
@@ -398,8 +406,8 @@ export function startTask(db, input, actor) {
     const agent = typeof input.agent === 'string' && input.agent.trim() ? input.agent.trim() : undefined;
     const c = actorOf(actor);
     const at = c.at;
-    /* a start without an agent drops an old tag */
-    const changes = { status: 'in_progress', updated: at, agent };
+    /* a start without an agent drops an old tag; any start drops an ended agent's mark */
+    const changes = { status: 'in_progress', updated: at, agent, agentEnd: undefined };
     /* the starting session follows the task, so its questions inherit the workstream; never in hand */
     const subs = Array.isArray(t.fields.subscribers) ? t.fields.subscribers : [];
     if (c.session && !subs.includes(c.session)) changes.subscribers = [...subs, c.session];
@@ -408,6 +416,32 @@ export function startTask(db, input, actor) {
       logLine(db, { at, verb: 'edit', kind: 'task', rec: headOf(t), changes: diff, by: c.by, pc: c.pc, note: reason ? 'started before ready: ' + reason : undefined });
     }
     return { id: t.fields.id, key: t.key, status: 'in_progress', agent: t.fields.agent || null, ready: r.ready };
+  });
+}
+
+/* the session's mod saw a dispatched agent stop: each task in progress that this session
+   started with that job as its agent is marked ended, `finished` (landing) or `stopped` (its
+   next leg due), until the task closes or a start names an agent again. `running`: that job
+   runs again (a nudge, a resume, the next leg under its name), so the mark goes. */
+export function agentEnded(db, input = {}, actor) {
+  const how = input && input.how;
+  if (!AGENT_ENDS.includes(how) && how !== 'running') throw new TrackRefusal('agentEnded takes how: ' + AGENT_ENDS.join(', ') + ' or running');
+  const jobs = [...new Set((Array.isArray(input.jobs) ? input.jobs : []).filter((j) => typeof j === 'string' && j.trim()).map((j) => j.trim()))];
+  const c = actorOf(actor);
+  if (!jobs.length || !c.session) return { tasks: [] };
+  return tx(db, () => {
+    const keys = db.stmt(`SELECT key FROM records WHERE kind = 'task' AND status = 'in_progress'
+      AND json_extract(fields, '$.agent') IN (SELECT value FROM json_each(?))`).all(JSON.stringify(jobs)).map((r) => r.key);
+    const out = [];
+    for (const key of keys) {
+      const t = loadRecord(db, key);
+      if (!t || !(Array.isArray(t.fields.subscribers) && t.fields.subscribers.includes(c.session))) continue;
+      if (how === 'running' && !t.fields.agentEnd) continue;
+      const diff = writeFront(db, t, { agentEnd: how === 'running' ? undefined : { job: t.fields.agent, how, at: c.at }, updated: c.at }, TASK_KEYS);
+      logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(t), changes: diff, by: c.by, pc: c.pc });
+      out.push(t.fields.id);
+    }
+    return { tasks: out };
   });
 }
 

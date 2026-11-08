@@ -27,7 +27,7 @@ import { NOTIFY_ROWS } from '../lib/notify-page.mjs';
    again would be pinning its own arithmetic rather than the server's */
 import { OPEN_KINDS, enc } from '../lib/open-in.mjs';
 import { boardJoin, boardRequest, startBoard } from '../lib/board-call.mjs';
-import { childEnv, tempDir } from './helpers/sandbox.mjs';
+import { childEnv, quietPort, tempDir } from './helpers/sandbox.mjs';
 import { slicer } from './helpers/shard.mjs';
 import { FULL_STAMP, stampFor } from './helpers/stamps.mjs';
 
@@ -39,17 +39,6 @@ const test = (...args) => (mine() ? nodeTest(...args) : undefined);
 const boardScript = join(pluginRoot, 'hooks', 'board-server.mjs');
 const cli = join(pluginRoot, 'bin', 'askerdo.mjs');
 const version = pluginVersion();
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const probe = createServer(() => {});
-    probe.on('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address();
-      probe.close(() => resolve(port));
-    });
-  });
-}
 
 /* The notification channel, off in every sandbox: a server never overwrites an
    existing settings file, so this is how a suite run on a Windows desktop stays
@@ -64,7 +53,7 @@ const CHANNEL_OFF = JSON.stringify({
 async function seedStore(home, slug) {
   const root = join(home, '.claude', slug);
   const secret = randomBytes(16).toString('hex');
-  const port = await freePort();
+  const port = await quietPort();
   mkdirSync(join(root, 'board'), { recursive: true });
   writeFileSync(join(root, 'board', 'secret'), secret + '\n');
   writeFileSync(join(root, 'board', 'port'), String(port) + '\n');
@@ -460,7 +449,8 @@ test('the root and record links open the board pages through a login link, and w
 test('the eleven shared assets serve from the whitelist and nothing else does', async (t) => {
   const sb = await mint();
   const srv = start(t, sb);
-  await srv.line;
+  /* a start that exits leaves the port to whoever holds it, whose 404 would read as a missing asset */
+  assert.equal(await srv.line, 'http://askerdo.localhost:' + sb.port + '/' + sb.secret + '/', 'the server did not start: ' + srv.stderr());
   const types = {
     'house.css': /text\/css/,
     /* the file viewer's vendored client stack, pinned and committed by
@@ -671,11 +661,15 @@ test('a stale-version instance is replaced through the secret stop route', { tim
    mask each other. */
 test('a second SERVER start replaces its own stale build', { timeout: 20000 }, async (t) => {
   const sb = await mint();
+  const url = 'http://askerdo.localhost:' + sb.port + '/' + sb.secret + '/';
+  /* line also resolves when a start exits, so each start is checked as serving and a
+     refusal carries its stderr: a suite-only failure here once left no trace */
   const old = start(t, sb, { ASKERDO_BOARD_VERSION: '0.0.1' });
-  await old.line;
+  assert.equal(await old.line, url, 'the stale build did not start: ' + old.stderr());
   const before = await raw(sb.port, '/' + sb.secret + '/ping', { method: 'POST' });
+  assert.equal(before.status, 204, 'the port answers as the store board');
   const fresh = start(t, sb);
-  assert.equal(await fresh.line, 'http://askerdo.localhost:' + sb.port + '/' + sb.secret + '/');
+  assert.equal(await fresh.line, url, 'the replacement did not start: ' + fresh.stderr());
   assert.ok(!fresh.stdout().includes('adopted'), 'a stale twin is replaced, not adopted');
   assert.equal(await old.closed, 0, 'the stale instance stopped itself');
   const ping = await raw(sb.port, '/' + sb.secret + '/ping', { method: 'POST' });
@@ -690,8 +684,7 @@ test('a second SERVER start replaces its own stale build', { timeout: 20000 }, a
   /* ONE banner is how this says one tray and one watch timer: announce() writes
      the banner and starts the notification channel, and the replace path listens a
      second time on a socket whose first listen left its callback armed. */
-  const banner = 'http://askerdo.localhost:' + sb.port + '/' + sb.secret + '/';
-  assert.equal(fresh.stdout().split(banner).length - 1, 1,
+  assert.equal(fresh.stdout().split(url).length - 1, 1,
     'announce() ran more than once: ' + JSON.stringify(fresh.stdout()));
 });
 
@@ -1479,7 +1472,7 @@ async function seedRefs(t, verb) {
   /* index 0 is the file, 1 a work id, 2 the binary, 3 the oversize one, and 4
      a plainly synthetic path on a drive letter no machine has */
   const rec = await verb('createRecord', {
-    kind: 'task', name: 'refs demo', description: 'A record with refs.',
+    kind: 'task', name: 'refs demo', description: 'A record with refs.', wake: '2099-01-01',
     refs: [named, 'WS-9', binary, big, 'X:/no-such-root/missing.md'],
   });
   /* a NON-TASK kind, so the routes are exercised on more than one prefix, and
@@ -1887,7 +1880,7 @@ test('a folder ref is a refusal and not a missing file, and the viewer page know
     const sb = await mint();
     const { docs } = await seedRefs(t, board.verb);
     const folder = await board.verb('createRecord', {
-      kind: 'task', name: 'folder ref', description: 'A record naming a directory.', refs: [docs],
+      kind: 'task', name: 'folder ref', description: 'A record naming a directory.', refs: [docs], wake: '2099-01-01',
     });
     const srv = await startOn(t, sb, board);
 
@@ -2245,7 +2238,7 @@ async function seedOpen(t, verb) {
   writeFileSync(named, '# spaced\n');
   mkdirSync(folder, { recursive: true });
   const rec = await verb('createRecord', {
-    kind: 'task', name: 'open in demo', description: 'A record naming a file and a folder.', refs: [named, folder],
+    kind: 'task', name: 'open in demo', description: 'A record naming a file and a folder.', refs: [named, folder], wake: '2099-01-01',
   });
   return { docs, named: resolvePath(named), folder: resolvePath(folder), rec };
 }
@@ -2571,7 +2564,7 @@ test('a lined ref serves its file, opens the clean path, and hands the page the 
     writeFileSync(plain, '# plain\n');
     writeOpenSettings(sb, { editor: CMD_EDITOR });
     const rec = await board.verb('createRecord', {
-      kind: 'task', name: 'lined ref demo', description: 'A record naming a line in a file.',
+      kind: 'task', name: 'lined ref demo', description: 'A record naming a line in a file.', wake: '2099-01-01',
       refs: [named + ':42:7', named + ':42', plain],
     });
     const tools = openEnv(t);
@@ -2739,7 +2732,7 @@ test('the board verb prints both URL forms and refuses --port', async (t) => {
   const home = tempDir('nd-board-cli-');
   const root = join(home, '.claude', 'askerdo');
   const secret = randomBytes(16).toString('hex');
-  const port = await freePort();
+  const port = await quietPort();
   mkdirSync(join(root, 'board'), { recursive: true });
   writeFileSync(join(root, 'board', 'secret'), secret + '\n');
   writeFileSync(join(root, 'board', 'port'), String(port) + '\n');
@@ -2803,7 +2796,7 @@ test('the board verb prints both URL forms and refuses --port', async (t) => {
 test('the board verb exits 2 when the task cannot be registered', async () => {
   const home = tempDir('nd-board-cli-');
   const root = join(home, '.claude', 'askerdo');
-  const port = await freePort();
+  const port = await quietPort();
   const secret = randomBytes(16).toString('hex');
   mkdirSync(join(root, 'board'), { recursive: true });
   writeFileSync(join(root, 'board', 'secret'), secret + '\n');
@@ -2858,7 +2851,7 @@ test('a board row reaches the stream as a line with its author, changes, sequenc
   assert.deepEqual(hello.activity, [], 'the hello carries no lines of its own');
 
   const ws = await verb('createRecord', { kind: 'workstream', name: 'work system build', description: 'One board.' }, { session: 'sess-a' });
-  const task = await verb('createRecord', { kind: 'task', name: 'counter rebuild', description: 'A step.', workstream: ws.id, unplaced: 'not laid out yet' }, { session: 'sess-a' });
+  const task = await verb('createRecord', { kind: 'task', name: 'counter rebuild', description: 'A step.', workstream: ws.id, unplaced: 'not laid out yet', wake: '2099-01-01' }, { session: 'sess-a' });
   await verb('editRecord', { kind: 'task', id: task.id, priority: 'high' }, { session: 'sess-a' });
   const line = await es.waitFor(() => es.of('change').flatMap((e) => e.activity)
     .find((l) => l.verb === 'edit' && l.id === task.id));
@@ -2887,7 +2880,7 @@ test('api/activity pages the board rows with their place, follows the board, and
   const board = await onBoard(t);
   const { verb } = board;
   const ws = await verb('createRecord', { kind: 'workstream', name: 'work system build', description: 'One board.', projects: ['C:/repos/my-app'] }, { session: 'sess-a' });
-  const task = await verb('createRecord', { kind: 'task', name: 'counter rebuild', description: 'A step.', workstream: ws.id, unplaced: 'not laid out yet' }, { session: 'sess-a' });
+  const task = await verb('createRecord', { kind: 'task', name: 'counter rebuild', description: 'A step.', workstream: ws.id, unplaced: 'not laid out yet', wake: '2099-01-01' }, { session: 'sess-a' });
   await verb('noteRecord', { id: task.id, text: 'a note the search can find' }, { session: 'sess-a' });
   const q = await verb('register', asked({ projectDir: 'C:/repos/other-app' }), { session: 'sess-a' });
   const sb = await mint();
@@ -3737,7 +3730,7 @@ test('an open reaches the tray menu on the next tick, newest first and re-resolv
       .map((n) => join(docs, n + '.md'));
     for (const f of files) writeFileSync(f, '# a file\n');
     const rec = await board.verb('createRecord', {
-      kind: 'task', name: 'recent demo', description: 'A record naming six files.', refs: files,
+      kind: 'task', name: 'recent demo', description: 'A record naming six files.', refs: files, wake: '2099-01-01',
     });
     const tools = openEnv(t, { ASKERDO_WATCH_MS: '60', ASKERDO_BEAT_MS: '4000' });
     await startOn(t, sb, board, tools.env, [...trayNoOpen(), ...openOnWin()]);
@@ -3931,7 +3924,7 @@ test('the relay and the board hand a popup tray the alert, and one it cannot res
     const { verb, env } = await onBoard(t);
     /* on the board before the server starts, so the working set names them */
     const bw = await verb('createRecord', { kind: 'workstream', name: 'work system build', description: 'One board.', projects: ['C:/repos/my-app'] });
-    const bt = await verb('createRecord', { kind: 'task', name: 'counter rebuild', description: 'A step.', workstream: bw.id });
+    const bt = await verb('createRecord', { kind: 'task', name: 'counter rebuild', description: 'A step.', workstream: bw.id, wake: '2099-01-01' });
     const sb = await mint();
     writeFileSync(join(sb.root, 'board', 'notify.json'), JSON.stringify({ enabled: true, tray: true }) + '\n');
     const srv = start(t, sb, { ...env, ASKERDO_WATCH_MS: '100', ASKERDO_BEAT_MS: '4000' },

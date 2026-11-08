@@ -49,7 +49,7 @@ test('a save with no board writes config.json and regenerates the style', async 
   assert.deepEqual([saved.name, saved.forecast, saved.alias], [undefined, false, 'ad']);
   assert.deepEqual(saved.custom, ['Name the branch.', 'Link the PR.']);
   assert.ok(!('serial' in saved), 'the retired keys go at the save');
-  assert.ok(!readFileSync(sb.style, 'utf8').includes('Probe'), 'a retired name never reaches the style (K-844)');
+  assert.ok(!readFileSync(sb.style, 'utf8').includes('Probe'), 'a retired name never reaches the style');
   assert.equal((await sb.save(OPTIONS)).changed, false, 'an identical save writes nothing new');
 });
 

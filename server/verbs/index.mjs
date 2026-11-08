@@ -3,7 +3,7 @@
    verb file, so the in-process and HTTP transports run the same table. */
 import { UsageError, resolveLabel, resolveLegacy as legacyOf } from './labels.mjs';
 import {
-  addEdge, addItem, checkItem, moveItem, removeEdge, startTask,
+  addEdge, addItem, agentEnded, checkItem, moveItem, removeEdge, startTask,
 } from './graph.mjs';
 import { trackFound } from './found.mjs';
 import {
@@ -29,9 +29,11 @@ import { decide, decisionTriggers, decisionsFor, decisionsSince } from './decisi
 import { markRead, recordHistory } from './history.mjs';
 import { bandCalls, bandKeep, lookNotYet, upkeepDryRun, upkeepSwitch } from './upkeep.mjs';
 import { applyPicture } from './picture.mjs';
+import { pictureOverview, pictureView } from './picture-view.mjs';
 import { overrideDecide, overrideRequest, overrideUnscrub, overrideView } from './override.mjs';
 import { projectsRename } from './projects.mjs';
 import { commitLink, commitMove, coverage, reviewCovers } from './coverage.mjs';
+import { conversionDrop, conversionMap, conversionPut } from './conversion.mjs';
 
 /* A legacy brain id, { id, project, cwd } in: { key, entry } out, `entry.label` its record's label now. */
 const resolveLegacy = (db, input) => {
@@ -43,7 +45,7 @@ const GROUPS = [
   { register, answer, drop, snooze, wake, surface, subscribe, show, list, peekOpenQuestions, peekSessionScope, namesLine, editQuestion },
   /* a session's task names its place (work.mjs fileRecord); the board's own callers use createRecord */
   { createRecord: fileRecord, editRecord, taskUpdate, closeRecord, reopenRecord, noteRecord, createKnowledge, supersedeKnowledge, readRecord, listWork, waitsOn, heldTask },
-  { addEdge, removeEdge, startTask, addItem, checkItem, moveItem },
+  { addEdge, removeEdge, startTask, agentEnded, addItem, checkItem, moveItem },
   {
     newTrack, splinter, capture, layOut, reorder, parkTrack, finishTrack, dropTrack, promoteTask, foldBack,
     acquireLease, renewLease, releaseLease, takeOver, trackSummary, trackView, listTracks, workstreamView, trackFound,
@@ -59,12 +61,16 @@ const GROUPS = [
   { amendKnowledge, editKnowledge, read: markRead, recordHistory },
   { bandCalls, bandKeep, lookNotYet, upkeepDryRun, upkeepSwitch },
   { applyPicture },
+  /* the redrawn workstream picture's reads */
+  { pictureView, pictureOverview },
   /* the user's override of a record in use */
   { overrideRequest, overrideDecide, overrideUnscrub, overrideView },
   /* a project's records onto its new shared name */
   { projectsRename },
   /* the commits a task finished with and the reviews that read them */
   { commitLink, commitMove, reviewCovers, coverage },
+  /* each project's conversion map, keyed by source */
+  { conversionMap, conversionPut, conversionDrop },
 ];
 
 /* two groups adding the same name would shadow one verb silently */

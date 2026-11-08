@@ -16,7 +16,7 @@ import {
 } from '../lib/notify.mjs';
 import { normDir } from '../lib/record-refs.mjs';
 import { pluginRoot } from '../lib/node-helpers.mjs';
-import { childEnv, tempDir } from './helpers/sandbox.mjs';
+import { childEnv, quietPort, tempDir } from './helpers/sandbox.mjs';
 
 /* synthetic identity: a 32-hex shape assembled here, never a real secret */
 const SECRET = 'a1b2c3d4'.repeat(4);
@@ -1135,10 +1135,8 @@ test('a verb that blocks its own loop after raise() still takes the 204 path', B
 test('a refused relay runs the ensure, waits for the real ping, and relays once more', BOUND, async (t) => {
   const seen = [];
   const handler = boardOf(seen, 204);
-  const claim = await fakeBoard(handler);
-  t.after(() => claim.close());
-  const { port } = claim;
-  await claim.close();
+  /* nothing listens there until the ensure does */
+  const port = await quietPort();
 
   let live = null;
   /* the board the ensure brings up is the case's too, and it is opened deep inside

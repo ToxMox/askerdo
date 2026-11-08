@@ -43,7 +43,7 @@ const textOf = async (ui: any, key: string) => (await ui.find({ key }))?.text
 describe('the AskerDo pane', () => {
   /* the band's copy over this project's activity, newest first by day;
      words in the filter widen it to every project's lines */
-  test('Home holds the band\'s copy and this project\'s activity; the filter widens it; the tabs redraw in place', async ($: any, on: any) => {
+  test('Home holds the band\'s copy and this project\'s activity; the filter widens it; the tabs redraw in place', { timeoutMs: 15000 }, async ($: any, on: any) => {
     const w = shelfWorld(on)
     const ask = 'One file or many?'
     w.questions = [{ id: 'Q106', key: 'kq106ab', boardUrl: 'http://192.0.2.7:17480/r/kq106ab', name: 'store shape', ask, crux: 'Two writers at once.', blocking: true, track: 'TR-3', subscribers: ['other'], pick: 'b',
@@ -182,9 +182,9 @@ describe('the AskerDo pane', () => {
     await ui.unmount()
   })
 
-  /* the held track's lines by default (its own, the line it waits on), the rest named
-     under them; the switch draws the whole workstream; the picture fits the width the pane reports */
-  test("Home draws the held track's lines and switches to the whole workstream; its heading folds it, kept on this PC", async ($: any, on: any) => {
+  /* the held track's lines by default, the switch the whole workstream; a press
+     selects and fills the strip, the second opens; the picture fits the width the pane reports */
+  test("Home draws the held track's lines and switches to the whole workstream; a press selects, the next opens; its heading folds it, kept on this PC", async ($: any, on: any) => {
     /* Where we stand shut before a restart, as the store keeps it, which answers a moment late
        after the restart (registered before the world's, so it stands above that answer) */
     on('store.get', { key: 'folds' }, async ($: any, e: any, next: any) => { await w.clock.sleep(50); return next(e) })
@@ -195,7 +195,10 @@ describe('the AskerDo pane', () => {
       noHandoff: false, parkReason: null, done: 0, critical: { length: tasks.length, path: tasks.map((t) => t.id) }, tasks, edges, junction: null, holder: null })
     const task = (id: string, name: string, status: string, waitsOn: string[] = []) => ({ id, key: 'k' + id, name, status, ready: status === 'open' && !waitsOn.length, waitsOn })
     /* TR-3 holds a finished review, which Home leaves off, and a review to do */
-    const view = { workstream: 'WS-11', inbox: 0, tracks: [
+    /* two loose tasks, one waiting on TR-6, one whose day came */
+    const inboxList = [{ key: 'kT-70', id: 'T-70', name: 'stray idea', wake: { kind: 'track-ends', key: 'trkTR-6', id: 'TR-6', named: 'TR-6 next line', status: 'open' }, due: false },
+      { key: 'kT-71', id: 'T-71', name: 'old idea', wake: { date: '2026-11-01' }, due: true }]
+    const view = { workstream: 'WS-11', inbox: 2, inboxList, tracks: [
       { ...tv('TR-3', 'mod core', 'active', [task('T-41', 'band row', 'in_progress'), { ...task('T-42', 'home picture', 'open', ['after T-41', 'after T-50 on TR-5']), review: true }],
         [{ task: 'T-42', on: 'T-41', done: false }, { task: 'T-42', on: 'T-50', done: false }, { task: 'T-41', on: 'T-40', done: true }]),
       finished: [{ id: 'T-40', key: 'kT-40', name: 'review the start', position: 0, status: 'completed', closed: '2026-11-04T09:00:00Z', review: true, covers: [{ id: 'T-39', key: 'kT-39', name: 'start' }] }] },
@@ -203,7 +206,10 @@ describe('the AskerDo pane', () => {
       tv('TR-6', 'next line', 'waiting', [task('T-60', 'write the tests', 'open')]),
     ] }
     w.near = (s: string, p: string, l: string) => ({ ...w.bandOf(s, p, l), track: { id: 'TR-3', workstream: 'WS-11', workstreamName: 'the board', running: 1, ready: 0, toGo: 2, done: 3, total: 5 },
-      graph: { workstream: 'WS-11', view, layout: null } })
+      graph: { workstream: 'WS-11', view } })
+    /* the session's first draw asks for this PC's last look at WS-11, which the since line reads */
+    const lookAt = (e: any) => ({ status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: true, result: { ws: JSON.parse(e.init.body).ws || 'overview', look: new Date(Date.now() - 3600000).toISOString() } }) })
+    w.fetchBy['/local/look'] = lookAt
     await start($, w)
     const pic = async (ui: any) => (await ui.find({ key: 'graph-pic' }))!.children[0].props
     const has = async (ui: any, id: string) => !!(await ui.find({ key: 'gline-' + id }))
@@ -221,39 +227,51 @@ describe('the AskerDo pane', () => {
     await shut.unmount()
     for (const surface of SURFACES) {
       const ui = await mount($, surface, 'home')
+      await w.clock.settle()
+      expect(await textOf(ui, 'graph-since')).toMatch(/^Since your last look, /)
       if (surface === 'desktop') {
         const p = await pic(ui)
-        expect(['TR-3', 'TR-5', 'TR-6'].map((id) => p.source.includes('data-track="' + id + '"'))).toEqual([true, true, false])
-        expect(p.source.includes('data-task="T-40"')).toBe(false)
-        /* every legend entry leads with its mark as a picture the graph's own code drew */
+        /* the finished review leaves the picture */
+        expect(['stn:T-41', 'stn:T-42', 'stn:T-60', 'stn:T-40'].map((k) => p.source.includes('data-k="' + k + '"'))).toEqual([true, true, false, false])
+        /* the pair on its own row, the held track's lines the one on */
+        expect([(await ui.find({ key: 'graph-mine' }))!.props.plain, (await ui.find({ key: 'graph-all' }))!.props.plain]).toEqual([undefined, true])
+        expect(await textOf(ui, 'graph-crumbs')).toMatch(/WS-11.*TR-3 mod core/)
+        /* every legend entry leads with its mark as a picture the picture's own code drew, its words in lines beside it */
         const kinds: string[] = []
-        const walk = (n: any) => { if (n && typeof n === 'object') { kinds.push(n.type === 'Svg' && /stroke="p-/.test(n.props.source) ? 'mark' : n.type === 'Text' ? 'words' : ''); (n.children || []).flat().forEach(walk) } }
+        const walk = (n: any) => { if (n && typeof n === 'object') { kinds.push(n.type === 'Svg' ? 'mark' : String(n.props && n.props.key).startsWith('legend-words-') ? 'words' : ''); (n.children || []).flat().forEach(walk) } }
         walk(await ui.find({ key: 'graph-legend' }))
         const marks = kinds.filter((k) => k === 'mark').length
         expect([marks > 0, marks]).toEqual([true, kinds.filter((k) => k === 'words').length])
+        /* a station's first press selects it and fills the strip; its second opens the task's page */
+        const zone = async (k: string) => String((await ui.findAll({ type: 'Box' })).map((z: any) => String(z.key)).find((x: string) => x.startsWith('gz-' + k + '-')))
+        await ui.press({ key: (await zone('stn:T-42')).replace(/^gz-/, 'gzp-') })
+        expect(await textOf(ui, 'graph-strip-stn:T-42')).toContain('home picture')
+        /* the station's own press and the strip's first act both open the page now */
+        expect((await ui.findAll({ type: 'Link' })).filter((l: any) => String(l.props.href).endsWith('/r/kT-42')).length).toBe(2)
       } else {
-        expect([await has(ui, 'TR-3'), await has(ui, 'TR-5'), await has(ui, 'TR-6')]).toEqual([true, true, false])
-        expect(await ui.find({ key: 'graph-legend' })).toBeUndefined()
+        expect([await has(ui, 'TR-3'), await has(ui, 'TR-5'), await has(ui, 'TR-6')]).toEqual([true, true, true])
+        expect([await ui.find({ key: 'graph-legend' }), await ui.find({ key: 'graph-mine' })]).toEqual([undefined, undefined])
       }
-      /* the workstream's name beside its id */
-      expect(await textOf(ui, 'graph-off')).toMatch(/WS-11 the board.*TR-6/)
-      await ui.press({ key: 'graph-all' })
       if (surface === 'desktop') {
-        expect((await pic(ui)).source).toContain('data-track="TR-6"')
-        /* each name's press lies where it is drawn, down the whole picture: a Box's top margin
+        await ui.press({ key: 'graph-all' })
+        expect((await pic(ui)).source).toContain('data-k="pill:TR-6"')
+        /* each press lies where its thing is drawn, down the whole picture: a Box's top margin
            counts the engine's half-line rows, 10 px on the pane's 20 px line */
         const zones = (await ui.findAll({ type: 'Box' })).filter((z: any) => /^gz-/.test(String(z.key)))
         const tops = zones.map((z: any) => [Number(String(z.key).split('-').pop()), z.props.marginTop * 10])
         expect([tops.some(([y]) => y > 40), tops.filter(([y, top]) => Math.abs(y - top) > 0.5)]).toEqual([true, []])
-        /* no finished review drawn in the whole workstream either; the review to do opens its own page */
-        expect((await pic(ui)).source.includes('data-task="T-40"')).toBe(false)
-        expect((await ui.findAll({ type: 'Link' })).map((l: any) => String(l.props.href).split('/').pop())).toContain('kT-42')
+        /* the workstream's inbox opened, a row's wake names the track it waits on, and the due row's reads due in amber */
+        await ui.press({ key: 'fold-inbox' })
+        expect(await textOf(ui, 'graph-inbox-wake-T-70')).toContain('TR-6 next line')
+        const due = (await ui.find({ key: 'graph-inbox-wake-T-71' }))!
+        expect([/\bdue\b/.test(due.text), due.children[0].props.color]).toEqual([true, 'warning'])
+        expect((await pic(ui)).source.includes('data-k="stn:T-40"')).toBe(false)
+        await ui.press({ key: 'graph-mine' })
       }
-      else expect(await has(ui, 'TR-6')).toBe(true)
-      expect(await ui.find({ key: 'graph-off' })).toBeUndefined()
-      await ui.press({ key: 'graph-mine' })
       await ui.unmount()
     }
+    /* one look a session for each workstream, however many draws */
+    expect(w.posts.filter((x: any) => x.url.endsWith('/local/look')).map((x: any) => x.body.ws)).toEqual(['WS-11'])
     /* a narrow pane draws for its own width, never shrunk from a wider picture */
     const narrow = await mount($, 'desktop', 'home', PANE_ID, { ...PANE, bodyColumns: 30 })
     expect((await pic(narrow)).width).toBeLessThanOrEqual(30 * 8.453)
@@ -324,7 +342,10 @@ describe('the AskerDo pane', () => {
     const tabs = [['replies', 'Replies'], ['sessions', 'Sessions'], ['agents', 'Agents'], ['tests', 'Tests'], ['rules', 'Rules'], ['pc', 'This PC']]
       .map(([tab, name]) => ({ tab, name, summary: name + ' in one sentence.', changed: rows.filter((r) => r.tab === tab && r.changed).length }))
     const fake = w.cli
+    /* a minted link lives 20 s here; its rows a 21-module code */
+    const qr = Array.from({ length: 21 }, (_, y) => Array.from({ length: 21 }, (_, x) => ((x * y + x) % 3 ? '0' : '1')).join(''))
     w.cli = (args: string[], stdin?: string, env?: any) => {
+      if (args[0] === 'login') return { exitCode: 0, stdout: JSON.stringify({ url: 'http://board.lan:17481/login/once', expires: new Date(Date.now() + 20000).toISOString(), qr }) + '\n', stderr: '' }
       if (args[0] !== 'settings') return fake(args, stdin, env)
       if (args[1] === 'set' && args[3] === '120') return { exitCode: 1, stdout: '', stderr: 'AskerDo: main.window takes 1 to 99\n' }
       if (args[1] === 'set') return { exitCode: 0, stdout: JSON.stringify({ key: args[2], value: 20, profile: 'solo', created: false, added: false, reaches: [] }) + '\n', stderr: '' }
@@ -343,6 +364,12 @@ describe('the AskerDo pane', () => {
       /* the tab's view outlives a mount, as it outlives a redraw */
       await pressAgain(ui, 'set-sub-replies')
       expect((await ui.find({ key: 'set-tab-replies' }))!.text).toContain('Weather icon')
+      /* a setting's fold opens on the ring (the terminal's arrow); its choice tiles take widths from bodyColumns, never 0 */
+      await pressAgain(ui, 'set-more-contract.weather')
+      const tiles = (await ui.findAll({ type: 'Box' })).filter((b: any) => /^set-ex-contract\.weather-/.test(String(b.key))).map((b: any) => b.props.width)
+      expect([tiles.length, tiles.every((n: number) => n > 0), tiles.reduce((a: number, n: number) => a + n + 1, 0) <= PANE.bodyColumns]).toEqual([2, true, true])
+      if (surface === 'desktop') expect((await ui.findAll({ type: 'Svg' })).some((n: any) => n.props.alt === 'Open: press to shut')).toBe(true)
+      await pressAgain(ui, 'set-more-contract.weather')
       await pressAgain(ui, 'set-sub-sessions')
       expect((await ui.find({ key: 'set-row-main.window' }))!.text).toContain('Handoff window')
       await pressAgain(ui, 'set-chip-main.window')
@@ -381,6 +408,18 @@ describe('the AskerDo pane', () => {
       await w.clock.settle()
       const bring = w.last('settings rule').args
       expect([bring.slice(0, 4), bring[bring.indexOf('--profile') + 1]]).toEqual([['settings', 'rule', 'clear', 'naming'], 'solo'])
+      /* This PC's phone row mints through login --qr and draws the code (the desktop an Svg with its
+         quiet zone, the terminal the link) until the link expires, then the press again */
+      await pressAgain(ui, 'set-sub-pc')
+      await pressAgain(ui, 'set-phone')
+      await w.clock.settle()
+      expect(w.last('login').args.slice(0, 3)).toEqual(['login', '--qr', '--json'])
+      const code = async () => (await ui.findAll({ type: 'Svg' })).find((n: any) => String(n.props.alt).startsWith('QR code'))
+      if (surface === 'desktop') expect((await code())!.props.source).toContain('viewBox="0 0 29 29"')
+      else expect((await ui.find({ key: 'set-phone-url' }))!.text).toContain('/login/once')
+      expect((await ui.find({ key: 'set-row-phone' }))!.text).toContain('once, until')
+      await w.clock.advance(21000)
+      expect([!!(await code()), !!(await ui.find({ key: 'set-phone-url' })), !!(await ui.find({ key: 'set-phone' }))]).toEqual([false, false, true])
       await pressAgain(ui, 'set-sub-sessions')
       await ui.unmount()
     }

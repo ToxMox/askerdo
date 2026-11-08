@@ -3,7 +3,8 @@
    of corrected files writes only what changed, undoing the picture's own earlier writes. */
 import { afterTask } from './coverage.mjs';
 import { tx } from '../db.mjs';
-import { actorOf, addNote, guardHeadings, isKey, labelOf } from '../records.mjs';
+import { actorOf, addDays, addNote, guardHeadings, isKey, labelOf } from '../records.mjs';
+import { WAKE_DAYS } from '../handoff-text.mjs';
 import {
   ENDED_TASK, TASK_KEYS, TrackRefusal, bumpVersion, headOf, loadRecord, logLine, pathBetween, sideOf, writeFront,
 } from './graph.mjs';
@@ -11,7 +12,7 @@ import { lineName as named, resolveRecord } from './labels.mjs';
 import { wakeLinked } from './questions.mjs';
 import { TIE, TRACK_KEYS, dropTrack, finishTrack, holderPlain, junctionWants, makeTrack, putOnTrack, setStatus, splinter, tieToJunction } from './tracks.mjs';
 import { closeRecord, createRecord, reopenRecord } from './work.mjs';
-import { whenText } from './upkeep.mjs';
+import { wakeWords, whenText } from './upkeep.mjs';
 
 const IMPORTED = 'from import';
 /* every write's note, and the reason of every link the picture draws, so a rerun knows its own */
@@ -467,6 +468,8 @@ function writePicture(db, pic, actor) {
   /* 3. proposed tasks, made once: their key and file stay on the task; one the files no
      longer propose drops, unless someone took it up */
   const homeOf = (k) => { const tr = trackOf(db, k); return tr ? (db.stmt('SELECT title FROM records WHERE key = ?').get(tr) || {}).title : 'inbox'; };
+  /* what the picture leaves in an inbox comes back as the user's own capture does, 14 days on */
+  const inboxWake = { date: addDays(c.day, WAKE_DAYS) };
   for (const p of pic.proposed.values()) {
     let key = byField(db, 'pictureKey', p.pkey)[0];
     const lineOfP = p.line && p.line !== 'inbox' ? p.line.name : 'inbox';
@@ -474,6 +477,7 @@ function writePicture(db, pic, actor) {
       const wsKey = p.line && p.line !== 'inbox' ? p.line.wsKey : null;
       const r = createRecord(db, {
         name: p.name, workstream: wsKey || undefined, description: 'Proposed by the board picture (' + p.file + '): ' + (p.why || p.name), note: CAUSE + 'proposed in ' + p.file,
+        ...(wsKey ? {} : { wake: inboxWake }),
       }, inner);
       writeFront(db, loadRecord(db, r.key), { pictureKey: p.pkey, pictureFile: p.file }, TASK_KEYS);
       key = r.key;
@@ -555,7 +559,10 @@ function writePicture(db, pic, actor) {
       const rec = loadRecord(db, t.key);
       db.stmt('DELETE FROM track_items WHERE task = ?').run(t.key);
       bumpVersion(db, was);
-      logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(rec), changes: { track: [was, null] }, by: c.by, pc: c.pc, note: CAUSE + 'to the inbox' });
+      const old = rec.fields.wake;
+      const woke = writeFront(db, rec, { wake: inboxWake, updated: c.at }, TASK_KEYS);
+      if (woke.wake) woke.wake = [old ? wakeWords(db, old) : null, wakeWords(db, inboxWake)];
+      logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(rec), changes: { track: [was, null], ...woke }, by: c.by, pc: c.pc, note: CAUSE + 'to the inbox' });
       add('move', rec.fields.workstream, 'inbox', rec.fields.id + ' to the inbox from ' + named(db, was));
     } else if (t.line) moveOnto(t.key, t.line, 'on "' + t.line.name + '"');
   }

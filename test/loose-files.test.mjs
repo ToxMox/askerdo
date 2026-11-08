@@ -145,7 +145,7 @@ test('the mod: handoff_write takes each repo\'s files, the result names what was
   assert.ok(mc.validateHandoff(base).payload);
   assert.match(mc.validateHandoff({ ...base, verifyFirst: [{ path: 'C:/src/repo', files: [{ path: 'a.md', disposition: 'burn' }] }] }).error,
     /verifyFirst\[0\]\.files is a list of \{ path, disposition \}/);
-  assert.match(mc.handoffPrompt('TH-1'), /then a quick look at the file, then one Sonnet agent when about five or more are still unknown/);
+  assert.match(mc.handoffPrompt('TH-1'), /then a quick look at the file, then one agent when about five or more are still unknown/);
   assert.match(mc.handoffFilesNote({ undecided: [{ path: 'x.bin' }] }), /x\.bin/);
   assert.equal(mc.handoffFilesNote({}), '');
 });

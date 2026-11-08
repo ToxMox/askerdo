@@ -53,6 +53,8 @@ h1 { font-size: var(--fs-title); font-weight: 650; letter-spacing: -0.01em; marg
 .lede { color: var(--ink-2); margin: 0 0 18px; max-width: 72ch; }
 .eyebrow { font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); }
 .id { font-weight: 700; color: var(--ink-2); letter-spacing: 0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* an id in prose, or a "(holds T-n)" tail, never splits at its hyphen */
+.nw { white-space: nowrap; }
 .dim { color: var(--ink-2); }
 .dim3 { color: var(--ink-3); }
 .sky { color: var(--sky-2); }
@@ -74,17 +76,51 @@ h1 { font-size: var(--fs-title); font-weight: 650; letter-spacing: -0.01em; marg
 .panel h2.fh { display: flex; align-items: center; gap: 8px; }
 .panel h2 { font-size: var(--fs-small); font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 10px; }
 
-/* ---- the graph box: a wide picture scrolls inside it, never the page ---- */
-.gbox { background: color-mix(in srgb, var(--canvas) 70%, transparent); border: 1px solid var(--line); border-radius: var(--r-card); overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; }
-.gbox svg { display: block; }
-/* a picture too wide for its box comes as strips of whole columns, one under the next */
-.gbox svg + svg { margin-top: 10px; }
-.gbox .cap { cursor: pointer; }
-.gbox .cap:hover .capname { text-decoration: underline; }
-.gbox .stn { cursor: pointer; }
-.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 2px 0; font-size: 13px; color: var(--ink-2); }
+/* ---- the picture: the approved redraw mock's block; the drawing fits the box's width ---- */
+.plede { margin-bottom: 14px; max-width: 80ch; }
+.since { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); margin: 0 0 10px; }
+.since[hidden] { display: none; }
+.since b { color: var(--ink); font-weight: 600; }
+.cdot.still { background: var(--ink-3); box-shadow: none; }
+.gbox { position: relative; background: color-mix(in srgb, var(--canvas) 70%, transparent); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; }
+.gbar { position: absolute; left: 0; right: 0; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 8px 0 12px; pointer-events: none; }
+.gbar > * { pointer-events: auto; }
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; font-size: 13.5px; font-weight: 600; color: var(--ink-2); min-width: 0; }
+.crumbs a { cursor: pointer; color: var(--sky-2); }
+.crumbs a:hover { text-decoration: underline; text-decoration-color: var(--sky-line); }
+.crumbs .sep { color: var(--ink-3); }
+.crumbs .cur { color: var(--ink); }
+.vpctl { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.vpctl .gbtn { padding: 3px 10px; min-width: 30px; background: color-mix(in srgb, var(--canvas) 88%, transparent); font-weight: 650; }
+.vpctl .gbtn[disabled] { opacity: 0.4; cursor: default; }
+.vpctl .gbtn[disabled]:hover { color: var(--ink-2); border-color: var(--line); }
+.vpctl .copy { padding: 3px 11px; white-space: nowrap; }
+.urlline { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); margin: 6px 2px 0; overflow-wrap: anywhere; }
+.gview { position: relative; }
+.gview svg { display: block; }
+/* the zoom: the new layer grows in about the pressed pill while the old one, the ghost, passes */
+.gview .layer { transform-origin: 0 0; transition: transform 0.34s cubic-bezier(.3, .7, .2, 1), opacity 0.34s ease; }
+.gview .ghost { position: absolute; left: 0; top: 0; pointer-events: none; }
+/* the strip under the box: the selection in words (.strip is the Overview's stats row) */
+.pstrip { margin-top: 12px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-card); padding: 13px 16px 14px; display: flex; flex-direction: column; gap: 8px; }
+.pstrip .sh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.pstrip .sh .nm { font-size: var(--fs-lead); font-weight: 650; }
+.pstrip .chip.gated { color: var(--amber); border-color: var(--amber-line); background: var(--amber-bg); }
+.pstrip .chip.crit { color: var(--ink); border-color: var(--line-2); }
+.pstrip .facts a { color: var(--sky-2); cursor: pointer; }
+.pstrip .facts .cmd { margin-top: 0; }
+.pstrip .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.pstrip .acts .copy, .pstrip .acts .ans { display: inline-block; padding: 4px 14px; border-radius: var(--r-ctl); cursor: pointer; font-size: 13.5px; font-weight: 650; }
+.pstrip .acts .ans { border: 1px solid var(--amber-line); background: var(--amber-bg); color: var(--amber); }
+.pstrip .acts .ans .face { margin: -2px 6px 0 0; }
+.pstrip .acts .hint { font-size: 13px; color: var(--ink-3); }
+.pstrip .acts .said { font-size: 13px; color: var(--ink-2); }
+.pstrip.empty { color: var(--ink-2); font-size: 14px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 12px 2px 0; font-size: 13px; color: var(--ink-2); }
 .legend span { display: inline-flex; align-items: center; gap: 7px; }
 .legend svg { flex: 0 0 auto; }
+#pic + .strip { margin-top: 20px; }
+.rows.covered { margin-top: 12px; }
 
 /* ---- overview ---- */
 .strip { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 20px; }
@@ -95,23 +131,8 @@ h1 { font-size: var(--fs-title); font-weight: 650; letter-spacing: -0.01em; marg
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 14px; }
 .wsc { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-card); padding: 15px 17px 13px; display: flex; flex-direction: column; gap: 10px; cursor: pointer; transition: border-color 0.12s; min-width: 0; }
 .wsc:hover { border-color: var(--line-2); }
-.wsc.live { border-color: var(--sky-line); }
 .wsc-h { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
 .wsc-h h2 { margin: 0; font-size: var(--fs-lead); font-weight: 650; letter-spacing: -0.005em; line-height: 1.3; min-width: 0; }
-.needs { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 14px; padding: 7px 10px; border-radius: var(--r-ctl); background: var(--amber-bg); border: 1px solid var(--amber-line); }
-.needs .lbl { color: var(--amber); font-weight: 700; white-space: nowrap; }
-.needs .face { align-self: center; }
-.needs.blocking { background: rgba(255, 179, 0, 0.12); border-color: rgba(255, 179, 0, 0.6); }
-.needs.blocking .lbl { color: #FFB300; }
-.soon { font-size: 13.5px; color: var(--ink-2); }
-.soon .lbl { color: var(--ink); font-weight: 600; }
-.trl { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
-.trl li { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; align-items: start; }
-.trl .tn { font-weight: 600; }
-.trl .tl { font-size: 13.5px; color: var(--ink-2); }
-.trl .ag { color: var(--sky-2); }
-.trl .next { color: var(--ink); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.trl .cmd { margin-top: 4px; }
 .dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 6px; border: 2px solid var(--ink-3); }
 .dot.active { background: var(--sky); border-color: var(--sky); box-shadow: 0 0 10px rgba(38, 195, 255, 0.6); }
 .dot.waiting { border-color: var(--silver); }
@@ -119,7 +140,6 @@ h1 { font-size: var(--fs-title); font-weight: 650; letter-spacing: -0.01em; marg
 .dot.parked { border-color: var(--lav); }
 .dot.stalled { border-color: var(--amber); }
 .wsc-f { display: flex; flex-direction: column; gap: 3px; padding-top: 9px; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--ink-2); }
-.wsc-f .ho { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quiet { margin-top: 16px; font-size: 14px; color: var(--ink-2); }
 .quiet b { color: var(--ink); font-weight: 600; }
 
@@ -196,6 +216,9 @@ details.done-f summary { cursor: pointer; color: var(--silver); font-size: 14px;
   .tl-list .side { grid-column: 2; text-align: left; white-space: normal; padding-top: 2px; }
   .sw-wide { display: none; }
   .sw-narrow { display: block; margin: 0 0 14px; }
+  .pstrip { padding: 12px 13px 13px; }
+  .pstrip .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .pstrip .facts dd { margin-bottom: 6px; }
 }
 
 /* ---- record pages, search, needs you and sign in (not in the mock: the mock's panels and type) ---- */

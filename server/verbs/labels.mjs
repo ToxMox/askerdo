@@ -65,13 +65,6 @@ export function heldSpans(kind, f) {
   return hist.map((h) => ({ ...h, to: h.to || (h.label === f.id ? arch : '') }));
 }
 
-const NUMBER_RE = /^[1-9]\d{0,14}$/;
-function labelNumber(label, prefix, sep) {
-  const s = String(label || '');
-  const head = prefix + sep;
-  return s.startsWith(head) && NUMBER_RE.test(s.slice(head.length)) ? Number(s.slice(head.length)) : null;
-}
-
 /* ---- tokens ---- */
 
 /* A typed token in its stored label form: `Q12` (a bare `12` too), `WS-3`, `TH-3.2`, `TR-7.4`. */
@@ -382,13 +375,26 @@ const CLOSED = `coalesce(${F('closed')}, ${F('answered')})`;
 /* closedDay in SQL: the ending stamp, else the last movement, as a day */
 const DAY_OF = (col) => `CASE WHEN ${col} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' THEN substr(${col}, 1, 10) END`;
 const CLOSED_DAY = `coalesce(${DAY_OF(`nullif(${CLOSED}, '')`)}, ${DAY_OF(F('updated'))}, ${DAY_OF(F('created'))})`;
-const HELD_SQL = `SELECT ${F('id')} AS label FROM records INDEXED BY records_label_state WHERE kind = ?1
-  AND (${STATUS} IS NULL OR ${STATUS} NOT IN (SELECT value FROM json_each(?2)) OR ${CLOSED_DAY} IS NULL
-    OR date(${CLOSED_DAY}, '+44 days') > ?3)`;
-const RESTING_SQL = `SELECT label FROM labels INDEXED BY labels_pick WHERE kind = ? AND origin = 'history'
-  AND "to" IS NOT NULL AND date("to", '+30 days') > ?`;
+/* Whether label `lab` blocks a pick on day ?3: a record of kind ?1 holds it and is live
+   or ended (statuses ?2) under 44 days ago, or a record gave it up under 30 days ago. */
+const BLOCKS = (lab) => `(EXISTS (SELECT 1 FROM records INDEXED BY records_label_state WHERE kind = ?1 AND ${F('id')} = ${lab}
+    AND (${STATUS} IS NULL OR ${STATUS} NOT IN (SELECT value FROM json_each(?2)) OR ${CLOSED_DAY} IS NULL
+      OR date(${CLOSED_DAY}, '+44 days') > ?3))
+  OR EXISTS (SELECT 1 FROM labels INDEXED BY labels_pick WHERE kind = ?1 AND origin = 'history' AND label = ${lab}
+    AND "to" IS NOT NULL AND date("to", '+30 days') > ?3))`;
+/* The walk up from 1 to the first number no label blocks (?4 the head): two seeks a
+   number, so the cost follows the run of blocked labels at the bottom, not the
+   board's history. */
+const WALK_SQL = `WITH RECURSIVE w(n) AS (SELECT 1 UNION ALL
+  SELECT n + 1 FROM w WHERE ${BLOCKS('?4 || n')})
+SELECT max(n) AS n FROM w`;
+const HELD_EVER_SQL = "SELECT 1 FROM labels INDEXED BY labels_pick WHERE kind = ? AND origin = 'history' AND label = ?";
+const NUMBERED = "label GLOB ?3 AND substr(label, ?1) NOT GLOB '*[^0-9]*'";
 const TOP_SQL = `SELECT max(CAST(substr(label, ?1) AS INTEGER)) AS top FROM labels INDEXED BY labels_pick
-  WHERE kind = ?2 AND origin = 'history' AND label GLOB ?3 AND substr(label, ?1) NOT GLOB '*[^0-9]*'`;
+  WHERE kind = ?2 AND origin = 'history' AND ${NUMBERED}`;
+/* a held label numbered above ?4: longer, or as long and later in text order */
+const ABOVE_SQL = `SELECT 1 FROM labels INDEXED BY labels_pick WHERE kind = ?2 AND origin = 'history'
+  AND (length(label) > length(?4) OR (length(label) = length(?4) AND label > ?4)) AND ${NUMBERED} LIMIT 1`;
 
 /* THE PICK, inside the caller's transaction: the lowest label no live
    record holds and no freed one rests on; a held label is free from its closed
@@ -398,11 +404,13 @@ export function pickLabel(db, kind, day) {
   const k = LABEL_KINDS[kind];
   if (!k) throw new UsageError('no label shape for a ' + kind);
   const head = k.prefix + k.sep;
-  const top = Number(db.stmt(TOP_SQL).get(head.length + 1, kind, head + '[1-9]*').top) || 0;
-  const blocked = new Set();
-  for (const r of db.stmt(HELD_SQL).all(kind, JSON.stringify(k.ended), day)) blocked.add(labelNumber(r.label, k.prefix, k.sep));
-  for (const r of db.stmt(RESTING_SQL).all(kind, day)) blocked.add(labelNumber(r.label, k.prefix, k.sep));
-  for (let n = 1; n <= top; n++) if (!blocked.has(n)) return head + n;
+  const free = db.stmt(WALK_SQL).get(kind, JSON.stringify(k.ended), day, head).n;
+  /* under the top when it or a label above it was ever held; else every label under
+     it is blocked, so the top is the one below it, read whole only when that was never held */
+  const has = (n) => Boolean(db.stmt(HELD_EVER_SQL).get(kind, head + n));
+  const args = [head.length + 1, kind, head + '[1-9]*'];
+  if (has(free) || db.stmt(ABOVE_SQL).get(...args, head + free)) return head + free;
+  const top = free === 1 || has(free - 1) ? free - 1 : Number(db.stmt(TOP_SQL).get(...args).top) || 0;
   const meta = 'label.top.' + k.prefix;
   const next = Math.max(top, Number(getMeta(db, meta)) || 0) + 1;
   setMeta(db, meta, String(next));

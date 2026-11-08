@@ -123,14 +123,14 @@ test('a question asked and answered through the CLI lands on the board; its answ
     /* every settled question takes its popup cards, a press here and a snooze included */
     for (const id of [q.id, later.id, pressed.id, web.id]) assert.ok(lb.retracts.includes(id), id + ' is retracted');
     /* a note on a task reaches the board's journal; activity's newest row is the mod's change marker */
-    const t = JSON.parse((await cli(['task', 'create', '--json'], JSON.stringify({ name: 'wire the board', description: 'd' }))).stdout);
+    const t = JSON.parse((await cli(['task', 'create', '--json'], JSON.stringify({ name: 'wire the board', description: 'd', wake: '2099-01-01' }))).stdout);
     await cli(['note', t.id, '--body', 'noted from the CLI', '--session', 's1']);
     assert.ok(b.db.prepare('SELECT body FROM notes WHERE record = ?').all(t.key).some((n) => n.body.includes('noted from the CLI')));
     const top = JSON.parse((await cli(['activity', '--limit', '1', '--json'])).stdout).lines[0];
     assert.equal(top.at, String(b.db.prepare('SELECT max(seq) AS s FROM activity').get().s));
     assert.equal(top.id, t.id);
     /* a session ending a task raises its alert; the same ending made by hand raises none */
-    const t2 = JSON.parse((await cli(['task', 'create', '--json'], JSON.stringify({ name: 'by hand', description: 'd' }))).stdout);
+    const t2 = JSON.parse((await cli(['task', 'create', '--json'], JSON.stringify({ name: 'by hand', description: 'd', wake: '2099-01-01' }))).stdout);
     await cli(['task', 'edit', t2.id, '--status', 'dropped']);
     await cli(['task', 'edit', t.id, '--status', 'completed', '--session', 's1']);
     await caught(lb, b);
@@ -223,6 +223,19 @@ async function route(lb, timing) {
   return { base, call, close: () => new Promise((ok) => { srv.closeAllConnections(); srv.close(ok); }) };
 }
 
+/* a board a release older than the plugin, in front of `b`: no picture verbs */
+async function older(b) {
+  const srv = createServer((req, res) => {
+    if (/\/verbs\/picture(View|Overview)$/.test(req.url)) return res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false, error: 'no such verb' }));
+    const { host, ...headers } = req.headers;
+    const up = request(b.url + req.url, { method: req.method, headers }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
+    up.on('error', () => res.destroy());
+    req.pipe(up);
+  });
+  await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
+  return { url: 'http://127.0.0.1:' + srv.address().port, token: b.token, close: () => new Promise((ok) => { srv.closeAllConnections(); srv.close(ok); }) };
+}
+
 test('a change on the board answers a held long poll; the CLI\'s boardCall goes through the local route', async () => {
   const b = await startBoard();
   const dir = tempDir('askerdo-store-');
@@ -260,7 +273,7 @@ test('a change on the board answers a held long poll; the CLI\'s boardCall goes 
     await caught(lb, b);
     const g = (await r.call('GET', 'graph/' + ws.id)).body.result;
     assert.equal(g.view.tracks[0].id, t.id, 'the workstream view in the cache carries the new track');
-    assert.ok(g.layout && g.layout.stations[task.id], 'and its layout, computed once per change');
+    assert.ok(g.view.tracks[0].tasks.some((x) => x.id === task.id) && g.picture && g.picture.workstream === ws.id, 'and its picture, as the band carries it');
     /* the mod's band read carries the shelf, so a parked or waiting line needs no other read */
     await boardCall('parkTrack', { track: t.id, reason: 'later' }, { session: 's1' });
     await caught(lb, b);
@@ -333,7 +346,7 @@ test('an answer reaches the session holding the question\'s track, and gates add
   try {
     const ws = await post('createRecord', { kind: 'workstream', name: 'Board', description: 'One board.' });
     /* h1 holds the track (a resumed leg is a new session on the same track) */
-    const task = await post('createRecord', { kind: 'task', name: 'wire it', description: 'd', workstream: ws.id });
+    const task = await post('createRecord', { kind: 'task', name: 'wire it', description: 'd', workstream: ws.id, wake: '2099-01-01' });
     const tr = await post('newTrack', { name: 'Line', workstream: ws.id, tasks: [task.id] }, { session: 'h1' });
     await post('upkeepSwitch', { on: true });
     await post('editRecord', { id: task.id, inHand: true }, { session: 'h2' });
@@ -426,11 +439,12 @@ test('the band carries the held track, its graph with each line\'s last handoff,
     lb = local(b, dir, { timing: (verb, ms, status) => timed.push([verb, ms, status]), local: signed });
     await caught(lb, b);
     b.db.prepare("UPDATE leases SET seen = '2020-01-01T00:00:00+00:00'").run();
-    const band = await lb.band({ session: 's1', redraw: '42' });
+    const band = await lb.band({ session: 's1', redraw: '42', rings: JSON.stringify([{ k: 'unfold-7b~', s: 0, t: '7b', n: 1, o: 1, d: { reply: [2, 30, 40, 55], pane: [1, 20, 25, 25] } },
+      { k: '', c: 'board', s: 0, t: '', n: 0, o: -1, d: { band: [1, 3, 4, 4], card: [1, 2, 9, 9] } }, { k: 'x', c: 'free text', d: { band: [1, 1, 1, 1] } }]) });
     assert.deepEqual([band.track.id, band.track.workstream, band.graph.workstream], [t.id, ws.id, ws.id]);
     assert.match(band.track.url, /\/r\/[^/]+$/, 'T-63: the track\'s page, which its segment opens');
     assert.deepEqual([band.track.url, band.hand[0].url].map((u) => u.startsWith(signed + 'r/')), [true, true]);
-    assert.ok(band.graph.view.tracks.some((x) => x.id === t.id) && band.graph.layout, 'the graph Home draws rides the band');
+    assert.ok(band.graph.view.tracks.some((x) => x.id === t.id), 'the graph Home draws rides the band');
     assert.deepEqual([band.handoffs[t.id].id, band.handoffs[t.id].status], [h.id, 'resumed']);
     /* the Tracks tab's tiles: each track's open questions, its page */
     assert.deepEqual(band.asks[t.id], [{ id: q.id, name: 'which port', blocking: true }]);
@@ -442,7 +456,29 @@ test('the band carries the held track, its graph with each line\'s last handoff,
     /* a session holding no track gets its project's workstream with a line, the other named */
     const free = await lb.band({ session: 's9', project: 'C:/repos/band' });
     assert.deepEqual([free.track, free.graph.workstream, free.graph.unheld, free.graph.others.map((o) => o.id)], [null, ws.id, true, [quiet.id]]);
-    assert.deepEqual(timed, [['band redraw', 42, 200]]);
+    /* the picture's extras ride the graph, the Overview comes apart for a pane that draws it; a session's first look reads the moment before it */
+    assert.deepEqual([band.graph.picture.workstream, free.graph.picture.workstream, (await lb.overview()).ws.some((x) => x.id === ws.id)], [ws.id, ws.id, true]);
+    const first = lb.look({ session: 's1', ws: ws.id });
+    assert.deepEqual([first.look, lb.look({ session: 's1', ws: ws.id }).look], [null, null], 'kept for the session');
+    assert.ok(Date.parse(lb.look({ session: 's2', ws: ws.id }).look) > 0, 'the next session reads the moment s1 left');
+    /* the mod's ring presses and redraws by cause: each at its slowest surface, each surface's last draw after it; an unknown cause is dropped */
+    assert.deepEqual(timed.map(([verb, ms]) => [verb, ms]), [['band redraw', 42], ['ring press', 55], ['ring redraw reply', 55], ['ring redraw pane', 25],
+      ['redraw board', 9], ['redraw board band', 4], ['redraw board card', 9]]);
+    assert.match(timed[1][2], /unfold-7b~.*open/);
+    /* a board older than the plugin still loads; its band keeps the track and the questions, with no picture */
+    const old = await older(b);
+    const lo = local(old, tempDir('askerdo-store-'));
+    try {
+      await caught(lo, b);
+      const ob = await lo.band({ session: 's1' });
+      assert.deepEqual([ob.offline, ob.track.id, ob.asks[t.id].map((x) => x.id), ob.graph.picture, await lo.overview()], [false, t.id, [q.id], null, null]);
+    } finally { await lo.stop(); await old.close(); }
+    /* another workstream's task that starts waiting on one here reaches this picture's Out */
+    const there = await post('createRecord', { kind: 'workstream', name: 'Elsewhere', description: 'Waits on the band.' });
+    const waiter = await post('createRecord', { kind: 'task', name: 'Waits here', description: 'd', workstream: there.id, wake: '2099-01-01' });
+    await post('addEdge', { task: waiter.id, on: task.id, reason: 'needs it' });
+    await caught(lb, b);
+    assert.ok((await lb.band({ session: 's1' })).graph.picture.out.some((o) => o.ws === there.id && o.task === task.id));
     const end = Date.now() + 3000;
     while (b.db.prepare('SELECT seen FROM leases').get().seen.startsWith('2020')) {
       if (Date.now() > end) throw new Error('the band never renewed the lease');

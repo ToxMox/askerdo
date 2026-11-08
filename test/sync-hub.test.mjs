@@ -8,11 +8,10 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
-import { createServer } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { pluginRoot, pluginVersion } from '../lib/node-helpers.mjs';
-import { childEnv, tempDir } from './helpers/sandbox.mjs';
+import { childEnv, quietPort, tempDir } from './helpers/sandbox.mjs';
 
 const syncScript = join(pluginRoot, 'hooks', 'sync.mjs');
 const boardScript = join(pluginRoot, 'hooks', 'board-server.mjs');
@@ -136,22 +135,11 @@ test('fail open: a file where the store root should be leaves sync intact', () =
 
 /* ---- the board ensure at the seam --------------------------------------- */
 
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const probe = createServer(() => {});
-    probe.on('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address();
-      probe.close(() => resolve(port));
-    });
-  });
-}
-
 /* The identity the store would have minted, written by hand, so a sync run in
    this sandbox ensures a board WE control instead of touching the real one. */
 async function mintIdentity(root) {
   const secret = randomBytes(16).toString('hex');
-  const port = await freePort();
+  const port = await quietPort();
   mkdirSync(join(root, 'board'), { recursive: true });
   writeFileSync(join(root, 'board', 'secret'), secret + '\n');
   writeFileSync(join(root, 'board', 'port'), String(port) + '\n');
@@ -343,4 +331,42 @@ test('a replaced copy syncs nothing and says so', () => {
   assert.match(out, /^AskerDo: .*replaced/m, out);
   assert.equal(existsSync(join(sb.home, '.claude', 'output-styles', 'askerdo.md')), false, 'no style written');
   assert.equal(existsSync(sb.launcher), false, 'no launcher written');
+});
+
+/* Codex's AGENTS.override.md, only beside an AGENTS.md, git-ignored locally, never over one AskerDo did not write */
+test('the AGENTS.override.md writer: beside an AGENTS.md only, excluded once, unchanged text kept, a foreign file left alone', async () => {
+  const { writeAgentsOverride, overrideText, OVERRIDE, OVERRIDE_MAX } = await import('../lib/agents-override.mjs');
+  const repo = (agents) => {
+    const dir = join(tempDir('ttd-hub-home-'), 'proj');
+    mkdirSync(join(dir, '.git', 'info'), { recursive: true });
+    if (agents !== undefined) writeFileSync(join(dir, 'AGENTS.md'), agents);
+    return dir;
+  };
+  const rows = [{ text: 'Run the linter before each commit.' }, { text: 'Keep each function short.' }];
+  const excluded = (dir) => readFileSync(join(dir, '.git', 'info', 'exclude'), 'utf8').split('\n').filter((l) => l.includes(OVERRIDE)).length;
+
+  const dir = repo('# Proj\n\nUse tabs.\n\n## AskerDo\n\n- the board pointer for Claude\n');
+  assert.equal(writeAgentsOverride(dir, rows).did, 'wrote');
+  const text = readFileSync(join(dir, OVERRIDE), 'utf8');
+  assert.ok(text.includes('Use tabs.') && rows.every((r) => text.includes(r.text)), text);
+  assert.ok(!text.includes('board pointer for Claude'), "AGENTS.md's own AskerDo section stays out");
+  assert.equal(writeAgentsOverride(dir, rows).did, 'same');
+  assert.equal(excluded(dir), 1);
+
+  const bare = repo();
+  assert.equal(writeAgentsOverride(bare, rows).did, 'none');
+  assert.equal(existsSync(join(bare, OVERRIDE)), false);
+
+  const theirs = repo('# Theirs\n');
+  writeFileSync(join(theirs, OVERRIDE), 'my own override\n');
+  assert.equal(writeAgentsOverride(theirs, rows).did, 'left');
+  assert.equal(readFileSync(join(theirs, OVERRIDE), 'utf8'), 'my own override\n');
+
+  /* over Codex's cap AGENTS.md's text stays whole and the rules are cut, counted */
+  const big = 'x'.repeat(OVERRIDE_MAX - 400);
+  const cut = overrideText(big, rows.concat(Array.from({ length: 20 }, (_, i) => 'Rule number ' + i + ' of the long list.')));
+  assert.ok(cut.text.includes(big) && cut.left > 0 && Buffer.byteLength(cut.text) <= OVERRIDE_MAX, String(cut.left));
+  /* a decision on the project's files reaches Codex worded with its scope; a rule's detail pointer, which Codex cannot open, goes */
+  const scoped = overrideText('# Proj', [{ text: 'Keep commits small. (detail: K-4)' }], [{ name: 'Never edit generated files', files: ['src/gen/**'], commands: [] }]).text;
+  assert.ok(scoped.includes('- Keep commits small.\n') && /When editing `src\/gen\/\*\*`: Never edit generated files/.test(scoped), scoped);
 });

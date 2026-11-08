@@ -3,13 +3,13 @@
    its cause as board:upkeep. Band calls are computed when read. */
 import { tx } from '../db.mjs';
 import { WEB } from '../paths.mjs';
-import { KEY_ORDERS, actorOf, addNote, clockOf, getMeta, isKey, labelOf, sessionWords, setMeta, stampNow, logVerb } from '../records.mjs';
+import { DAY_RE, KEY_ORDERS, actorOf, addDays, addNote, clockOf, getMeta, isKey, labelOf, sessionWords, setMeta, stampNow, logVerb } from '../records.mjs';
 import { ENDED_TASK, TASK_KEYS, TrackRefusal, headOf, loadRecord, logLine, readTx, recordOf, sideOf, writeFront } from './graph.mjs';
 import { UsageError, lineName, namedLabel, resolveRecord } from './labels.mjs';
-import { INBOX_LABEL, wakeLinked } from './questions.mjs';
+import { INBOX_LABEL, drop as dropQuestion, register as askQuestion, wakeLinked } from './questions.mjs';
 import { NEWEST_FIRST, holderPlain, inboxMoved, quietHours, quietSince, stallDays, stateOf, trackMoved } from './tracks.mjs';
 import { atWords } from '../web/feed.mjs';
-import { waitingOf } from '../handoff-text.mjs';
+import { CLI, WAKE_DAYS, WAKE_FORMS, waitingOf } from '../handoff-text.mjs';
 import { overrideCalls } from './override.mjs';
 import { afterTask, trackReview } from './coverage.mjs';
 
@@ -96,7 +96,7 @@ export function closeChanges(db, changes, before, after) {
 }
 
 /* track park --unpark-when "track-ends TR-m" | "task-completes T-m" | "question-answered Q-m". */
-export function unparkWhenOf(db, raw) {
+export function unparkWhenOf(db, raw, flag = '--unpark-when', also = '') {
   if (raw === undefined || raw === null || raw === '') return undefined;
   let kind;
   let ref;
@@ -108,11 +108,121 @@ export function unparkWhenOf(db, raw) {
     if (m) [kind, ref] = [m[1].toLowerCase(), m[2]];
   }
   const want = UNPARK[kind];
-  if (!want) throw new TrackRefusal('--unpark-when takes "track-ends TR-m", "task-completes T-m" or "question-answered Q-m"');
+  if (!want) throw new TrackRefusal(flag + ' takes "track-ends TR-m", "task-completes T-m" or "question-answered Q-m"' + also);
   const e = ref ? resolveRecord(db, String(ref).trim(), { kinds: [want] }) : null;
-  if (!e) throw new TrackRefusal('--unpark-when ' + kind + ' names a ' + want + ': no ' + want + ' ' + (ref || '(none given)'));
+  if (!e) throw new TrackRefusal(flag + ' ' + kind + ' names a ' + want + ': no ' + want + ' ' + (ref || '(none given)'));
   if (ENDS[want].includes(e.front.status)) throw new TrackRefusal(e.label + ' is already ' + e.front.status + ': there is nothing left to wait for');
   return { kind, on: e.key };
+}
+
+/* an unplaced task's wake, the park vocabulary or a day; none given, none
+   (the filing verbs refuse a filing with none). A fired wake is refused with the way out: a refused
+   filing (`via` create, capture) or close (finish, drop, with `track`) moved nothing, so the way out runs it again. */
+export function wakeOf(db, raw, day, task, via, track) {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const later = 'a wake still to come (' + WAKE_FORMS + ')';
+  const closing = !task && (via === 'finish' || via === 'drop');
+  const who = closing ? 'its open tasks' : 'the task';
+  const out = !task && via === 'create' ? ' File it again on a track (`' + CLI + ' task create --track TR-n`, with the same payload), or with ' + later + '.'
+    : !task && via === 'capture' ? ' Capture it again on a track (`' + CLI + ' track capture --track TR-n --name "<the work>"`), or with ' + later + '.'
+      : closing ? ' ' + (via === 'drop' ? 'Drop ' : 'Finish ') + (track || 'the track') + ' again with ' + later + ', or drop its open tasks with it (`'
+        + CLI + ' track ' + via + ' ' + (track || 'TR-n') + ' --leftovers drop`).'
+        : ' Place ' + (task || 'it') + ' now (`' + CLI + ' task edit ' + (task || '<T-n>') + ' --track TR-n`), or name ' + later + '.';
+  const d = typeof raw === 'object' ? raw.date : String(raw).trim();
+  if (typeof d === 'string' && DAY_RE.test(d)) {
+    if (addDays(d, 0) !== d) throw new TrackRefusal('--wake ' + d + ' is no calendar day');
+    if (d <= day) throw new TrackRefusal('--wake ' + d + ' has fired: that day ' + (d === day ? 'is today' : 'has passed') + ' (' + day + '), so ' + who + ' would be due at once.' + out);
+    return { date: d };
+  }
+  const m = typeof raw === 'object' ? null : /^\s*(track-ends|task-completes|question-answered)\s+(\S+)\s*$/i.exec(String(raw));
+  const want = m && UNPARK[m[1].toLowerCase()];
+  const e = want ? resolveRecord(db, m[2], { kinds: [want] }) : null;
+  if (e && ENDS[want].includes(e.front.status)) {
+    throw new TrackRefusal('--wake ' + m[1].toLowerCase() + ' ' + e.label + ' has fired: ' + e.label + ' is already ' + e.front.status + ', so ' + who + ' would be due at once.' + out);
+  }
+  return unparkWhenOf(db, raw, '--wake', ' or a date YYYY-MM-DD');
+}
+
+export const wakeWords = (db, w) => (w && w.date ? w.date : unparkWords(db, w));
+
+/* Due once its event ended (or its record went) or its day came; a task with no wake
+   stored reads as due 14 days after it entered the inbox (`entered`, a day). */
+export function wakeState(db, w, day, entered) {
+  if (w && w.date) return { wake: w.date, due: w.date <= day };
+  if (w && w.on) {
+    const on = db.stmt('SELECT kind, status FROM records WHERE key = ?').get(w.on);
+    return { wake: unparkWords(db, w) || whenText(db, w), due: !on || (ENDS[on.kind] || []).includes(on.status) };
+  }
+  const date = addDays(entered || day, WAKE_DAYS);
+  return { wake: date, due: date <= day };
+}
+
+/* ---- a third wake goes to the user ---------------------- */
+
+export const WAKE_ASK = 'inbox-wake';
+const ASK_PLACE = 'a';
+const ASK_DROP = 'c';
+
+/* Its current inbox stay starts at its last move off a track, else its birth (seq 0). */
+const stayStart = (db, key) => db.stmt(`SELECT max(seq) AS s FROM activity WHERE record = ? AND json_type(diff, '$.track') = 'array'
+  AND json_type(diff, '$.track[1]') = 'null'`).get(key).s || 0;
+
+/* The newest wake question about the task this stay, with how it ended: open, or the seq and pick that ended it. */
+export function wakeAsk(db, key, from = stayStart(db, key)) {
+  const q = db.stmt(`SELECT r.key, r.label, r.status, (SELECT min(seq) FROM activity WHERE record = r.key) AS born FROM records r WHERE r.kind = 'question'
+    AND EXISTS (SELECT 1 FROM json_each(r.fields, '$.gates') WHERE value = ?) AND EXISTS (SELECT 1 FROM json_each(r.fields, '$.labels') WHERE value = ?)
+    ORDER BY born DESC LIMIT 1`).get(key, WAKE_ASK);
+  if (!q || (q.born || 0) < from) return null;
+  if (q.status === 'open' || q.status === 'snoozed') return { id: q.label, key: q.key, open: true };
+  const end = db.stmt(`SELECT seq, json_extract(diff, '$.chosen[1]') AS pick FROM activity WHERE record = ? AND verb IN ('answer', 'amend', 'drop')
+    ORDER BY seq DESC LIMIT 1`).get(q.key) || {};
+  return { id: q.label, key: q.key, open: false, seq: end.seq || 0, pick: q.status === 'answered' ? end.pick || null : null };
+}
+
+/* The wakes set on the task this stay (its filing's is the first), after the user's last answer about it. */
+export function wakesInStay(db, key) {
+  const from = stayStart(db, key);
+  const ask = wakeAsk(db, key, from);
+  const after = ask && !ask.open ? ask.seq : 0;
+  const n = db.stmt(`SELECT count(*) AS n FROM activity WHERE record = ? AND seq >= ? AND seq > ? AND json_type(diff, '$.wake[1]') IN ('text', 'object')`)
+    .get(key, from, after).n;
+  return { n, ask };
+}
+
+/* A task placed or ended: the user's open question about its home is dropped, saying why. */
+export function settleWakeAsk(db, key, why, c) {
+  if (!isKey(key)) return;
+  for (const q of db.stmt(`SELECT r.label FROM records r WHERE r.kind = 'question' AND r.status IN ('open', 'snoozed')
+    AND EXISTS (SELECT 1 FROM json_each(r.fields, '$.gates') WHERE value = ?) AND EXISTS (SELECT 1 FROM json_each(r.fields, '$.labels') WHERE value = ?)`).all(key, WAKE_ASK)) {
+    dropQuestion(db, { id: q.label, note: why + ', so it needs no answer' }, { by: c.by, pc: c.pc });
+  }
+}
+
+/* A re-wake of an inbox task: null when it may be stored; else the board stores none, and says why.
+   Open question: it waits on it. The user said place or drop: refused with that. Two wakes this stay: the user is asked. */
+export function thirdWake(db, task, c, why) {
+  const { n, ask } = wakesInStay(db, task.key);
+  const id = task.fields.id;
+  if (ask && ask.open) return { asked: ask.id, waits: true };
+  if (ask && (ask.pick === ASK_PLACE || ask.pick === ASK_DROP)) {
+    throw new TrackRefusal('the user answered ' + ask.id + ': ' + (ask.pick === ASK_PLACE ? 'put ' + id + ' on a track (`' + CLI + ' task edit ' + id + ' --track TR-n`)'
+      : 'drop ' + id + ' (`' + CLI + ' task update ' + id + ' --status dropped --note "<the user\'s words>"`)') + ', so it takes no new wake');
+  }
+  if (n < 2) return null;
+  const ws = task.fields.workstream ? loadRecord(db, task.fields.workstream) : null;
+  const repo = ws ? ([].concat(ws.fields.projectRepos || [])[0] || [].concat(ws.fields.projects || [])[0] || ws.fields.name) : 'askerdo';
+  const name = String(task.fields.name || '').replace(/\s+/g, ' ').trim();
+  const q = askQuestion(db, {
+    name: 'A home for ' + id, blocking: false, pick: null, session: c.session || c.by, projectRepo: repo, workstream: ws ? ws.fields.id : undefined, gates: [id], labels: [WAKE_ASK],
+    ask: id + ' has been woken twice in the inbox: put it on a track (a), keep it there with a reason and a new wake (b), or drop it (c)?',
+    gist: '**' + id + ':** ' + name.slice(0, 160) + '\n**Why it waits:** ' + (why || task.fields.unplaced || 'no reason given') + '\n**Two wakes this stay:** a session set a third, which the board did not store',
+    options: [
+      { type: 'a', option: 'Put it on a track', getsYou: 'a session places it, on a new parked track when the work starts later' },
+      { type: 'b', option: 'Keep it in the inbox', getsYou: 'a session files it again with a reason and a new wake, and the count starts over' },
+      { type: 'c', option: 'Drop it', getsYou: 'it leaves the inbox for good' },
+    ],
+  }, { by: c.by, pc: c.pc, ...(c.session ? { session: c.session } : {}) });
+  return { asked: q.id };
 }
 
 /* ---- the rules ------------------------------------------------------------- */
@@ -168,6 +278,8 @@ function closeOne(db, t, ctx, cause) {
 /* Every ending (questions.mjs wakeLinked): the parked lines waiting on it
    unpark, and a completed task closes the tasks that close with it. */
 export function onEnding(db, ended, ending, ctx) {
+  /* an ended task's open question about its home goes with it, upkeep or not */
+  if (/^(completed|dropped)\b/.test(String(ending)) && /^T-\d+$/.test(String(ended.id || ''))) settleWakeAsk(db, ended.key, ended.id + ' was ' + String(ending).split(' ')[0], ctx);
   if (!upkeepOn(db)) return;
   const key = isKey(ended.key) ? ended.key : (resolveRecord(db, String(ended.id || '')) || {}).key;
   const kind = key && kindOf(db, key);

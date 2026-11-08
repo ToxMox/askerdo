@@ -29,7 +29,7 @@ import { CARD_ID, REC_ID, evidenceOf, filesOf, normDir, refShape } from '../lib/
 import { isFullStamp, stampNow } from '../lib/stamps.mjs';
 import { isKey } from '../lib/record-ids.mjs';
 import { answerToken } from '../lib/answer-token.mjs';
-import { BoardCallError, boardJoinCode, boardLoginLink, boardToken, boardUrl as boardServerUrl, joinLine, reachableUrl } from '../lib/board-call.mjs';
+import { BoardCallError, boardJoinCode, boardLoginLink, boardToken, boardUrl as boardServerUrl, joinLine, loginUrl, reachableUrl } from '../lib/board-call.mjs';
 import { boardIdentity, boardUrl, ensureRoot, probe } from '../lib/board-ensure.mjs';
 import { HOST_ONLY, hostedHere, readHost, superviseHost } from '../lib/board-host.mjs';
 import { WEB } from '../server/paths.mjs';
@@ -263,7 +263,8 @@ function announce() {
 /* local.json, the file the launcher and boardCall find the local route by, board or none. */
 function boardReady(board) {
   try {
-    writeAtomic(localFile(), JSON.stringify({ board: board || null, url: localBase() + 'local', pid: process.pid }) + String.fromCharCode(10));
+    /* code: the copy this server runs, so a launcher from another copy runs its call itself */
+    writeAtomic(localFile(), JSON.stringify({ board: board || null, url: localBase() + 'local', pid: process.pid, code: new URL('..', import.meta.url).href }) + String.fromCharCode(10));
   } catch (e) { appendLog(root, 'board: local.json not written: ' + e.message); }
 }
 
@@ -1129,7 +1130,7 @@ async function toWeb(res, page) {
     /* a click waits 3 s at most, under boardRequest's own 10 s */
     const late = new Promise((_, fail) => { timer = setTimeout(() => fail(new Error('no answer in 3 s')), WEB_LINK_MS); });
     const l = await Promise.race([boardLoginLink(page, { url, token: boardToken() }), late]);
-    if (l && typeof l.url === 'string' && /^https?:\/\//i.test(l.url)) return redirect(res, l.url);
+    if (l && typeof l.url === 'string' && /^https?:\/\//i.test(l.url)) return redirect(res, loginUrl(url, l.url));
   } catch (e) {
     appendLog(root, 'board: no login link for ' + page + ': ' + ((e && e.message) || e));
   } finally { clearTimeout(timer); }

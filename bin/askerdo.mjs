@@ -37,13 +37,19 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 }
 
-/* The local server's route base from <store>/board/local.json, while it runs. */
+/* The copy of AskerDo a file URL names, as local.json's `code` names the server's. */
+const sameCode = (a, b) => { const n = (s) => String(s).replace(/\/+$/, ''); return process.platform === 'win32' ? n(a).toLowerCase() === n(b).toLowerCase() : n(a) === n(b); };
+
+/* The local server's route base from <store>/board/local.json, while it runs. A server
+   started from another copy, or too old to name its copy, may run other code under the
+   same version (a worktree beside the install), so the call runs here instead. */
 function localServer(env) {
   const root = rootOf(env);
   if (!root) return null;
   let l;
   try { l = JSON.parse(readFileSync(join(root, 'board', 'local.json'), 'utf8')); } catch { return null; }
-  return l && typeof l.url === 'string' && alive(l.pid) ? l.url : null;
+  if (!l || typeof l.code !== 'string' || !sameCode(l.code, new URL('..', import.meta.url).href)) return null;
+  return typeof l.url === 'string' && alive(l.pid) ? l.url : null;
 }
 
 /* The build this call wants: a local server running another one refuses it. */

@@ -7,12 +7,13 @@ import { UsageError, endingStamps, entryOf } from './labels.mjs';
 import { REPO_KEY, isDirKey, normProjectDir } from './profile-rules.mjs';
 import { loadProfiles, saveSubscriptions } from './profiles.mjs';
 import { relativeTo } from './proc-cards.mjs';
+import { conversionRename } from './conversion.mjs';
 
 export { UsageError };
 
 const KINDS = ['question', 'workstream', 'knowledge', 'procedure'];
 const ONE = { question: 'projectRepo', procedure: 'projectRepo', workstream: 'projectRepos', knowledge: 'projectRepos' };
-const WORDS = { question: 'question', workstream: 'workstream', knowledge: 'knowledge record', procedure: 'procedure card', profile: 'profile holding' };
+const WORDS = { question: 'question', workstream: 'workstream', knowledge: 'knowledge record', procedure: 'procedure card', profile: 'profile holding', conversion: 'conversion map row' };
 
 /* a shared name as sharedName writes it: forward slashes, no trailing slash, lowercase */
 const nameOf = (v) => String(v ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -78,10 +79,13 @@ export function projectsRename(db, input = {}, actor) {
     const oldKey = REPO_KEY + from;
     const newKey = REPO_KEY + to;
     if (subs[newKey]) held.push('the profile holding ' + newKey);
+    const map = conversionRename(db, from, to, { dryRun: true });
+    if (map.moved && map.held) held.push('a conversion map');
     const dirKeys = Object.keys(subs).filter((k) => isDirKey(k) && rebase(k) !== null);
     for (const k of dirKeys) if (subs[rebase(k)]) held.push('the profile holding at ' + rebase(k));
     const moved = Object.fromEntries(KINDS.map((k) => [k, moving[k].length]));
     moved.profile = (subs[oldKey] ? 1 : 0) + dirKeys.length;
+    moved.conversion = map.moved;
     const total = Object.values(moved).reduce((a, b) => a + b, 0);
     const unmapped = subs[oldKey] ? listOf(subs[oldKey].dirs).filter((d) => rebase(d) === null) : [];
     const out = { from, to, dryRun, folders: pairs, moved, retired: twins.filter((e) => e.fields.status !== 'retired').map((e) => e.label), unmapped, activity: null };
@@ -123,6 +127,7 @@ export function projectsRename(db, input = {}, actor) {
       delete subs[k];
     }
     if (moved.profile) saveSubscriptions(db, subs);
+    if (moved.conversion) conversionRename(db, from, to);
     const said = Object.entries(moved).filter(([, n]) => n).map(([k, n]) => plural(n, WORDS[k]));
     out.activity = logVerb(db, {
       ts: ctx.at, verb: 'rename', kind: 'project', id: '', name: from + ' to ' + to, by: ctx.by, pc: ctx.pc,

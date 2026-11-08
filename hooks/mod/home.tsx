@@ -3,9 +3,9 @@
  * them on every tab; Home holds a copy of the band, then this project's activity as the
  * tray's console shows it, the filter widening it to every project. Drawn from the model
  * alone; index.ts owns the reads and the writes. */
-import { PANE_TABS, PANE_TITLE, cellWidth, clampWords, fillGlyph, graphLegend, markPicture, paneMeasure } from '../../lib/mod-core.mjs'
-import { agentRow, linkLine, linkOver, pressFace, pressOver, wordLink } from './status.tsx'
-import { FOLD_CELLS, fitWords, foldHead, liftPress, paneCells } from './fold.tsx'
+import { PANE_TABS, PANE_TITLE, cellWidth, clampWords, fillGlyph, markPicture, paneMeasure } from '../../lib/mod-core.mjs'
+import { PRESS_LIT, agentRow, linkLine, linkOver, pressFace, pressOver, wordLink } from './status.tsx'
+import { FOLD_CELLS, fitWords, foldHead, paneCells } from './fold.tsx'
 
 export type PaneTab = 'home' | 'questions' | 'tracks' | 'settings' | 'guide'
 export type TabCounts = { questions?: number; tracks?: number; settings?: number }
@@ -46,12 +46,15 @@ export function askerdoPane(els: any, tab: PaneTab, counts: TabCounts, board: st
    the agents, where we stand, then the activity, newest first, a dim heading per day. */
 /* open: a row's press into the pane's own view of its record, or null where the pane has none */
 export function homeTree(els: any, copy: any[], feed: FeedView, onFilter: (v: string) => void, surface?: string, columns?: number, graph?: any, agents?: any,
-  open?: (e: any) => (() => void) | null, versions?: { pc: string; board: string; behind: string }, guide?: () => void): any {
+  open?: (e: any) => (() => void) | null, versions?: { pc: string; board: string; behind: string }, guide?: () => void, drift?: { text: string; href?: string } | null): any {
   const { Box, Text, Input, Button } = els
   const band = copy.filter(Boolean)
   const parts: any[] = [
     /* a board older than this PC says so first */
     versions && versions.behind ? <Box key="home-behind"><Text color="warning" wrap="wrap">{versions.behind}</Text></Box> : null,
+    /* what the project's pointers cite that drifted, read at the session's start */
+    drift ? <Box key="home-drift" flexDirection="column"><Text color="warning" wrap="wrap">{drift.text}</Text>
+      {drift.href ? wordLink(els, 'home-drift-open', drift.href, "the doctor's runs " + OUT, surface === 'desktop') : null}</Box> : null,
     <Box key="home-band" flexDirection="column" rowGap={1} borderStyle="round" borderDimColor paddingX={1}>
       {band.length ? band : <Text dimColor>Nothing open or waiting.</Text>}
     </Box>,
@@ -104,29 +107,29 @@ export function agentsTree(els: any, am: any, open: boolean, onToggle: () => voi
     title: <Text weight="semibold" size="heading">Agents</Text>,
     rest: [bar, <Box key="agents-sum" flexGrow={1} flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{line}</Text></Box>] })
   const row = (r: any) => agentRow(els, desk ? r : { ...r, meter: undefined }, 'agent-', desk ? undefined : fillGlyph(r.pct))
-  const rows = open ? am.rows.filter((r: any) => !r.done).map(row) : []
-  const ended = am.rows.filter((r: any) => r.done)
+  /* a running dispatch's own agents stay under it; a finished one's go into the fold with it */
+  const rows = open ? am.rows.filter((r: any) => !r.ended).map(row) : []
+  const ended = am.rows.filter((r: any) => r.ended)
   if (open && ended.length) rows.push(doneFold(els, ended, row, !!(done && done.open), () => { if (done) done.toggle() }, desk, Number(columns) > 0 ? Number(columns) : 200))
   return <Box key="agents" flexDirection="column" rowGap={1}>{[head, ...rows]}</Box>
 }
 
 /* the finished agents under one fold, its heading the count; shut, their
-   jobs follow it cut at the row's end, as a Tracks section's names do */
+   jobs follow it cut at the row's end, as a Tracks section's names do. The session's dispatches alone */
 function doneFold(els: any, ended: any[], row: (r: any) => any, open: boolean, toggle: () => void, desk: boolean, cols: number): any {
   const { Box, Text } = els
-  const title = ended.length + ' done'
+  const tops = ended.filter((r: any) => !r.under)
+  const title = tops.length + ' done'
   const room = desk ? cols - FOLD_CELLS - paneCells(title, 600) - 1 : cols - cellWidth(title) - 4
-  const names = ended.map((r: any) => r.job).join(', ')
+  const names = tops.map((r: any) => r.job).join(', ')
   const rest = !open && room >= 10 ? [<Box key="agents-done-names" flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{desk ? fitWords(names, room) : clampWords(names, room, 1)}</Text></Box>] : []
   const head = foldHead(els, { key: 'agents-done-head', press: 'agents-done-fold', open, toggle, desk, cols, title: <Text weight="semibold">{title}</Text>, rest })
   return <Box key="agents-done" flexDirection="column" rowGap={1}>{[head, ...(open ? ended.map(row) : [])]}</Box>
 }
 
-/* the heading's line: Anthropic Sans 16 on 24 px; the pane's labeled buttons 32 px */
-const HEAD_LINE = 24, BUTTON_LINE = 32
+/* the heading's line: Anthropic Sans 16 on 24 px */
+const HEAD_LINE = 24
 const headCells = (s: string) => paneMeasure(s, 16, 600) / 8.453
-/* a pane button's cells: its words and padding, 12 px a side labeled, 6 px plain */
-const buttonCells = (label: string, plain: boolean) => paneMeasure(label, 14, 400) / 8.453 + (plain ? 12 : 24) / 8.453
 
 /* The shut heading's one line: the held track's counts from the facts its tooltip reads,
    for example "TR-4: 7 open, 1 unheld, 90 done"; with no track held, the lines drawn, else why not */
@@ -144,46 +147,52 @@ export function standLine(held: any, gm: any): string {
   return gm.why || ''
 }
 
-/* the held track's lines by default, a switch to the whole workstream; the desktop
-   draws mod-core homeGraph's picture, the terminal one line per drawn line; the lines left out
-   named with their state. Nothing to draw: one plain line why. The heading is the fold
-   (the switch keeps its own presses), shut it keeps one line. */
-export function graphTree(els: any, gm: any, onScope: (s: string) => void, surface?: string, fold?: { open: boolean; toggle: () => void; line: string; columns?: number }): any {
+/* mod-core homeGraph's redrawn picture as the approved mock's pane frame draws it:
+   the views pair on its own row, the crumbs, the since line, the picture with a press laid over
+   each thing it draws, the selection's strip, the legend. The terminal draws a line a track.
+   Nothing to draw: one plain line why. The heading is the fold, shut it keeps one line.
+   press: what an act does in the pane, else null and its href opens as a link; fold.inbox: the inbox's own fold */
+export function graphTree(els: any, gm: any, press: (a: any) => (() => void) | null, surface?: string,
+  fold?: { open: boolean; toggle: () => void; line: string; columns?: number; inbox?: { open: boolean; toggle: () => void } }): any {
   const { Box, Text, Button, Svg } = els
   const desk = surface === 'desktop' && !!Svg
   const open = !fold || fold.open
   const cols = fold && Number(fold.columns) > 0 ? Number(fold.columns) : 200
   const title = <Text key="graph-title" weight="semibold" size="heading">Where we stand</Text>
   const rest: any[] = []
-  /* with no track held there is no "mine" to switch to */
-  let line = HEAD_LINE
-  if (open && gm.lines.length && !gm.unheld) {
-    let used = headCells('Where we stand') + 2
-    for (const [id, label] of [['mine', "My track's lines"], ['all', 'Whole workstream']]) {
-      const plain = id !== gm.scope
-      used += buttonCells(label, plain) + 2
-      /* a labeled button on the heading's first line makes it 32 px */
-      if (!plain && used <= cols - FOLD_CELLS) line = BUTTON_LINE
-      const b = plain ? <Button key={'graph-' + id} plain dimColor label={label} onPress={() => onScope(id)} />
-        : <Button key={'graph-' + id} label={label} onPress={() => onScope(id)} />
-      rest.push(fold ? liftPress(els, 'graph-lift-' + id, b, desk) : b)
-    }
-  }
   const sumRoom = cols - FOLD_CELLS - headCells('Where we stand') - 2
   if (!open && fold && fold.line) rest.push(<Box key="graph-sum" flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{desk ? fitWords(fold.line, sumRoom) : fold.line}</Text></Box>)
   const head = fold
-    ? foldHead(els, { key: 'graph-head', press: 'fold-graph', open, toggle: fold.toggle, desk, cols, title, rest, wrap: open, line, gap: 2 })
+    ? foldHead(els, { key: 'graph-head', press: 'fold-graph', open, toggle: fold.toggle, desk, cols, title, rest, wrap: open, line: HEAD_LINE, gap: 2 })
     : <Box key="graph-head" flexDirection="row" columnGap={2} alignItems="center" flexWrap="wrap">{[title, ...rest]}</Box>
   const parts: any[] = [head]
   if (!open) return <Box key="graph" flexDirection="column" rowGap={1}>{parts}</Box>
+  const pic = desk && gm.picture
+  /* the mock's row of its own under the heading: the held track's lines, the whole workstream */
+  if (pic && (gm.views || []).length) {
+    parts.push(<Box key="graph-views" flexDirection="row" columnGap={1} rowGap={0.5} flexWrap="wrap" alignItems="center">
+      {gm.views.map((v: any) => {
+        const go = press(v.act) || (() => {})
+        return v.on ? <Button key={'graph-' + v.key} label={v.label} onPress={go} /> : <Button key={'graph-' + v.key} plain dimColor label={v.label} onPress={go} />
+      })}
+    </Box>)
+  }
   /* the workstreams the line names open their pages */
   const why = gm.why && Array.isArray(gm.whyParts) ? linkLine(els, gm.whyParts.map((p: any) => ({ ...p, tone: 'dim' })), 'graph-why', desk, false) : null
-  if (gm.why) parts.push(why || <Box key="graph-why"><Text dimColor>{gm.why}</Text></Box>)
-  const pic = surface === 'desktop' && Svg && gm.picture
+  if (gm.why) parts.push(why || <Box key="graph-why"><Text dimColor wrap="wrap">{gm.why}</Text></Box>)
+  if (pic && (gm.crumbs || []).length) parts.push(crumbRow(els, gm.crumbs, press))
+  if (gm.since) parts.push(<Box key="graph-since"><Text dimColor wrap="wrap">{'Since your last look, ' + gm.since.when + ': ' + gm.since.words}</Text></Box>)
   if (pic) {
     const p = gm.picture
-    const zones = (p.hits || []).map((z: any) => zoneOver(els, z))
+    /* the ground's press first, so every zone lies over it, and each zone in the order drawn */
+    const ground = p.clear && press(p.clear)
+    const zones = [ground ? zoneOver(els, { k: 'ground', x: 0, y: 0, w: p.width, h: p.height }, ground, '') : null,
+      ...(p.zones || []).map((z: any) => zoneOver(els, z, press(z.act), z.act && z.act.href))]
     parts.push(<Box key="graph-pic" flexShrink={0}><Svg source={p.source} alt={p.alt} width={p.width} height={p.height} />{zones}</Box>)
+    if (gm.more) parts.push(gm.more.href ? wordLink(els, 'graph-more', gm.more.href, gm.more.words + ' ' + OUT, desk) : <Box key="graph-more"><Text dimColor>{gm.more.words}</Text></Box>)
+    if (gm.inbox) parts.push(inboxTree(els, gm.inbox, fold && fold.inbox, desk, cols))
+    if (gm.strip) parts.push(stripTree(els, gm.strip, press))
+    if ((gm.legend || []).length) parts.push(legendTree(els, cols, gm.legend))
   } else {
     /* each line's track name opens its page */
     for (const l of gm.lines) {
@@ -191,35 +200,104 @@ export function graphTree(els: any, gm: any, onScope: (s: string) => void, surfa
       parts.push(l.url ? linkLine(els, [{ text: l.id + ' ' + l.name, href: l.url }, { text: rest }], 'gline-' + l.id, desk)
         : <Box key={'gline-' + l.id}><Text>{l.id + ' ' + l.name + rest}</Text></Box>)
     }
+    if (gm.inbox) parts.push(inboxTree(els, gm.inbox, fold && fold.inbox, desk, cols))
   }
-  if (gm.off.length) {
-    /* the workstream and each line left out open their pages */
-    const ws = gm.workstream + (gm.workstreamName ? ' ' + gm.workstreamName : '')
-    const off: any[] = [{ text: 'Also in ', tone: 'dim' }, { text: ws, tone: 'dim', href: gm.workstreamUrl || undefined }, { text: ', not drawn: ', tone: 'dim' }]
-    gm.off.forEach((o: any, i: number) => {
-      off.push({ text: o.id + ' ' + o.name, tone: 'dim', href: o.url || undefined })
-      off.push({ text: (o.words ? ', ' + o.words : '') + (i < gm.off.length - 1 ? '; ' : '.'), tone: 'dim' })
-    })
-    parts.push(linkLine(els, off, 'graph-off', desk) || <Box key="graph-off"><Text dimColor>{off.map((p) => p.text).join('')}</Text></Box>)
-  }
-  if (pic) parts.push(legendTree(els, cols, gm.marks))
   return <Box key="graph" flexDirection="column" rowGap={1}>{parts}</Box>
 }
 
+/* the workstream's loose tasks in the board's words, amber once stalled: a fold listing each
+   task, its id opening its page as the feed's does; from a board that sends no list, the line opens
+   the board's inbox panel. Under each task its wake, amber once due, and the count of the due */
+function inboxTree(els: any, ib: any, fold: { open: boolean; toggle: () => void } | undefined, desk: boolean, cols: number): any {
+  const { Box, Text } = els
+  const ink = ib.warn ? { color: 'warning' } : null
+  const due = ib.due || ''
+  if (!ib.tasks || !fold) {
+    const line = ib.href ? linkLine(els, [{ text: ib.count, href: ib.href, tone: 'sky' }, { text: due, tone: 'amber' }, { text: ib.rest, tone: ib.warn ? 'amber' : 'dim' }], 'graph-inbox', desk) : null
+    return line || <Box key="graph-inbox"><Text wrap="wrap"><Text {...(ink || {})}>{ib.count}</Text>{due ? <Text color="warning">{due}</Text> : null}<Text {...(ink || { dimColor: true })}>{ib.rest}</Text></Text></Box>
+  }
+  const words = ib.count + due + ib.rest
+  const title = <Text wrap="wrap"><Text weight="semibold" {...(ink || {})}>{ib.count}</Text>{due ? <Text weight="semibold" color="warning">{due}</Text> : null}<Text {...(ink || { dimColor: true })}>{ib.rest}</Text></Text>
+  /* semibold runs wider than the measure, so the title wraps before it would push the ring out */
+  const head = foldHead(els, { key: 'graph-inbox-head', press: 'fold-inbox', open: fold.open, toggle: fold.toggle, desk, cols, title, titleCells: paneCells(words, 600) + 1 })
+  const rows = fold.open ? ib.tasks.map((t: any) => {
+    const line = t.href ? linkLine(els, [{ text: t.id, href: t.href, tone: 'sky' }, { text: ' ' + t.name }], 'graph-inbox-' + t.id, desk)
+      : <Box key={'graph-inbox-' + t.id}><Text wrap="wrap"><Text dimColor>{t.id}</Text>{' ' + t.name}</Text></Box>
+    if (!t.wake) return line
+    const wake = <Box key={'graph-inbox-wake-' + t.id}><Text wrap="wrap" {...(t.due ? { color: 'warning' } : { dimColor: true })}>{t.wake}</Text></Box>
+    return <Box key={'graph-inbox-row-' + t.id} flexDirection="column">{[line, wake]}</Box>
+  }) : []
+  return <Box key="graph-inbox" flexDirection="column" rowGap={0.5}>{[head, ...rows]}</Box>
+}
+
+/* the crumbs as presses in the link's blue, the current one and the marks between them secondary */
+function crumbRow(els: any, crumbs: any[], press: (a: any) => (() => void) | null): any {
+  const { Box, Text } = els
+  const row: any[] = []
+  crumbs.forEach((c: any, i: number) => {
+    if (i) row.push(<Box key={'crumb-sep-' + i} flexShrink={0}><Text dimColor>›</Text></Box>)
+    const go = c.act ? press(c.act) : null
+    row.push(go ? pressFace(els, 'crumb-' + i, <Text color="suggestion">{c.words}</Text>, pressOver(els, 'crumbp-' + i, cellWidth(c.words), go))
+      : <Box key={'crumb-' + i} flexShrink={0}><Text dimColor>{c.words}</Text></Box>)
+  })
+  return <Box key="graph-crumbs" flexDirection="row" columnGap={1} rowGap={0.5} flexWrap="wrap" alignItems="center">{row}</Box>
+}
+
+/* the mock's pdet: the selection's name, its chips, its facts, then its acts, the first primary */
+function stripTree(els: any, s: any, press: (a: any) => (() => void) | null): any {
+  const { Box, Text, Button } = els
+  const k = String(s.key)
+  const rows: any[] = [<Box key="strip-title"><Text weight="semibold" wrap="wrap">{s.title}</Text></Box>]
+  if (s.chips.length) {
+    const chips: any[] = []
+    s.chips.forEach((c: any, i: number) => {
+      if (i) chips.push(<Text key={'chip-sep-' + i} dimColor>{' · '}</Text>)
+      chips.push(c.warn ? <Text key={'chip-' + i} color="warning">{c.words}</Text> : <Text key={'chip-' + i} dimColor>{c.words}</Text>)
+    })
+    rows.push(<Box key="strip-chips"><Text wrap="wrap">{chips}</Text></Box>)
+  }
+  s.facts.forEach((f: any, i: number) => {
+    const [first, ...more] = f.lines.length ? f.lines : ['']
+    rows.push(<Box key={'strip-fact-' + i} flexDirection="column">
+      <Text wrap="wrap"><Text dimColor>{f.label + ': '}</Text>{String(first)}</Text>
+      {more.map((l: any, j: number) => <Text key={'strip-fact-' + i + '-' + j} wrap="wrap">{String(l)}</Text>)}
+    </Box>)
+  })
+  const acts = s.acts.map((a: any, i: number) => {
+    const key = 'strip-act-' + i
+    const primary = a.primary ? { variant: 'primary' } : {}
+    const go = press(a.act)
+    if (go) return <Button key={key} label={a.label} onPress={go} {...primary} />
+    const href = a.act && a.act.href
+    if (!href) return null
+    /* no API opens a page from a press: a link laid over the button's face does */
+    return <Box key={key} flexShrink={0}><Button key={key + '-face'} label={a.label} onPress={() => {}} {...primary} />{linkOver(els, key + '-link', cellWidth(a.label) + 3, href)}</Box>
+  }).filter(Boolean)
+  if (acts.length) rows.push(<Box key="strip-acts" flexDirection="row" columnGap={1} rowGap={0.5} flexWrap="wrap" marginTop={0.5}>{acts}</Box>)
+  return <Box key={'graph-strip-' + k} flexDirection="column" rowGap={0.5} borderStyle="round" borderDimColor paddingX={1}>{rows}</Box>
+}
+
 /* the legend leads each meaning with the picture's own mark, packed into rows by the
-   pane's width so an entry wraps whole; a row may still wrap should the measure run short */
-function legendTree(els: any, cols: number, marks?: any): any {
+   pane's width so an entry wraps whole; its words come in lines that fit the pane, the
+   mark on the first, and an entry may still shrink and wrap should the measure run short */
+function legendTree(els: any, cols: number, legend: any[]): any {
   const { Box, Text, Svg } = els
   const rows: any[][] = [[]]
   let used = 0
-  for (const m of graphLegend(marks)) {
-    const cells = m.width / 8.453 + 1 + paneMeasure(m.words, 14, 400) / 8.453
+  for (const m of legend) {
+    const lines: string[] = Array.isArray(m.lines) && m.lines.length ? m.lines : [m.words]
+    const cells = Number(m.cells) || m.width / PX_CELL + 1 + paneMeasure(m.words, 14, 400) / PX_CELL
     if (rows[rows.length - 1].length && used + 2 + cells > cols) { rows.push([]); used = 0 }
     used += (rows[rows.length - 1].length ? 2 : 0) + cells
+    const tall = lines.length > 1
     rows[rows.length - 1].push(
-      <Box key={'legend-' + m.key} flexDirection="row" columnGap={1} alignItems="center" flexShrink={0}>
-        <Box key={'legend-mark-' + m.key} flexShrink={0}><Svg source={m.source} alt={m.alt} width={m.width} height={m.height} /></Box>
-        <Text key={'legend-words-' + m.key} dimColor>{m.words}</Text>
+      <Box key={'legend-' + m.key} flexDirection="row" columnGap={1} alignItems={tall ? 'flex-start' : 'center'} flexShrink={1} minWidth={0}>
+        <Box key={'legend-mark-' + m.key} flexShrink={0} {...(tall ? { marginTop: Math.max(0, PX_LINE - m.height) / 2 / PX_ROW } : {})}>
+          <Svg source={m.source} alt={m.alt} width={m.width} height={m.height} />
+        </Box>
+        <Box key={'legend-words-' + m.key} flexDirection="column" flexShrink={1} minWidth={0}>
+          {lines.map((l, i) => <Text key={'legend-line-' + m.key + '-' + i} dimColor wrap="wrap">{l}</Text>)}
+        </Box>
       </Box>)
   }
   return (
@@ -229,17 +307,21 @@ function legendTree(els: any, cols: number, marks?: any): any {
   )
 }
 
-/* a link laid over the picture where a name is drawn (an Svg takes no press), opening its
-   board page; offsets by margins, across in cells, down in the engine's half-line rows
-   (desktop-capabilities: a Box's vertical margin), the height in lines */
+/* a press laid over the picture where a thing is drawn (an Svg takes no press): its act
+   in the pane, else a link to its page; offsets by margins, across in cells, down in the engine's
+   half-line rows (desktop-capabilities: a Box's vertical margin), the height in lines.
+   a thing's zone lights grey on hover as every press does; the ground's clear does not */
 const PX_CELL = 8.453, PX_LINE = 20, PX_ROW = PX_LINE / 2
-function zoneOver(els: any, z: any): any {
+function zoneOver(els: any, z: any, go: (() => void) | null, href?: string): any {
   const { Box } = els
+  if (!go && !href) return null
   const cells = z.w / PX_CELL
-  const press = linkOver(els, 'gzl-' + z.kind + '-' + z.id, cells, z.href)
+  const id = z.k + '-' + z.x + '-' + z.y
+  const face = go ? pressOver(els, 'gzp-' + id, cells, go) : linkOver(els, 'gzl-' + id, cells, href as string)
+  const lit = z.k === 'ground' ? {} : { hover: PRESS_LIT.hover }
   return (
-    <Box key={'gz-' + z.kind + '-' + z.id + '-' + z.x + '-' + z.y} position="absolute" top={0} left={0} marginLeft={z.x / PX_CELL} marginTop={z.y / PX_ROW}
-      width={cells} height={z.h / PX_LINE} overflow="hidden">{press}</Box>
+    <Box key={'gz-' + id} position="absolute" top={0} left={0} marginLeft={z.x / PX_CELL} marginTop={z.y / PX_ROW}
+      width={cells} height={z.h / PX_LINE} overflow="hidden" {...lit}>{face}</Box>
   )
 }
 

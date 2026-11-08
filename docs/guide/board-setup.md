@@ -132,7 +132,7 @@ curl -s http://<server>:17480/health
 ```
 
 ```json
-{"ok":true,"protocol":1,"seq":0,"version":"0.8.10"}
+{"ok":true,"protocol":2,"seq":0,"version":"0.8.16"}
 ```
 
 `seq` is the number of the last change on the board; it grows with every write. `version` is the AskerDo release the board runs. The image's own health check calls the same route every minute, so `docker ps` shows the container as `healthy`.
@@ -319,7 +319,7 @@ Every PC picks the board up again on its own: its local server sees the board be
 
 ## Upgrade
 
-The board and the plugin on your PCs speak a protocol version. When they differ, each call gets a plain message naming the side to update (`this PC speaks protocol 1, the board speaks 2: update the plugin`), never strange behaviour. Upgrade the board when a release says its server changed, and keep the PCs on the same release. A board on this PC needs nothing: the local server runs it from the plugin folder an update installs.
+The board and the plugin on your PCs speak a protocol version, which a release moves when it changes what a PC sends or what the board accepts. A board refuses a PC on another protocol, never half serving it: that PC's Needs you band shows one row naming the side to update and how (`Update the board server: it speaks protocol 1 and this PC 2, so it refuses this PC`), `askerdo status` lists the same, and each call says it. PCs on a release with the same protocol work with the board whatever their versions. Upgrade the board when a release says its server changed, and update the PCs in the same sitting when it says the protocol moved. A board on this PC needs nothing: the local server runs it from the plugin folder an update installs, and `askerdo board --restart` starts it from the new one when an older local server still runs.
 
 1. Take a backup: `docker exec askerdo node /app/server/cli.mjs backup`.
 2. Rebuild from the new release:

@@ -101,6 +101,7 @@ git log -1 --format=%s
 - expect: `claude plugin validate .` reports no error.
 - expect: `claude plugin test .` passes on the desktop app's own `claude.exe` by path (the engine the mod runs on; the `claude` on PATH only when it is the same version; no pinned build; the run-tests procedure, step 5).
 - expect: the last commit's subject is `release: <x.y.z>`.
+- expect: the board protocol matches what the release changed. `git diff <last release>..HEAD -- server/paths.mjs` moves `PROTOCOL` up one exactly when the release changes what a PC sends or what the board accepts (read `git diff --stat <last release>..HEAD -- server/ lib/board-call.mjs`); when it moved, the last release's CLI against a scratch board served from this release prints the refusal naming `claude plugin update askerdo@askerdo`.
 
 ## References
 
@@ -117,5 +118,6 @@ git log -1 --format=%s
 - `scripts/build-tray.mjs`: rebuilds `assets/askerdo-tray.exe` and its notices.
 - `scripts/check-tray-signed.mjs`: refuses an unsigned or uncommitted tray exe.
 - `scripts/run-tests.mjs`: the suite, run with the seam unset and a throwaway home.
+- `server/paths.mjs`: `PROTOCOL`, the board protocol a release moves when what a PC sends or the board accepts changes.
 - `assets/askerdo-tray.exe`: the committed tray binary.
 - `assets/licenses/askerdo-tray.txt`: the tray's derived license notices, rewritten by the rebuild.

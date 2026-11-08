@@ -15,7 +15,6 @@ const { tempDir } = await import('./helpers/sandbox.mjs');
 const u = await import('../server/verbs/upkeep.mjs');
 const q = await import('../server/verbs/questions.mjs');
 const { graphOf, viewLook } = await import('../server/web/graph.mjs');
-const { reviewPlan } = await import('../server/web/draw.mjs');
 const { runVerb } = await import('../server/verbs/index.mjs');
 
 function board() {
@@ -26,6 +25,8 @@ function board() {
 const task = (db, track, name) => t.capture(db, { track, name }, 'cli');
 const complete = (db, key) => db.prepare("UPDATE records SET fields = json_set(fields, '$.status', 'completed') WHERE key = ?").run(key);
 const lastLine = (db, key) => JSON.parse(db.prepare('SELECT line FROM activity WHERE record = ? ORDER BY seq DESC LIMIT 1').get(key).line);
+/* every inbox filing names its wake */
+const LATER = '2099-01-01';
 
 test('splinter parks the parent with its junction, moves the lease, and finishing hands the junction back', () => {
   const db = board();
@@ -61,9 +62,9 @@ test('splinter parks the parent with its junction, moves the lease, and finishin
   assert.equal(g.readiness(db, first.key).ready, true);
 
   /* a closed parent takes no resume; a close lists the inbox it leaves */
-  const loose = t.capture(db, { workstream: 'WS-1', name: 'Unplaced idea' }, 'cli');
+  const loose = t.capture(db, { workstream: 'WS-1', name: 'Unplaced idea', wake: LATER }, 'cli');
   t.finishTrack(db, { track: main.id }, { session: 's2' });
-  const closed = t.finishTrack(db, { track: area.id, leftovers: 'inbox' }, { session: 's2' });
+  const closed = t.finishTrack(db, { track: area.id, leftovers: 'inbox', wake: LATER }, { session: 's2' });
   assert.equal(closed.junction.track.id, main.id);
   assert.ok(closed.junction.closed);
   assert.deepEqual(closed.junction.open.map((x) => x.id), [parent.id], 'the open tracks stand in for the resume');
@@ -156,6 +157,23 @@ test('the ready set leaves out a task an open question gates, and starting a tas
   w.editRecord(db, { id: b.id, priority: 'high' }, 'cli');
   const keys = Object.keys(JSON.parse(db.prepare('SELECT fields FROM records WHERE key = ?').get(b.key).fields));
   assert.ok(keys.includes('agent') && keys.indexOf('agent') < keys.indexOf('labelHistory'), 'an edit keeps agent in its place');
+  /* the dispatching session's mod marks its agent ended; another session's job of that name marks nothing; a start naming an agent clears it */
+  g.startTask(db, { task: b.id, agent: 'implementer' }, { session: 's1' });
+  assert.deepEqual(g.agentEnded(db, { jobs: ['implementer'], how: 'stopped' }, { session: 's2' }).tasks, []);
+  assert.deepEqual(g.agentEnded(db, { jobs: ['Implementer lane', 'implementer'], how: 'stopped' }, { session: 's1' }).tasks, [b.id]);
+  assert.deepEqual(g.trackGraph(db, tr.key).now.map((x) => [x.agent, x.agentEnd && x.agentEnd.how]), [['implementer', 'stopped']]);
+  assert.deepEqual([tv().now.length, tv().running, graphOf([tv()], Date.now(), viewLook()).D.tracks[tv().id].running], [1, 0, 0],
+    'a task whose agent ended stays started and is not counted running');
+  assert.deepEqual([g.agentEnded(db, { jobs: ['implementer'], how: 'running' }, { session: 's1' }).tasks, g.trackGraph(db, tr.key).now[0].agentEnd], [[b.id], undefined],
+    'the job sent on again runs');
+  g.agentEnded(db, { jobs: ['implementer'], how: 'stopped' }, { session: 's1' });
+  g.startTask(db, { task: b.id, agent: 'implementer-2' }, { session: 's1' });
+  assert.equal(g.trackGraph(db, tr.key).now[0].agentEnd, undefined);
+  /* the Overview's agents running leaves out a task the session itself holds */
+  g.startTask(db, { task: c.id }, { session: 's1' });
+  w.editRecord(db, { id: c.id, inHand: true }, { session: 's1' });
+  const counts = graphOf([tv()], Date.now(), viewLook()).D.tracks[tv().id];
+  assert.deepEqual([counts.running, counts.agents], [2, 1]);
 });
 
 test('a promoted task is done when its side track is, and counts its side track on the critical path', () => {
@@ -225,7 +243,7 @@ test('a track file carries its tasks, edges, checklists and junction through an 
   const tr = t.newTrack(db, { name: 'Main line', workstream: 'WS-1', session: 's1' }, { session: 's1' });
   const a = task(db, tr.id, 'First');
   const b = task(db, tr.id, 'Second');
-  const loose = t.capture(db, { workstream: 'WS-1', name: 'In the inbox' }, 'cli');
+  const loose = t.capture(db, { workstream: 'WS-1', name: 'In the inbox', wake: LATER }, 'cli');
   g.addEdge(db, { task: b.id, on: a.id, reason: 'b needs a' }, 'cli');
   g.addEdge(db, { task: loose.id, on: b.id, reason: 'after the line' }, 'cli');
   for (const s of ['one', 'two']) g.addItem(db, { task: a.id, text: s }, 'cli');
@@ -297,7 +315,11 @@ test('task create with a track puts the task on that track, never in the inbox',
     (e) => e.message.includes('unplaced') && e.message.includes(mine.id));
   const before = runVerb(db, 'createRecord', { name: 'Notes', description: 'd', track: mine.id, before: [rel.id] }, S);
   const there = runVerb(db, 'createRecord', { name: 'Elsewhere', description: 'd', track: line.id }, S);
-  const loose = runVerb(db, 'createRecord', { name: 'Someday', description: 'd', workstream: 'WS-1', unplaced: 'waits on the next design pass' }, S);
+  /* an inbox filing with no wake is refused, a session's or code's alike, with both ways out in one message */
+  const bothWays = (e) => e.message.includes('--wake') && e.message.includes('--track TR-n') && e.message.includes('track park');
+  assert.throws(() => runVerb(db, 'createRecord', { name: 'Someday', description: 'd', workstream: 'WS-1', unplaced: 'waits on the next design pass' }, S), bothWays);
+  assert.throws(() => t.capture(db, { workstream: 'WS-1', name: 'A loose idea' }, 'cli'), bothWays);
+  const loose = runVerb(db, 'createRecord', { name: 'Someday', description: 'd', workstream: 'WS-1', unplaced: 'waits on the next design pass', wake: LATER }, S);
   const f = runVerb(db, 'trackFound', { track: mine.id }, null);
   const at = (id) => f.tasks.find((x) => x.id === id).where;
   assert.deepEqual([at(before.id).track, at(before.id).before], [mine.id, [rel.id]]);
@@ -306,6 +328,44 @@ test('task create with a track puts the task on that track, never in the inbox',
   const go = q.register(db, { name: 'release go', gist: 'Ready?', projectDir: 'C:/repo', session: 's9', blocking: true, ask: 'Ship (a) or wait (b)?', gates: [rel.id],
     options: [{ type: 'a', option: 'ship' }, { type: 'b', option: 'wait' }] }, null);
   assert.match(q.show(db, { id: go.id }).gist, new RegExp('Found this arc.*' + loose.id));
+
+  /* a reason that no track carries it is refused with the parked-track commands, the same one message;
+     it is due once its event ends, and one stored with no wake once 14 days in the inbox pass */
+  const inboxRow = (id) => t.projectInbox(db, 'ws000001').find((x) => x.id === id);
+  const due = () => Object.fromEntries(t.projectInbox(db, 'ws000001').map((x) => [x.id, x.due]));
+  assert.equal(loose.wake, LATER);
+  assert.throws(() => runVerb(db, 'createRecord', { name: 'Later', description: 'd', workstream: 'WS-1', unplaced: 'after release 0.8.16; no track carries it yet', wake: LATER }, S),
+    (e) => bothWays(e) && e.message.includes('--unpark-when'));
+  const gate = runVerb(db, 'createRecord', { name: 'Gate', description: 'd', track: line.id }, 'cli');
+  /* a wake that has fired is refused, naming what fired and the place command */
+  const today = new Date().toLocaleDateString('sv');
+  assert.throws(() => runVerb(db, 'editRecord', { id: loose.id, wake: today }, S), (e) => e.message.includes(today) && e.message.includes('task edit ' + loose.id + ' --track'));
+  /* a refused filing made no task, so its way out files it again rather than naming an id */
+  const refiled = (e) => e.message.includes(today) && e.message.includes('--track TR-n') && !e.message.includes('<T-n>');
+  assert.throws(() => runVerb(db, 'createRecord', { name: 'Late', description: 'd', workstream: 'WS-1', unplaced: 'waits on the user', wake: today }, S), refiled);
+  assert.throws(() => t.capture(db, { workstream: 'WS-1', name: 'Late idea', unplaced: 'waits on the user', wake: today }, S), refiled);
+  /* a refused close moved nothing either, so its way out closes the track again */
+  assert.throws(() => t.finishTrack(db, { track: line.id, leftovers: 'inbox', wake: today }, S),
+    (e) => e.message.includes(today) && e.message.includes(line.id + ' --leftovers drop') && !e.message.includes('<T-n>'));
+  runVerb(db, 'editRecord', { id: loose.id, wake: 'task-completes ' + gate.id }, S);
+  const old = w.createRecord(db, { name: 'Filed long ago', description: 'd', workstream: 'WS-1' }, { by: 'cli', now: new Date(Date.now() - 20 * 86400e3) });
+  assert.deepEqual([due()[loose.id], due()[old.id]], [false, true]);
+  runVerb(db, 'editRecord', { id: gate.id, status: 'completed' }, 'cli');
+  assert.equal(due()[loose.id], true, 'its event ended');
+  assert.throws(() => runVerb(db, 'editRecord', { id: loose.id, wake: 'task-completes ' + gate.id }, S), (e) => e.message.includes(gate.id + ' is already completed'));
+
+  /* a third wake in one inbox stay stores none: the board asks the user on the band, in the task's workstream, the
+     asker subscribed; the inbox row names the question; a keep answer starts the count over; placing the task drops one still open */
+  const third = runVerb(db, 'editRecord', { id: loose.id, wake: '2099-02-01' }, S).placed;
+  const ask = q.show(db, { id: third.asked });
+  assert.deepEqual([ask.status, ask.blocking, ask.session, ask.workstream], ['open', false, 's9', 'WS-1']);
+  assert.deepEqual([inboxRow(loose.id).due, inboxRow(loose.id).asked], [true, third.asked], 'no new wake stored; the row names the question');
+  q.answer(db, { id: third.asked, pick: 'b' }, { user: 'user' });
+  for (const day of ['2099-03-01', '2099-04-01']) assert.equal(runVerb(db, 'editRecord', { id: loose.id, wake: day }, S).placed.asked, undefined);
+  const again = runVerb(db, 'editRecord', { id: loose.id, wake: '2099-05-01' }, S).placed.asked;
+  assert.ok(again && again !== third.asked);
+  runVerb(db, 'editRecord', { id: loose.id, track: line.id }, S);
+  assert.equal(q.show(db, { id: again }).status, 'dropped');
 });
 
 test('a review covers the code finished before it started; a fix finished after it, or a commit after its cover, reads uncovered', () => {
@@ -376,7 +436,7 @@ test('at full depth a review reopens when work it read changes, upkeep completio
   const make = (name) => runVerb(db, 'createRecord', { name, description: 'd', track: line.id }, 'cli');
   const link = (task, sha, h) => runVerb(db, 'commitLink', { repo: 'r', sha: sha.repeat(40), task, via: 'message', at: at(h).now.toISOString(), added: 3, removed: 0 }, at(h));
   const [one, two, three, four, review] = ['The store', 'The reader', 'The index', 'The cache', 'Review the store'].map(make);
-  const elsewhere = runVerb(db, 'createRecord', { name: 'Off the track', description: 'd', workstream: 'WS-1' }, 'cli');
+  const elsewhere = runVerb(db, 'createRecord', { name: 'Off the track', description: 'd', workstream: 'WS-1', wake: LATER }, 'cli');
   runVerb(db, 'editRecord', { id: two.id, close: 'with ' + elsewhere.id }, at(8));
   link(two.id, 'b', 9);
   for (const [x, sha] of [[one, 'a'], [three, 'e'], [four, 'f']]) {
@@ -389,17 +449,12 @@ test('at full depth a review reopens when work it read changes, upkeep completio
   runVerb(db, 'editRecord', { id: review.id, status: 'completed' }, at(11));
   link(one.id, 'c', 12);
   assert.equal(status(review.id), 'open', 'a commit after its cover reopens the review');
-  /* the reopen drops only the outdated cover: one task to review, and the planned review draws no padlock */
+  /* the reopen drops only the outdated cover: one task to review, the planned review the way through */
   assert.deepEqual(covers(), [three.id, four.id]);
   assert.deepEqual(view().review.uncovered.map((x) => x.id), [one.id]);
   assert.equal(view().review.planned, review.id);
-  const plan = reviewPlan(graphOf([view()], Date.now(), viewLook()).g);
-  assert.equal(plan.count[review.id], 1);
-  assert.deepEqual(plan.lock, {});
-  /* a list narrowed while it is open survives its next completion, which adds the new work */
-  runVerb(db, 'reviewCovers', { review: review.id, tasks: [three.id] }, at(12));
   runVerb(db, 'editRecord', { id: review.id, status: 'completed' }, at(13));
-  assert.deepEqual(covers(), [one.id, three.id]);
+  assert.deepEqual(covers(), [one.id, three.id, four.id], 'completing again adds the work new since');
   /* upkeep closes the task that closes with another, past editRecord */
   runVerb(db, 'editRecord', { id: elsewhere.id, status: 'completed' }, at(14));
   assert.equal(status(two.id), 'completed');
@@ -416,4 +471,98 @@ test('at full depth a review reopens when work it read changes, upkeep completio
   /* a hotfix on a finished track reopens nothing there */
   link(one.id, '9', 18);
   assert.equal(status(review.id), 'completed');
+});
+
+test('a completed review stays completed for a later wave, work outside its given list or work an open review waits on, and a row from a record no longer a review counts for nothing', () => {
+  const db = board();
+  const at = (h) => ({ session: 's1', now: new Date(2026, 10, 4, h) });
+  const line = t.newTrack(db, { workstream: 'WS-1', name: 'Waves' }, 'cli');
+  runVerb(db, 'settingsSet', { key: 'review.depth', value: 'full', at: 'track', record: line.id }, 'cli');
+  const make = (name, labels) => runVerb(db, 'createRecord', { name, description: 'd', track: line.id, ...(labels ? { labels } : {}) }, 'cli');
+  const link = (task, sha, h) => runVerb(db, 'commitLink', { repo: 'r', sha: sha.repeat(40), task, via: 'message', at: at(h).now.toISOString(), added: 3, removed: 0 }, at(h));
+  const [one, early, first, second] = ['Wave one', 'Filed early', 'Review wave one', 'Review wave two'].map((n) => make(n));
+  const row = make('The review row', ['review']);
+  const status = (id) => db.prepare('SELECT status FROM records WHERE label = ?').get(id).status;
+  const covers = (id) => runVerb(db, 'coverage', { scope: line.id }, null).reviews.find((r) => r.id === id).covers.map((c) => c.id);
+  const covered = (id) => runVerb(db, 'coverage', { scope: line.id }, null).tasks.find((x) => x.id === id).covered;
+  link(one.id, 'a', 9);
+  runVerb(db, 'editRecord', { id: one.id, status: 'completed' }, at(10));
+  runVerb(db, 'editRecord', { id: first.id, status: 'completed' }, at(11));
+  /* filed before the first review, begun and finished after it, with the next review open after it */
+  runVerb(db, 'editRecord', { id: early.id, status: 'in_progress', reason: 'wave two' }, at(12));
+  link(early.id, 'b', 12);
+  runVerb(db, 'editRecord', { id: early.id, status: 'completed' }, at(13));
+  assert.equal(status(first.id), 'completed', 'the open review after it reads it');
+  link(one.id, 'c', 14);
+  assert.equal(status(first.id), 'open', 'a commit after its cover still reopens it');
+  runVerb(db, 'editRecord', { id: first.id, status: 'completed' }, at(15));
+  assert.deepEqual(covers(first.id), [one.id], 'completing again takes no work begun after its first cut');
+  /* a descriptive review label takes covers; once it comes off, its rows count for nothing */
+  runVerb(db, 'editRecord', { id: row.id, status: 'completed' }, at(16));
+  assert.equal(covered(early.id), true);
+  runVerb(db, 'editRecord', { id: row.id, removeLabel: ['review'] }, at(16));
+  assert.equal(covered(early.id), false);
+  runVerb(db, 'reviewCovers', { review: second.id, tasks: [early.id] }, at(17));
+  assert.deepEqual(runVerb(db, 'reviewCovers', { review: second.id, none: true }, at(17)).covers, [], 'none clears the list');
+  assert.deepEqual(covers(second.id), []);
+  /* a list given by hand reads only its tasks, and an open review waiting on a task by edge
+     is its station though filed before it; an umbrella in progress before both reviews completes after them */
+  const tr = t.newTrack(db, { workstream: 'WS-1', name: 'Umbrella' }, 'cli');
+  runVerb(db, 'settingsSet', { key: 'review.depth', value: 'full', at: 'track', record: tr.id }, 'cli');
+  const put = (name) => runVerb(db, 'createRecord', { name, description: 'd', track: tr.id }, 'cli');
+  const [a, b, release, umbrella, lane, given, picture] = ['Lane a', 'Lane b', 'Review the release', 'The umbrella', 'A late lane',
+    'Review the conversion', 'Review the picture'].map(put);
+  g.addEdge(db, { task: release.id, on: umbrella.id, reason: 'ships it' }, 'cli');
+  for (const x of [umbrella, lane]) runVerb(db, 'editRecord', { id: x.id, status: 'in_progress' }, at(8));
+  for (const [x, sha] of [[a, '1'], [b, '2']]) { link(x.id, sha, 9); runVerb(db, 'editRecord', { id: x.id, status: 'completed' }, at(10)); }
+  runVerb(db, 'reviewCovers', { review: given.id, tasks: [a.id, b.id] }, at(10));
+  for (const x of [given, picture]) runVerb(db, 'editRecord', { id: x.id, status: 'completed' }, at(11));
+  /* rows from before the flag: the log says the list came from review covers, not the completion */
+  db.prepare('UPDATE covers SET given = NULL WHERE review = (SELECT key FROM records WHERE label = ?)').run(given.id);
+  link(umbrella.id, '3', 12);
+  runVerb(db, 'editRecord', { id: umbrella.id, status: 'completed' }, at(13));
+  assert.deepEqual([status(given.id), status(picture.id)], ['completed', 'completed'], 'the release review waiting on it reads it');
+  assert.equal(t.trackView(db, { track: tr.id }).review.planned, release.id);
+  link(lane.id, '4', 13);
+  runVerb(db, 'editRecord', { id: lane.id, status: 'completed' }, at(14));
+  assert.deepEqual([status(given.id), status(picture.id)], ['completed', 'open'], 'a given list stays completed; a default one reads its late work');
+  link(a.id, '5', 15);
+  assert.equal(status(given.id), 'open', 'a commit on a task in the given list reopens it');
+  runVerb(db, 'editRecord', { id: given.id, status: 'completed' }, at(16));
+  const read = runVerb(db, 'coverage', { scope: tr.id }, null).reviews.find((r) => r.id === given.id);
+  assert.deepEqual([read.covers.map((c) => c.id), read.given], [[a.id, b.id], true], 'completing again reads its list and nothing new');
+});
+
+/* the conversion map, keyed by source per project: a put replaces a source's row, the read flags
+   a record the board no longer holds, the undo drops its run's rows, and an export and import carry it. */
+test('the conversion map keeps one row per source, flags a gone record, drops a run, and survives an export', (tt) => {
+  const db = board();
+  const kept = runVerb(db, 'createRecord', { name: 'Kept', description: 'd', workstream: 'WS-1', unplaced: 'a test', wake: LATER }, 'cli');
+  const P = 'github.com/someone/project';
+  runVerb(db, 'conversionPut', { project: P, run: 'r1', rows: [
+    { source: 'docs/rules.md', kind: 'file', hash: 'aaa', sha: 'c1', records: [kept.id, 'T-99'] },
+    { source: 'docs/plans/', kind: 'folder', fate: 'delete', sha: 'c1', why: 'history' },
+    { source: 'run:r1', kind: 'run', sha: 'c1', detail: { folders: { 'docs/': 't1' } } },
+  ] }, 'cli');
+  runVerb(db, 'conversionPut', { project: P, run: 'r2', rows: [{ source: 'docs/rules.md', kind: 'file', hash: 'bbb', sha: 'c2', records: [kept.id] }, { source: 'call:dormant', kind: 'call', answer: 'b' }] }, 'cli');
+  assert.throws(() => runVerb(db, 'conversionPut', { project: P, run: 'r3', rows: [{ source: 'x', kind: 'nope' }] }, 'cli'), /kind/);
+  const map = runVerb(db, 'conversionMap', { project: P.toUpperCase() });
+  const at = (s) => map.rows.find((r) => r.source === s);
+  assert.deepEqual([at('docs/rules.md').hash, at('docs/rules.md').records, at('docs/rules.md').gone], ['bbb', [kept.id], undefined]);
+  assert.equal(map.last.source, 'run:r1');
+  const dir = join(tempDir('askerdo-store-', tt), 'export');
+  exportStore(db, dir);
+  const back = freshBoard();
+  importStore(back, dir);
+  assert.deepEqual(runVerb(back, 'conversionMap', { project: P }).rows.map((r) => r.source), map.rows.map((r) => r.source));
+  /* undoing the later run gives the earlier run's row back; a folder end named in keep stays */
+  const r2 = runVerb(db, 'conversionDrop', { project: P, run: 'r2' });
+  assert.deepEqual([r2.dropped, r2.restored], [1, 1]);
+  const after = runVerb(db, 'conversionMap', { project: P }).rows.find((r) => r.source === 'docs/rules.md');
+  assert.deepEqual([after.hash, after.run], ['aaa', 'r1']);
+  assert.equal(runVerb(db, 'conversionDrop', { project: P, run: 'r1', keep: 'docs/plans/' }).dropped, 2);
+  assert.deepEqual(runVerb(db, 'conversionMap', { project: P }).rows.map((r) => r.source), ['docs/plans/']);
+  /* a handoff and a rule line are checked too */
+  runVerb(db, 'conversionPut', { project: P, run: 'r4', rows: [{ source: 'docs/x.md', kind: 'file', records: ['T-99', 'TR-77.1', 'nobody/no-such-line'] }] }, 'cli');
+  assert.deepEqual(runVerb(db, 'conversionMap', { project: P }).rows.find((r) => r.source === 'docs/x.md').gone, ['T-99', 'TR-77.1', 'nobody/no-such-line'], 'a record the board lacks is gone');
 });

@@ -20,8 +20,10 @@ test('on a board show is brief by default and names its cut, search finds a note
   const file = join(home, 'board.db').replace(/\\/g, '/');
   const env = { ...childEnv(), HOME: home, USERPROFILE: home, ASKERDO_BOARD_URL: 'file:' + file };
   const ws = await boardCall('createRecord', { kind: 'workstream', name: 'Board reads', description: 'One board.' }, { env });
-  const t = await boardCall('createRecord', { kind: 'task', name: 'Read levels', workstream: ws.id, description: DESCRIPTION, intent: INTENT }, { env });
+  const t = await boardCall('createRecord', { kind: 'task', name: 'Read levels', workstream: ws.id, description: DESCRIPTION, intent: INTENT, wake: '2099-01-01' }, { env });
   for (const text of NOTES) await boardCall('noteRecord', { id: t.id, text }, { env });
+  for (const text of ['draft the levels', 'cut the journal']) await boardCall('addItem', { task: t.id, text }, { env });
+  await boardCall('checkItem', { task: t.id, item: 1, done: true }, { env });
   const cli = (...argv) => runCommand({ argv, cwd: home, env });
   const show = async (...more) => {
     const r = await cli('show', t.id, ...more);
@@ -37,14 +39,20 @@ test('on a board show is brief by default and names its cut, search finds a note
   assert.ok(/2 of 3/.test(tail.last) && tail.last.includes('--full'), 'a cut journal says how much it cut: ' + tail.last);
   const full = await show('--full');
   assert.ok(NOTES.every((n) => full.out.includes(n)) && !full.out.includes('--full'), 'full leaves nothing out and names no cut');
-  assert.ok(JSON.parse((await show('--json')).out).journal.includes(NOTES[0]), '--json alone stays the whole record scripts read');
+  const whole = JSON.parse((await show('--json')).out);
+  assert.ok(whole.journal.includes(NOTES[0]), '--json alone stays the whole record scripts read');
+  /* the checklist reads in every form, each step with its index and done mark */
+  assert.deepEqual(whole.checklist.map((c) => [c.n, c.done]), [[1, true], [2, false]]);
+  for (const out of [brief.out, full.out, (await show('--section', 'checklist')).out]) {
+    assert.ok(/1 \[x\] draft the levels/.test(out) && /2 \[ \] cut the journal/.test(out), out);
+  }
   /* a plain show logs its read under the session Claude Code names in the shell */
   const named = await runCommand({ argv: ['show', t.id], cwd: home, env: { ...env, CLAUDE_CODE_SESSION_ID: 'reader-1' } });
   assert.equal(named.code, 0, named.stderr);
 
   /* a question's head names its track and its pick, as --full does */
   const tr = await boardCall('newTrack', { name: 'Line', workstream: ws.id }, { env });
-  const q = await boardCall('register', { name: 'sample name length', gist: 'One length.', blocking: false, ask: 'Short (a, my pick) or long (b)?',
+  const q = await boardCall('register', { name: 'sample levels length', gist: 'One length.', blocking: false, ask: 'Short (a, my pick) or long (b)?',
     pick: 'a', options: ['a', 'b'].map((type) => ({ type, option: type, getsYou: 'x', costsYou: '' })), workstream: ws.id, track: tr.id,
     session: 's1', projectDir: home }, { env });
   const head = await cli('show', q.id, '--head');
@@ -56,6 +64,15 @@ test('on a board show is brief by default and names its cut, search finds a note
   const found = await cli('search', 'formatter');
   assert.equal(found.code, 0, found.stderr);
   assert.ok(found.stdout.includes(t.id) && found.stdout.includes(NOTES[1]), found.stdout);
+  /* the tab filters before the count, which the board does in one statement */
+  const tabbed = async (...f) => { const r = JSON.parse((await cli('search', 'levels', '--json', ...f)).stdout); return [r.total, r.hits.map((h) => h.id)]; };
+  assert.deepEqual([await tabbed('--tab', 'questions'), await tabbed('--tab', 'work'), (await tabbed())[0]], [[1, [q.id]], [1, [t.id]], 2]);
+  /* knowledge new's near check (uncounted searches) still names the close record */
+  const k1r = await runCommand({ argv: ['knowledge', 'new', '--type', 'gotcha', '--title', 'Formatter levels drift', '--global', '--json'], cwd: home, env, stdin: 'one' });
+  assert.equal(k1r.code, 0, k1r.stderr);
+  const k1 = JSON.parse(k1r.stdout);
+  const k2 = await runCommand({ argv: ['knowledge', 'new', '--type', 'gotcha', '--title', 'Formatter levels again', '--global', '--json'], cwd: home, env, stdin: 'two' });
+  assert.ok(k2.code === 0 && k2.stderr.includes('close to ' + k1.id), k2.stderr);
 
   /* an old knowledge-store id held by two projects: one became the task, the other
      only an archive */

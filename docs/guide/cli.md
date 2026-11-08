@@ -40,6 +40,7 @@ This page is built from the CLI's help by `node scripts/build.mjs`, so it matche
 - Workstreams and tasks: [ws create](#ws-create), [ws edit](#ws-edit), [ws close](#ws-close), [task create](#task-create), [task edit](#task-edit), [task update](#task-update), [check add](#check-add), [check done](#check-done), [check move](#check-move), [edge add](#edge-add), [edge remove](#edge-remove)
 - Tracks and handoffs: [resume](#resume), [shelf](#shelf), [track list](#track-list), [track show](#track-show), [track mine](#track-mine), [track new](#track-new), [track park](#track-park), [track finish](#track-finish), [track drop](#track-drop), [track splinter](#track-splinter), [track capture](#track-capture), [track layout](#track-layout), [track promote](#track-promote), [track fold](#track-fold), [track reorder](#track-reorder), [track found](#track-found), [handoff write](#handoff-write), [handoff update](#handoff-update)
 - Commits and reviews: [commit link](#commit-link), [commit move](#commit-move), [review covers](#review-covers), [coverage](#coverage)
+- Conversion map: [conversion](#conversion), [conversion put](#conversion-put), [conversion drop](#conversion-drop)
 - Knowledge and decisions: [knowledge new](#knowledge-new), [knowledge supersede](#knowledge-supersede), [knowledge amend](#knowledge-amend), [knowledge edit](#knowledge-edit), [decide](#decide), [decisions](#decisions), [decisions triggers](#decisions-triggers)
 - Settings and profiles: [settings](#settings), [settings set](#settings-set), [settings unset](#settings-unset), [settings rule](#settings-rule), [profile add](#profile-add), [profile remove](#profile-remove), [profile show-effective](#profile-show-effective), [profile rule-add](#profile-rule-add), [profile rule-drop](#profile-rule-drop), [profile rule-clear](#profile-rule-clear), [profile define](#profile-define), [profile list](#profile-list), [profile guard](#profile-guard)
 - Procedures: [proc scan](#proc-scan), [proc ran](#proc-ran), [proc find](#proc-find), [proc triggers](#proc-triggers)
@@ -156,12 +157,12 @@ askerdo question edit <question id>
 
 ```text
 askerdo show <record id>
-  one record (several below --full) at a read level: the brief form by default, and the last line names what it left out and the flag that brings it back
+  one record (several with any level but --full) at a read level: the brief form by default, and the last line names what it left out and the flag that brings it back
   --journal-tail <value>: keep the last N journal notes
   --project <value>: the project slug an old brain id belongs to
   --section <value>: one section by name, such as Intent, Answer or Journal
   --session <value>: the session reading it (a read by another session makes it used)
-  --json: print JSON: alone, the whole record (what scripts and the mod read); with a level, that level
+  --json: print JSON: alone, the whole record (what scripts and the mod read), an array of them for several ids; with a level, that level
   --brief: each text once, as plain text (the default)
   --journal: the brief form with the journal too
   --since-resume: journal notes since the latest resume
@@ -290,12 +291,13 @@ askerdo ws close <WS-n id>
 
 ```text
 askerdo task create
-  create a task; a session's names its place (track, with before or after a step, or unplaced with a reason), judged from what the work is and what it blocks
+  create a task; a session's names its place (track, with before or after a step, or unplaced with a reason and a wake), judged from what the work is and what it blocks
   stdin: JSON payload
   --track <value>: TR-n: the track it goes on
   --before <value> (repeatable): a T-n on that track that waits on it (repeatable)
   --after <value> (repeatable): a T-n on that track it waits on (repeatable)
-  --unplaced <value>: why it waits on no track (the found list shows it)
+  --unplaced <value>: why no plan reaches it, so it waits in the inbox (the found list shows it); work that starts later goes on a parked track instead
+  --wake <value>: what brings an inbox task back, "track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD after today; every filing to the inbox names one, and alone it wakes an inbox task again (a third wake in one inbox stay asks the user instead)
   --review-scope <value>: a review task reads track (its own track, the default) or project (every code task in the project since the last project-wide review)
   --session <value>: your own session id
   --json: print JSON
@@ -313,7 +315,7 @@ askerdo task edit <T-n id>
   --workstream <value>
   --plan <value>
   --serves <value>: o1,o2: the outcomes of its workstream it serves
-  --run-by <value>: who runs it: orchestrator, fork or agent:<model> (agent:opus)
+  --run-by <value>: who runs it: orchestrator, fork or agent:<model>
   --review-scope <value>: a review task reads track (its own track, the default) or project (every code task in the project since the last project-wide review)
   --close <value>: "with T-n" (it closes when T-n completes), look (it closes at the look of the user) or "when <a checkable fact>"
   --session <value>: your own session id
@@ -322,7 +324,8 @@ askerdo task edit <T-n id>
   --track <value>: TR-n: the track it goes on
   --before <value> (repeatable): a T-n on that track that waits on it (repeatable)
   --after <value> (repeatable): a T-n on that track it waits on (repeatable)
-  --unplaced <value>: why it waits on no track (the found list shows it)
+  --unplaced <value>: why no plan reaches it, so it waits in the inbox (the found list shows it); work that starts later goes on a parked track instead
+  --wake <value>: what brings an inbox task back, "track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD after today; every filing to the inbox names one, and alone it wakes an inbox task again (a third wake in one inbox stay asks the user instead)
   --add-label <value> (repeatable)
   --remove-label <value> (repeatable)
   --add-ref <value> (repeatable)
@@ -496,6 +499,7 @@ askerdo track finish <TR-n id>
   finish a track; its junction comes back
   --outcome <value>
   --leftovers <value>: inbox or drop, for tasks still open
+  --wake <value>: with --leftovers inbox: the wake each open task takes into the inbox ("track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD)
   --waive <value>: finish with finished code no review read (full review depth), and why; the reason goes to its journal and the activity log
   --session <value>: your own session id
   --json: print JSON
@@ -508,6 +512,7 @@ askerdo track drop <TR-n id>
   drop a track with a reason; its junction comes back
   --reason <value>
   --leftovers <value>: inbox or drop, for tasks still open
+  --wake <value>: with --leftovers inbox: the wake each open task takes into the inbox ("track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD)
   --session <value>: your own session id
   --json: print JSON
 ```
@@ -538,7 +543,8 @@ askerdo track capture
   --task <value>: an existing T-n to move
   --description <value>
   --priority <value>
-  --unplaced <value>: into the inbox: why it waits on no track (a session's capture says)
+  --unplaced <value>: into the inbox: why no plan reaches it (a session's capture says)
+  --wake <value>: what brings an inbox task back, "track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD after today; every filing to the inbox names one, and alone it wakes an inbox task again (a third wake in one inbox stay asks the user instead)
   --session <value>: your own session id
   --json: print JSON
 ```
@@ -646,9 +652,10 @@ askerdo commit move <commit sha>
 
 ```text
 askerdo review covers <review T-n id, then the T-n ids it covers>
-  set a review task's covers list: the code tasks it read, each through its newest commit now; with no list, every uncovered code task on its track finished before the review started
+  set a review task's covers list: the code tasks it read, each through its newest commit now. A list sets it, and the review reads only those tasks: it reopens only when one of them gains a commit; no list takes the default, every uncovered code task on its track finished before the review started; --none clears it
   --session <value>: your own session id
   --json: print JSON
+  --none: clear the list: the review covers nothing (not with ids)
 ```
 
 ### coverage
@@ -659,6 +666,40 @@ askerdo coverage <TR-n or WS-n id>
   --session <value>: your own session id
   --json: print JSON
   --scan: first link the commits here whose messages name a task, in each repo its handoffs name, from the first baseline to HEAD
+```
+
+## Conversion map
+
+### conversion
+
+```text
+askerdo conversion
+  a project's conversion map: each source an onboard or doctor run converted with its hash and the records it became, each folder's end, each call's answer and each run
+  --project <value>: the project directory (default: the current one)
+  --json: print JSON
+```
+
+### conversion put
+
+```text
+askerdo conversion put
+  put rows on a project's conversion map, each whole under its source (a repo file, a folder/ , call:<id> or run:<id>); the onboard write's own call
+  stdin: JSON { run, rows: [{ source, kind, hash, sha, records, fate, why, answer, detail }] }
+  --project <value>: the project directory (default: the current one)
+  --session <value>: your own session id
+  --json: print JSON
+```
+
+### conversion drop
+
+```text
+askerdo conversion drop
+  take one run's rows off a project's conversion map, giving back each earlier run's row it replaced; the onboard undo's own call
+  --project <value>: the project directory (default: the current one)
+  --run <value>: the run, as its rows name it
+  --keep <value>: sources to leave on the map, comma-separated
+  --session <value>: your own session id
+  --json: print JSON
 ```
 
 ## Knowledge and decisions
@@ -674,6 +715,7 @@ askerdo knowledge new
   --project <value> (repeatable)
   --label <value> (repeatable)
   --ref <value> (repeatable)
+  --file <value> (repeatable): a file glob relative to the repo root, as a procedure card takes; an edit of a matching file points the session at the record
   --body-file <value>
   --legacy <value>
   --created <value>
@@ -692,6 +734,7 @@ askerdo knowledge supersede <K-n id>
   --project <value> (repeatable)
   --label <value> (repeatable)
   --ref <value> (repeatable)
+  --file <value> (repeatable): a file glob relative to the repo root, as a procedure card takes; an edit of a matching file points the session at the record
   --body-file <value>
   --legacy <value>
   --created <value>
@@ -718,12 +761,18 @@ askerdo knowledge amend <K-n id>
 
 ```text
 askerdo knowledge edit <K-n id>
-  rewrite a knowledge record's name or body in place while no other session has used it; once used, amend or supersede it
+  rewrite a knowledge record's name or body in place while no other session has used it (once used, amend or supersede it); its refs, projects and files change at any time
   --name <value>
   --body <value>
   --body-file <value>
   --session <value>: your own session id
   --version <value>
+  --add-ref <value> (repeatable)
+  --remove-ref <value> (repeatable)
+  --add-project <value> (repeatable)
+  --remove-project <value> (repeatable)
+  --add-file <value> (repeatable): a file glob relative to the repo root, as a procedure card takes; an edit of a matching file points the session at the record
+  --remove-file <value> (repeatable): a file glob to take off it
   --json: print JSON
 ```
 
@@ -731,7 +780,7 @@ askerdo knowledge edit <K-n id>
 
 ```text
 askerdo decide
-  record a ruling the user made, in their words, with what it governs; left out, the track and workstream are the ones the session holds and the project is this folder's
+  record a ruling the user made, in their words, with what it governs; left out, the track and workstream are the ones the session holds and the project is this folder's; the question it answers is answered too when the words carry its token (167a), else the reply says it is still open
   stdin: JSON payload { title, words, body, tasks, tracks, workstreams, files, commands, question, supersedes, projects or global }
   --session <value>: your own session id
   --json: print JSON
@@ -753,7 +802,7 @@ askerdo decisions
 
 ```text
 askerdo decisions triggers
-  every decision in force with files or commands, at this PC's checkout, for the mod's watcher
+  every decision in force with files or commands, and every other knowledge record in force with files, at this PC's checkout, for the mod's watcher
   --project <value>: the project directory (default: the current one)
   --json: print JSON
 ```
@@ -915,9 +964,10 @@ askerdo profile guard <on or off>
 
 ```text
 askerdo proc scan
-  make or update the procedure cards of a project from its docs/procedures files
+  make or update the procedure cards of a project from its docs/procedures files, which it reads from the main checkout
   --project <value>: the project directory (default: the current repo)
   --json: print JSON
+  --check: parse, judge and lint the docs/procedures files of this checkout (a worktree's branch included) and write nothing to the board; exit 1 when a file has errors
 ```
 
 ### proc ran
@@ -1075,6 +1125,7 @@ askerdo login
   --next <value>: the page to land on (default: the overview)
   --json: print JSON
   --print: print the link, do not open it
+  --qr: print the link as a QR code for a phone's camera, with the link and its expiry under it; do not open it
 ```
 
 ### join-code

@@ -65,4 +65,19 @@ test('what counts: a lockfile, a doc, a fixture and a linguist-generated file do
   execFileSync('git', ['-C', dir, 'commit', '-q', '--amend', '--no-edit'], { env: { ...process.env, GIT_COMMITTER_DATE: '2030-01-02T03:04:05Z' } });
   assert.deepEqual((await captureCommit(git, b.send, { dirs: [dir], was })).linked, ['T-2']);
   assert.match(b.sent[1].at, /^2030-01-02/);
+  /* a file the repo marks generated never counts, and a release commit counts nothing */
+  put('.gitattributes', 'server/version.json linguist-generated\n');
+  put('server/version.json', '{}\n');
+  put('src/b.js', 'four\n');
+  g('add', '.');
+  g('commit', '-q', '-m', 'T-3: more');
+  await captureCommit(git, b.send, { dirs: [dir] });
+  const counted = b.sent.at(-1).files.filter((f) => f.counted).map((f) => f.path);
+  assert.ok(counted.includes('src/b.js') && !counted.includes('server/version.json'), counted.join());
+  put('.claude-plugin/plugin.json', '{"version":"1.0.1"}\n');
+  put('src/b.js', 'five\n');
+  g('add', '.');
+  g('commit', '-q', '-m', 'release: 1.0.1');
+  await captureCommit(git, b.send, { dirs: [dir] });
+  assert.deepEqual([b.sent.at(-1).files.some((f) => f.counted), b.sent.at(-1).added + b.sent.at(-1).removed], [false, 0]);
 });

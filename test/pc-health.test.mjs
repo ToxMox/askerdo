@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { runsInCaller } from '../lib/cli-commands.mjs';
 import { pcHealth } from '../lib/pc-health.mjs';
 import { pluginUpdates, setPluginUpdates } from '../lib/plugin-updates.mjs';
+import { PROTOCOL } from '../server/paths.mjs';
 import { tempDir } from './helpers/sandbox.mjs';
 
 const healthy = {
@@ -22,6 +23,8 @@ test('the diagnosis names each problem with its fix, and none on a healthy PC', 
     { name: 'no config', over: { env: {}, config: null, exists: () => false }, keys: ['config'], fix: /configure.*join-code --device pc-two/ },
     { name: 'board unreachable', over: { health: async () => null }, keys: ['board'], fix: /reachable/ },
     { name: 'token unknown', over: { token: async () => 'denied' }, keys: ['board'], fix: /join-code --device pc-two/ },
+    /* a board on a newer protocol refuses every call: this PC updates, its press copying the command */
+    { name: 'board on a newer protocol', over: { health: async () => ({ ok: true, protocol: PROTOCOL + 1, version: '0.8.13' }) }, keys: ['board'], fix: /plugin update/, copy: /plugin update/ },
     { name: 'older local server', over: { ping: async () => ({ listening: true, mine: true, version: undefined }) }, keys: ['server'], command: 'board --restart' },
     { name: 'port held', over: { ping: async () => ({ listening: true, mine: false }) }, keys: ['server'], fix: /port 17435/ },
     /* a server too slow to answer the ping is busy, not another program */
@@ -39,6 +42,7 @@ test('the diagnosis names each problem with its fix, and none on a healthy PC', 
     assert.equal(r.ok, !row.keys.length, row.name);
     if (row.fix) assert.match(r.problems[0].fix, row.fix, row.name);
     if (row.command) assert.equal(r.problems[0].command, row.command, row.name);
+    if (row.copy) assert.match(r.problems[0].copy, row.copy, row.name);
   }
   /* through the local route the copy check would read the server's copy, not the caller's */
   assert.ok(runsInCaller(['status']), 'status runs in the caller');

@@ -1,7 +1,7 @@
 /* The board's web pages: the three views, written
    on the server as plain HTML, plus record pages, search, the open set and sign in.
-   The drawn graph alone is painted by the page's script, which knows the box's width. */
-import { esc, farText, legendHtml, lineCounts, lineWords, mark, parkedWords, reviewPlan, shortDate } from './draw.mjs';
+   The picture alone is drawn by the page's script, which knows the box's width. */
+import { esc, farText, mark, parkedWords, shortDate, wakeText, whoWords } from './draw.mjs';
 import { shortTitle } from './data.mjs';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -9,12 +9,11 @@ const FACE_WORDS = {
   app: 'AskerDo', waiting: 'AskerDo mark, a question waits on you', quiet: 'AskerDo mark, nothing waiting on you',
   blocking: 'AskerDo mark, something blocks on you',
 };
-const STATE_CLASS = { live: 'sky', lav: 'lav', amber: 'amber', text: '', sec: 'dim' };
 
-/* The page kit: the marks as data URLs and the asset paths with their versions. */
-export function pageKit({ marks, assets, version = '' }) {
+/* The page kit: the marks as data URLs, the picture's icons as markup, and the asset paths with their versions. */
+export function pageKit({ marks, assets, version = '', icons = {} }) {
   const face = (kind, size = 20) => '<img class="face" src="' + marks[kind] + '" width="' + size + '" height="' + size + '" alt="' + FACE_WORDS[kind] + '" title="' + FACE_WORDS[kind] + '">';
-  return { marks, assets, face, version };
+  return { marks, assets, face, version, icons };
 }
 
 const r = (label) => '/r/' + encodeURIComponent(label);
@@ -40,7 +39,10 @@ const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
    an existing link is left alone, so a link never nests another. */
 const LABEL_RE = /\b(Q\d+|(?:WS|TR|TH|PR|T|P|K)-\d+(?:\.\d+)?)\b/g;
 const linkLabels = (escaped, at = '', keys = null) => escaped.split(/(<a\b[^>]*>[\s\S]*?<\/a>|<[^>]*>)/).map((part, i) => (i % 2 ? part
-  : part.replace(LABEL_RE, (m) => '<a href="' + (keys && keys[m] ? r(keys[m]) : r(m) + (at ? '?at=' + at : '')) + '">' + m + '</a>'))).join('');
+  : part.replace(LABEL_RE, (m) => '<a href="' + (keys && keys[m] ? r(keys[m]) : r(m) + (at ? '?at=' + at : '')) + '" class="nw">' + m + '</a>'))).join('');
+/* "(holds T-1, T-2)": the word and the brackets keep to their ids, a line breaking only after a comma */
+const holdsHtml = (gates, open = '', close = '') => gates.map((g, n) => '<span class="nw">' + (n ? '' : open + 'holds ')
+  + linkLabels(esc(g)) + (n < gates.length - 1 ? ',' : close) + '</span>').join(' ');
 
 /* ---- the shell ------------------------------------------------------------------ */
 
@@ -74,36 +76,17 @@ export function shell(kit, { title, view, main, seq, face = 'app', links = {}, d
 const statusWords = (s) => String(s || '').replace(/_/g, ' ');
 const stateChip = (T) => '<span class="chip ' + T.state + '">' + T.state + '</span>' + (T.stalled ? '<span class="chip stalled">stalled ' + T.days + ' days</span>' : '');
 const dotFor = (T) => (T.stalled ? 'stalled' : T.state);
-const wordsHtml = (tr, D) => lineWords(tr, D).map((b) => '<span class="' + STATE_CLASS[b[0]] + '">' + esc(b[1]) + '</span>').join(' &middot; ');
 
-/* The inbox turns amber once its open tasks sit unmoved past the stall setting; its count opens the list. */
+/* The inbox turns amber once its open tasks sit unmoved past the stall setting; its count opens the list.
+   the tasks whose wake came, counted amber */
 const inboxHref = (ws) => '/ws/' + encodeURIComponent(ws.id) + '#inbox';
+const dueWords = (n) => (n ? '<span class="amber">, ' + n + ' due</span>' : '');
+/* an inbox row's wake, the record it waits on opening its page */
+const wakeHtml = (t) => linkLabels(esc(wakeText(t.wake, t.due)), '', t.wake && t.wake.id ? { [t.wake.id]: t.wake.key } : null);
 const inboxWords = (ws, days) => '<span' + (ws.inboxStalled ? ' class="amber"' : '') + '>'
-  + (ws.inbox ? '<a class="link" href="' + inboxHref(ws) + '">Inbox ' + ws.inbox + '</a>' : 'Inbox 0')
+  + (ws.inbox ? '<a class="link" href="' + inboxHref(ws) + '">Inbox ' + ws.inbox + '</a>' + dueWords(ws.inboxDue) : 'Inbox 0')
   + (ws.inboxStalled ? ', stalled: nothing moved for over ' + plural(days, 'day', 'days') : '')
   + (ws.inbox ? ', waiting for a triage pass with you' : '') + '</span>';
-
-/* Tracks parent first, each side line under it, with its depth (the overview's tree);
-   roots for which `last` holds (the parked) go after the others. */
-function treeOrder(tracks, last = () => false) {
-  const ids = new Set(tracks.map((tr) => tr.id));
-  const kids = {};
-  let roots = [];
-  for (const tr of tracks) (tr.parent && ids.has(tr.parent) && tr.parent !== tr.id ? (kids[tr.parent] = kids[tr.parent] || []) : roots).push(tr);
-  roots = roots.filter((tr) => !last(tr)).concat(roots.filter(last));
-  const out = [];
-  const seen = new Set();
-  const walk = (list, level) => list.forEach((tr) => { if (seen.has(tr.id)) return; seen.add(tr.id); out.push([tr, level]); walk(kids[tr.id] || [], level + 1); });
-  walk(roots, 0);
-  return out;
-}
-
-/* "from T-79 on Main line": where a side line leaves, its parent by name. */
-function fromWords(tr, byId) {
-  if (!tr.parent) return '';
-  const p = byId[tr.parent];
-  return 'from ' + (tr.junction ? tr.junction + ' on ' : '') + (p ? p.name : tr.parent);
-}
 
 /* A lease unseen past the quiet setting: still held, and open to a take over. */
 const quietOf = (tr) => (tr && tr.lease && tr.lease.quiet) || null;
@@ -130,75 +113,47 @@ function needLine(i) {
   return (i.id && !i.text.startsWith(i.id) ? idLink(i.id, 'id', i.key) + ' ' : '') + linkLabels(esc(i.text));
 }
 
-/* What it is beside its line, in a list short enough for a card. */
+/* What it is beside its line, in brackets, in a list short enough for a card. */
 function needAside(i) {
-  if (i.kind === 'question') return i.gates.length ? 'holds ' + linkLabels(esc(i.gates.join(', '))) : '';
-  if (i.kind === 'handoff') return idLink(i.handoff, '', i.handoffKey) + ' on ' + idLink(i.id, '', i.key);
-  return pressWords(i);
+  if (i.kind === 'question') return i.gates.length ? holdsHtml(i.gates, '(', ')') : '';
+  if (i.kind === 'handoff') return '(' + idLink(i.handoff, 'nw', i.handoffKey) + ' on ' + idLink(i.id, 'nw', i.key) + ')';
+  return '(' + pressWords(i) + ')';
 }
 
-function needsRows(needs) {
-  return needs.items.map((i) => { const a = needAside(i); return needLine(i) + (a ? ' <span class="dim3">(' + a + ')</span>' : ''); });
-}
+/* the picture's block, which the page's script draws: the since line, the box with its
+   crumbs and controls, the address, the strip and the legend. It sits right in #view, so a swap keeps it. */
+const PICTURE = '<div id="pic"><div class="since" hidden></div><div class="gbox"><div class="gbar"><div class="crumbs"></div><div class="vpctl">'
+  + '<button type="button" class="gbtn" data-k="out" aria-label="Zoom out">−</button><button type="button" class="gbtn" data-k="in" aria-label="Zoom in">+</button>'
+  + '<button type="button" class="copy" data-k="copy">Copy link</button></div></div><div class="gview"></div></div>'
+  + '<div class="urlline"></div><div class="pslot"></div><div class="legend"></div></div>';
+
+/* The data a picture page carries: P, the page it is, and the real favicon the drawing nests. */
+export const pictureData = (kit, P, page) => ({ P, page, icons: { fav: kit.icons.fav } });
 
 export function overviewPage(kit, m) {
   let agents = 0; let stalled = 0; let parked = 0; let live = 0;
-  const cards = m.cards.map((c) => {
-    const { g, D, ws } = c;
-    const needs = needsRows(c.needs);
+  for (const { g, D } of m.cards) {
     for (const tr of g.tracks) {
       const T = D.tracks[tr.id];
-      agents += T.running;
+      agents += T.agents;
       if (T.stalled) stalled += 1;
       if (T.state === 'parked') parked += 1;
       if (T.state === 'active') live += 1;
     }
-    const byId = Object.fromEntries(g.tracks.map((tr) => [tr.id, tr]));
-    const isParked = (tr) => D.tracks[tr.id].state === 'parked';
-    const tree = treeOrder(g.tracks, isParked);
-    const head = (tr, T, level) => '<li' + (level ? ' class="side" style="margin-left:' + Math.min(level, 3) * 18 + 'px"' : '') + '><span class="dot ' + dotFor(T) + '"></span><div><div>'
-      + idLink(tr.id, 'id', tr.key) + ' <a class="tn link" href="' + r(tr.key || tr.id) + '">' + esc(tr.name) + '</a></div>'
-      + (tr.parent ? '<div class="tl dim">' + linkLabels(esc(fromWords(tr, byId))) + '</div>' : '');
-    /* a line nobody holds shows what the next session does first, with its resume command */
-    const next = (tr, T) => {
-      const h = c.handoffs && c.handoffs[tr.id];
-      if (T.state !== 'waiting' && T.state !== 'new') return '';
-      return (h && h.focus ? '<div class="tl next">Handed off ' + ago(h.created, m.now) + ': ' + esc(h.focus) + '</div>' : '') + copyCmd(tr.id);
-    };
-    const trl = tree.map(([tr, level]) => {
-      const T = D.tracks[tr.id];
-      if (isParked(tr)) {
-        return head(tr, T, level)
-          + '<div class="tl"><span class="lav">' + esc(parkedWords(tr)) + '</span>' + (T.stalled ? ' &middot; <span class="amber">stalled ' + T.days + ' days</span>' : '') + '</div></div></li>';
-      }
-      const ag = g.tasks.filter((x) => x.track === tr.id && D.tasks[x.id].kind === 'now').map((x) => x.agent || 'the session');
-      return head(tr, T, level)
-        + '<div class="tl">' + wordsHtml(tr, D) + '</div>'
-        + (quietOf(tr) ? '<div class="tl">' + quietWords(tr, m.now) + ': take it over from its page</div>' : '')
-        + (ag.length ? '<div class="tl"><span class="ag">' + esc(ag.join(', ')) + '</span></div>' : '')
-        + '<div class="tl num">' + esc(lineCounts(tr, D, 0)) + '</div>' + next(tr, T) + '</div></li>';
-    }).join('');
-    const ho = c.lastHandoff;
-    const isLive = g.tracks.some((tr) => D.tracks[tr.id].state === 'active');
-    const fk = c.needs.face;
-    return '<article class="wsc' + (isLive ? ' live' : '') + '" data-href="/ws/' + encodeURIComponent(ws.id) + '">'
-      + '<div class="wsc-h"><span class="id">' + esc(ws.id) + '</span><h2><a href="/ws/' + encodeURIComponent(ws.id) + '">' + esc(ws.name) + '</a></h2></div>'
-      + (needs.length ? '<div class="needs' + (fk === 'blocking' ? ' blocking' : '') + '">' + kit.face(fk) + '<span class="lbl">' + (fk === 'blocking' ? 'Blocks on you' : 'Needs you') + '</span><span>' + needs.join('<br>') + '</span></div>' : '')
-      + '<ul class="trl">' + trl + '</ul>'
-      + '<div class="wsc-f">' + inboxWords(ws, m.stallDays)
-      + (ho ? '<span class="ho">Last handoff ' + idLink(ho.label, 'id', ho.key) + ' ' + ago(ho.created, m.now) + ': ' + esc(ho.focus || '') + '</span>' : '') + '</div></article>';
-  }).join('');
-  const quiet = m.quiet.map((q) => '<a class="link" href="/ws/' + encodeURIComponent(q.id) + '"><b>' + esc(q.id) + '</b> ' + esc(q.name) + '</a>'
-    + (q.inbox ? ', <a class="link' + (q.inboxStalled ? ' amber' : '') + '" href="' + inboxHref(q) + '">inbox ' + q.inbox + (q.inboxStalled ? ', stalled' : '') + '</a>' : '')
+  }
+  // a workstream with only an inbox is a pill in the picture already, so it is not listed again
+  const drawn = new Set(((m.picture && m.picture.ov) || []).map((o) => o.id));
+  const quiet = m.quiet.filter((q) => !drawn.has(q.id)).map((q) => '<a class="link" href="/ws/' + encodeURIComponent(q.id) + '"><b>' + esc(q.id) + '</b> ' + esc(q.name) + '</a>'
+    + (q.inbox ? ', <a class="link' + (q.inboxStalled ? ' amber' : '') + '" href="' + inboxHref(q) + '">inbox ' + q.inbox + (q.inboxStalled ? ', stalled' : '') + '</a>' + dueWords(q.inboxDue) : '')
     + (q.needs ? ', <a class="link amber" href="/needs-you">' + (q.needs === 1 ? '1 thing needs you' : q.needs + ' things need you') + '</a>' : '')).join(' &middot; ');
-  return '<h1>Where every line of work stands</h1><p class="lede">Every workstream with open work, the one a session is on first. Press a card for its map, a track for its page.</p>'
+  return '<h1>Where every line of work stands</h1><p class="lede plede">Every workstream with open work, the one a session is on first. Press a pill to see what it waits on, press again to open its map.</p>'
+    + (m.picture && m.picture.ov.length ? PICTURE : '<p class="empty">No workstream has a track yet.</p>')
     + '<div class="strip">'
     + '<div class="stat sky"><b>' + live + '</b><span>' + (live === 1 ? 'session on a track' : 'sessions on a track') + '</span></div>'
     + '<div class="stat sky"><b>' + agents + '</b><span>' + (agents === 1 ? 'agent running' : 'agents running') + '</span></div>'
     + '<a class="stat amber" href="/needs-you"><b>' + m.needs.count + '</b><span>' + (m.needs.count === 1 ? 'thing needs you' : 'things need you') + '</span></a>'
     + '<div class="stat amber"><b>' + stalled + '</b><span>' + (stalled === 1 ? 'line stalled' : 'lines stalled') + '</span></div>'
     + '<div class="stat lav"><b>' + parked + '</b><span>' + (parked === 1 ? 'line parked' : 'lines parked') + '</span></div></div>'
-    + (cards ? '<div class="cards">' + cards + '</div>' : '<p class="empty">No workstream has a track yet.</p>')
     + (quiet ? '<p class="quiet">No tracks yet: ' + quiet + '</p>' : '')
     + proceduresHtml(m.procedures);
 }
@@ -231,37 +186,36 @@ function switcher(cls, chips, current, [one, many]) {
     + plural(chips.length - 1, one, many) + '</span></summary><div class="' + cls + '">' + chips.join('') + '</div></details>';
 }
 
-export function graphData(m) {
-  return { L: m.L, D: m.D, g: { tracks: m.g.tracks, tasks: m.g.tasks, edges: m.g.edges } };
-}
-
-export function workstreamPage(kit, m) {
+/* `at`: the track the picture opens on (?at=TR-n), whose stations the lede then speaks of */
+export function workstreamPage(kit, m, at = null) {
   const { g, D, ws } = m;
   const bar = switcher('wsbar', m.switcher.map((x) => '<a href="/ws/' + encodeURIComponent(x.id) + '"' + (x.id === ws.id ? ' class="on"' : '') + ' title="' + esc(x.name) + '">' + esc(x.id) + '</a>'),
     esc(ws.id), ['other workstream', 'other workstreams']);
-  const cp = D.critical;
-  const needs = m.needs.items.map((i) => { const a = needAside(i); return '<div class="r">' + mark('gated') + '<span>' + needLine(i) + (a ? ' <span class="dim">(' + a + ')</span>' : '') + '</span></div>'; });
+  const W = m.picture && m.picture.ws[ws.id];
+  const cp = W ? W.crit : { n: 0 };
+  const needs = m.needs.items.map((i) => { const a = needAside(i); return '<div class="r">' + mark('gated') + '<span>' + needLine(i) + (a ? ' <span class="dim">' + a + '</span>' : '') + '</span></div>'; });
   const held = g.tracks.filter((tr) => D.tracks[tr.id].state === 'parked' || D.tracks[tr.id].stalled || quietOf(tr)).map((tr) => {
     const T = D.tracks[tr.id];
     return '<div class="r"><span class="dot ' + dotFor(T) + '" style="margin-top:5px"></span><a class="link" href="' + r(tr.id) + '"><span class="id">' + esc(tr.id) + '</span> ' + esc(tr.name) + ': '
       + (T.state === 'parked' ? '<span class="lav">' + esc(parkedWords(tr)) + '</span>' : quietOf(tr) ? quietWords(tr, m.now) + ', open to a take over' : '<span class="dim">' + T.state + '</span>')
       + (T.stalled ? ', <span class="amber">nothing moved for ' + T.days + ' days</span>' : '') + '</a></div>';
   });
-  const graph = g.tracks.length && m.L.lines.length
-    ? '<div class="gbox" id="gbox" data-graph="' + esc(ws.id) + '"></div>' + legendHtml(reviewPlan(g).marks)
+  const graph = W && W.tracks.length ? PICTURE
     : '<p class="empty">' + (g.tracks.length ? 'Every line here is finished: nothing left to draw.' : 'No tracks in this workstream yet.') + '</p>';
   return bar + '<h1>' + esc(ws.name) + '</h1>'
     + '<p class="chain"><a class="link sky" href="/rulings?ws=' + encodeURIComponent(ws.id) + '">Rulings</a><a class="link sky" href="/activity?ws=' + encodeURIComponent(ws.id) + '">Activity</a></p>'
-    + '<p class="lede"><span class="id">' + esc(ws.id) + '</span> &middot; where we stand: each line is a track, each station a task, columns by what waits on what. '
-    + (cp.len ? 'The longest chain left, the critical path, is <b style="color:var(--ink)">' + plural(cp.len, 'task', 'tasks') + '</b>' + (cp.path.length ? ', from ' + esc(cp.path[0]) + ' to ' + esc(cp.path[cp.path.length - 1]) : '') + '. ' : '')
+    + '<p class="lede plede"><span class="id">' + esc(ws.id) + '</span> &middot; where we stand: '
+    + (at ? 'each station a task on its line, what it waits on before it.' : 'each track a pill on the workstream line, in the order they wait on each other.')
+    + ' Press one to see what it waits on and frees; press again to open it. '
+    + (cp.n ? 'The longest chain left, the critical path, is <b style="color:var(--ink)">' + plural(cp.n, 'task', 'tasks') + '</b>, from ' + esc(cp.from) + ' to ' + esc(cp.to) + '. ' : '')
     + inboxWords(ws, m.stallDays) + '.</p>'
     + graph
     + '<div class="below">'
     + '<section class="panel"><h2 class="fh">' + kit.face(m.needs.face) + 'Needs you</h2><div class="rows">' + (needs.length ? needs.join('') : '<span class="empty">Nothing waits on you here.</span>') + '</div></section>'
     + '<section class="panel"><h2>Parked, stalled or quiet</h2><div class="rows">' + (held.length ? held.join('') : '<span class="empty">Every line is moving.</span>') + '</div></section>'
-    + '<section class="panel" id="inbox"><h2>Inbox, ' + plural(m.inboxList.length, 'task', 'tasks') + ' on no track</h2>' + (m.inboxList.length
+    + '<section class="panel" id="inbox"><h2>Inbox, ' + plural(m.inboxList.length, 'task', 'tasks') + ' on no track' + dueWords(m.ws.inboxDue) + '</h2>' + (m.inboxList.length
       ? '<ul class="tl-list">' + m.inboxList.map((t) => '<li><span class="mk">' + mark('waits') + '</span><div><div class="t1">' + idLink(t.id, 'id', t.key) + ' ' + esc(t.name) + '</div>'
-        + '<div class="t2">' + esc(statusWords(t.status || 'open')) + '</div></div><span class="side num">' + esc(t.created ? ago(t.created, m.now) : '') + '</span></li>').join('') + '</ul>'
+        + '<div class="t2">' + (t.status && t.status !== 'open' ? esc(statusWords(t.status)) + ', ' : '') + (t.due ? '<span class="amber">' + wakeHtml(t) + '</span>' : wakeHtml(t)) + '</div></div><span class="side num">' + esc(t.created ? ago(t.created, m.now) : '') + '</span></li>').join('') + '</ul>'
       : '<p class="empty">Nothing waits for a triage pass.</p>') + '</section></div>';
 }
 
@@ -303,7 +257,7 @@ function handoffLi(h, isHere, trackId, now) {
 const HANDOFFS_SHOWN = 6;
 
 export function trackPage(kit, m) {
-  const { g, D, L, track: tv, ws } = m;
+  const { g, D, track: tv, ws } = m;
   const tr = g.tracks.find((x) => x.id === tv.id);
   const T = D.tracks[tv.id];
   // short names keep the switcher to a row or two on a phone; the full name is the hover
@@ -311,14 +265,24 @@ export function trackPage(kit, m) {
     esc(tv.id) + ' ' + esc(shortTitle(tv.name)), ['other track', 'other tracks']);
   const mine = g.tasks.filter((t) => t.track === tv.id && D.tasks[t.id].kind !== 'done');
   const crit = new Set(T.path);
-  const col = (t) => (L.stations[t.id] ? L.stations[t.id].col : 0);
+  // the rest in the track's own order: by how many of its tasks come before each, then by place
+  const before = new Map(mine.map((t) => [t.id, []]));
+  for (const [a, b] of g.edges) if (before.has(a) && before.has(b)) before.get(a).push(b);
+  const depth = new Map();
+  const col = (t) => {
+    if (depth.has(t.id)) return depth.get(t.id);
+    depth.set(t.id, 0); // a loop, refused at write, keeps a bad row from hanging the page
+    const d = before.get(t.id).reduce((n, b) => Math.max(n, col({ id: b }) + 1), 0);
+    depth.set(t.id, d);
+    return d;
+  };
   const now = mine.filter((t) => D.tasks[t.id].kind === 'now' || D.tasks[t.id].kind === 'left');
   const ready = mine.filter((t) => D.tasks[t.id].kind === 'ready');
   const rest = mine.filter((t) => !['now', 'left', 'ready'].includes(D.tasks[t.id].kind)).sort((a, b) => (col(a) - col(b)) || (a.pos - b.pos));
 
   const nowHtml = now.length ? '<ul class="tl-list">' + now.map((t) => {
     const k = D.tasks[t.id];
-    const who = k.kind === 'now' ? '<span class="agent">' + esc(t.agent || 'the session') + '</span>' : '<span class="dim">nobody on it</span>';
+    const who = k.kind === 'now' ? '<span class="agent">' + esc(whoWords(t, 'the session')) + '</span>' : '<span class="dim">nobody on it</span>';
     const li = trackRow(t, k, crit.has(t.id), m.since[t.id] ? 'since ' + when(m.since[t.id], m.now) : '');
     return li.replace('<div class="t1">', '<div class="t2" style="margin:0 0 1px">' + who + '</div><div class="t1">');
   }).join('') + '</ul>' : '<p class="empty">Nothing running.</p>';
@@ -332,7 +296,7 @@ export function trackPage(kit, m) {
     }
     return trackRow(t, k, crit.has(t.id), side);
   }).join('') + '</ul>' : '<p class="empty">Nothing else on this line.</p>';
-  const doneHtml = m.done.length ? '<details class="done-f"><summary>' + m.done.length + ' done</summary><ul class="tl-list" style="margin-top:6px">'
+  const doneHtml = m.done.length ? '<details class="done-f" id="done"><summary>' + m.done.length + ' done</summary><ul class="tl-list" style="margin-top:6px">'
     + m.done.map((t) => '<li><span class="mk">' + mark('done') + '</span><div><div class="t1 dim">' + idLink(t.id, 'id', t.key) + ' ' + esc(t.name) + (t.status === 'dropped' ? ' <span class="dim3">(dropped)</span>' : '') + '</div></div><span class="side"></span></li>').join('')
     + '</ul></details>' : '';
 
@@ -346,7 +310,7 @@ export function trackPage(kit, m) {
     : '<p class="empty">No handoffs yet. A new track\'s kickoff is printed from its tasks and its junction alone.</p>' + copyCmd(tv.id);
 
   const qHtml = m.questions.length ? '<div class="rows">' + m.questions.map((q) => '<div class="r">' + mark(q.status === 'open' ? 'gated' : 'done') + '<span>' + idLink(q.id, 'id', q.key) + ' ' + esc(q.name) + ' '
-    + (q.status === 'open' ? '<span class="amber">needs your answer' + (q.gates.length ? ', holds ' + esc(q.gates.join(', ')) : '') + '</span>'
+    + (q.status === 'open' ? '<span class="amber">needs your answer' + (q.gates.length ? ', ' + holdsHtml(q.gates) : '') + '</span>'
       : '<span class="dim">' + esc(statusWords(q.status)) + (q.pick ? ' ' + esc(q.pick) : '') + '</span>') + '</span></div>').join('') + '</div>'
     : '<p class="empty">No questions asked on this line.</p>';
 
@@ -373,11 +337,12 @@ export function trackPage(kit, m) {
   const trackOf = new Map(g.tasks.map((t) => [t.id, t.track]));
   const cp = T.path.map((id) => idLink(id) + (trackOf.has(id) && trackOf.get(id) !== tv.id ? ' <span class="dim">on ' + esc(trackOf.get(id)) + '</span>' : '')).join(' &rarr; ');
   const doneN = tv.done;
-  // this line, its parents, its side lines and the lines it waits on or holds
   // under the map, what the drawn review covered, each a link to its page
   const covered = g.tasks.filter((t) => t.track === tv.id && t.review && t.kept).map((t) => '<div class="r">' + mark('reviewed') + '<span>' + idLink(t.id, 'id', t.key) + ' ' + esc(shortTitle(t.full || t.title))
     + ' covered ' + ((t.covers || []).map((c) => idLink(c.id, 'id', c.key) + ' ' + esc(shortTitle(c.name))).join(', ') || 'nothing') + '</span></div>').join('');
-  const graph = L.lines.length ? '<div class="gbox" id="gbox" data-graph="' + esc(tv.id) + '"></div>' + covered + legendHtml(reviewPlan(g).marks) : '';
+  // the picture opens on this track's stations, the review readout under it
+  const W = m.picture && m.picture.ws[ws.id];
+  const graph = (W && W.tracks.some((x) => x.id === tv.id) ? PICTURE : '') + (covered ? '<div class="rows covered">' + covered + '</div>' : '');
 
   return pick
     + '<div class="thead"><span class="id" style="font-size:15px">' + esc(tv.id) + '</span><h1 style="margin:0">' + esc(tv.name) + '</h1>' + stateChip(T) + '</div>'
@@ -619,12 +584,12 @@ export function overridePage(kit, m) {
   const field = (x, f) => '<div class="nh" style="margin-top:8px">' + esc(f.field) + '</div>' + (x.removed
     ? '<p class="amber">The text this request removes is not shown here.</p><div class="ba one">' + beside('After', f.after) + '</div>'
     : '<div class="ba">' + beside('Before', f.before) + beside('After', f.after) + '</div>');
-  const recs = m.records.map((x) => '<section class="panel"><h2 class="fh">' + idLink(x.id, 'id', x.key) + ' <span class="chip">' + esc(x.kind) + '</span></h2>'
+  const recs = m.records.map((x) => '<section class="panel"><h2 class="fh">' + idLink(x.id, 'id', x.key) + ' <span class="chip">' + esc(x.kind) + '</span>' + (x.reversal ? ' <span class="chip stale">a reversal of a ruling</span>' : '') + '</h2>'
     + '<p style="margin:0 0 10px">' + esc(x.name) + '</p>' + (x.gone ? '<p class="dim">This record is gone.</p>' : x.fields.map((f) => field(x, f)).join('')) + '</section>').join('');
   const facts = [['asked by', 'a session'], ['asked', dateOf(m.at) + ' ' + clock(m.at)], ['why', m.reason], ['measured', m.text]]
     .map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>').join('');
   return '<div class="rec-h"><span class="id" style="font-size:15px">Override #' + m.request + '</span><span class="chip">' + esc(OVERRIDE_CHIP[m.kind] || m.kind) + '</span>'
-    + (m.reversal ? '<span class="chip stale">a reversal of a ruling, asked alone</span>' : '') + (m.stale ? '<span class="chip stale">' + esc(m.stale) + '</span>' : '') + '</div>'
+    + (m.reversal ? '<span class="chip stale">a reversal of a ruling</span>' : '') + (m.stale ? '<span class="chip stale">' + esc(m.stale) + '</span>' : '') + '</div>'
     + '<h1>' + esc(m.summary) + '</h1>'
     + '<p class="lede">' + esc(overrideWords(m)) + '. Allow or Keep it on the card or the band in the app; this page only reads.</p>'
     + '<section class="panel" style="margin-bottom:14px"><dl class="facts">' + facts + '</dl>'
@@ -638,11 +603,11 @@ export function overridePage(kit, m) {
 function needMeta(i) {
   const where = i.kind === 'question' ? (i.ws ? [i.ws] : []) : i.wsIds;
   const head = i.kind === 'question' ? (i.blocking ? '<span class="amber">blocks on you</span>' : 'waits on you')
-    : i.kind === 'handoff' ? 'waits on you, from handoff ' + idLink(i.handoff, '', i.handoffKey) + ' on ' + idLink(i.id, '', i.key)
+    : i.kind === 'handoff' ? 'waits on you, from handoff ' + idLink(i.handoff, 'nw', i.handoffKey) + ' on ' + idLink(i.id, 'nw', i.key)
       : pressWords(i) + (i.kind === 'override' ? ', ' + plural(i.count, 'record', 'records') : '');
   const at = i.kind === 'question' ? i.created : i.at;
   return [head, where.length ? linkLabels(esc(where.join(', '))) : '', i.kind === 'question' && i.project ? esc(i.project) : '', at ? esc(shortDate(at)) : '',
-    i.kind === 'question' && i.gates.length ? 'holds ' + linkLabels(esc(i.gates.join(', '))) : ''].filter(Boolean).join(' &middot; ');
+    i.kind === 'question' && i.gates.length ? holdsHtml(i.gates) : ''].filter(Boolean).join(' &middot; ');
 }
 
 export function needsYouPage(kit, m) {

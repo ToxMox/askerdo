@@ -1,10 +1,10 @@
 /* The Settings tab: every setting from the
  * settings verb's rows, grouped in its sub-tabs, each row its label, one plain line, a control and a
- * scope chip, a more fold that explains it and an edit-at picker under the chip. Drawn from the
- * read alone; index.ts owns the read and the writes. */
+ * scope chip, a fold that explains it (its ring ending the row's first line) and an edit-at picker
+ * under the chip. Drawn from the read alone; index.ts owns the read and the writes. */
 import { cellWidth, clampWords, dotPicture, statusPicture, switchPicture } from '../../lib/mod-core.mjs'
 import { SKY, pressFace, pressOver } from './status.tsx'
-import { FOLD_CELLS, fitWords, foldHead, paneCells } from './fold.tsx'
+import { FOLD_CELLS, OPEN, SHUT, fitWords, foldEnd, foldHead, foldRing, paneCells } from './fold.tsx'
 
 /* where a write goes: a layer and its record (none for default and this PC) */
 export type SettingsPlace = { level: string; record?: string | null }
@@ -17,6 +17,8 @@ export type SettingsView = {
   gen: Record<string, number>
   /* the text the search field is drawn with, never the typed query, which trails the typing */
   findSeed: string
+  /* the phone sign-in: a mint in flight, the link and its QR rows while it lives, or the refusal */
+  phone?: { busy?: boolean; url?: string; expires?: string; rows?: string[]; error?: string }
 }
 /* json: settings --json; error: the last read failed (the rows are the read before) */
 export type SettingsModel = { json?: any; error?: string; track?: { id: string; name: string } | null; project?: string }
@@ -25,6 +27,7 @@ export type SettingsActions = {
   set: (key: string, value: string, at?: SettingsPlace) => void
   unset: (key: string, at?: SettingsPlace) => void
   rule: (op: 'add' | 'clear' | 'drop', profile: string, slug: string, text?: string, audience?: string) => void
+  phone: () => void
 }
 
 export const newSettingsView = (): SettingsView => ({ sub: 'replies', query: '', only: false, more: new Set(), at: {}, drafts: {}, builtins: false, line: { slug: '', text: '', for: 'both' }, gen: {}, findSeed: '' })
@@ -127,14 +130,18 @@ function scopeHead(d: Draw): any {
 function searchRow(d: Draw): any {
   const { Box, Input, Button } = d.els
   const parts: any[] = []
+  const find: any[] = []
   if (Input) {
-    parts.push(
-      <Box key="set-find-box" flexGrow={1} flexShrink={1} width={18} minWidth={0}>
+    find.push(
+      <Box key="set-find-box" flexShrink={1} minWidth={0}>
         <Input key={fieldKey(d.v, 'set-find', 'find')} placeholder="search every setting" value={d.v.findSeed}
           onInput={(t: string) => { d.v.query = String(t || ''); d.act.redraw() }} onSubmit={(t: string) => { d.v.query = String(t || ''); d.act.redraw() }} />
       </Box>)
   }
-  if (d.v.query.trim()) parts.push(<Box key="set-clear-box" flexShrink={0}><Button key="set-clear" plain dimColor label="clear" onPress={() => { findClear(d.v); d.act.redraw() }} /></Box>)
+  if (d.v.query.trim()) find.push(<Box key="set-clear-box" flexShrink={0}><Button key="set-clear" plain dimColor label="clear" onPress={() => { findClear(d.v); d.act.redraw() }} /></Box>)
+  /* the group grows and the field does not (an Input stops at 20em), so clear sits beside the field
+     and Changed only keeps the row's far end; on a narrow pane the field shrinks before clear wraps */
+  if (find.length) parts.push(<Box key="set-find-row" flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>{find}</Box>)
   parts.push(<Box key="set-only-box" flexShrink={0}>{switchButton(d, 'set-only', d.v.only, 'Changed only', () => { d.v.only = !d.v.only; d.act.redraw() })}</Box>)
   return <Box key="set-search" flexDirection="row" columnGap={1} rowGap={0.5} alignItems="center" flexWrap="wrap">{parts}</Box>
 }
@@ -197,6 +204,8 @@ function tabBody(d: Draw, tab: string): any {
       if (briefs.length) parts.push(card(d, 'set-card-briefs', briefs.map((r: any) => settingRow(d, r)), 'Briefs'))
     } else parts.push(card(d, 'set-card-' + tab, rows.map((r: any) => settingRow(d, r))))
   }
+  /* the one action on This PC leads it, so a phone is a press away without a scroll */
+  if (tab === 'pc' && d.board && !d.v.only) parts.splice(t ? 1 : 0, 0, card(d, 'set-card-phone', [phoneRow(d)]))
   return <Box key={'set-tab-' + tab} flexDirection="column" rowGap={1}>{parts}</Box>
 }
 
@@ -205,28 +214,81 @@ function searchBody(d: Draw, q: string): any {
   const { Box, Text } = d.els
   const hit = (r: any) => [r.label, r.line, r.key].some((s) => String(s || '').toLowerCase().includes(q))
   const groups = ((d.m.json.tabs || []) as any[]).map((t: any) => [t, settingRowsOf(d, t.tab).filter(hit)] as [any, any[]]).filter(([, rs]) => rs.length)
-  const n = groups.reduce((a, [, rs]) => a + rs.length, 0)
+  const phone = d.board && !d.v.only && hit(PHONE)
+  const n = groups.reduce((a, [, rs]) => a + rs.length, 0) + (phone ? 1 : 0)
   const head = n ? plural(n, 'setting') + ' in ' + plural(groups.length, 'tab') + (n === 1 ? ' matches' : ' match') + ' “' + d.v.query.trim() + '”.'
     : 'No setting matches “' + d.v.query.trim() + '”.'
   const parts: any[] = [<Box key="set-sum"><Text weight="semibold" wrap="wrap">{head}</Text></Box>]
   for (const [t, rs] of groups) parts.push(card(d, 'set-found-' + t.tab, rs.map((r: any) => settingRow(d, r)), t.name))
+  if (phone) parts.push(card(d, 'set-card-phone', [phoneRow(d)]))
   return <Box key="set-tab-search" flexDirection="column" rowGap={1}>{parts}</Box>
 }
 
-/* One setting: its label and changed dot, the line with its more press, the control and the chip,
-   the saved line or the refusal, then the more fold and the picker when open. */
+/* a phone signs in to the board's web views with one press and a scan */
+const PHONE = { key: 'phone', label: 'Sign in a phone', line: "A single-use link to the board's web views, drawn as a QR code for the phone's camera." }
+/* the modules dark ink on a white field, as a phone's reader wants on either theme */
+const QR_INK = '#0B0B0B', QR_FIELD = '#FFFFFF', QR_QUIET = 4
+/* the pane's cell in px, and the card's border and padding in cells */
+const CELL_PX = 8.453, CARD_CELLS = 3
+
+/* The rows as an Svg the pane takes: one rect per dark run on a white field with its quiet
+   zone, a whole number of px a module, as large as the card allows up to 6. */
+export function qrPicture(rows: string[], cols: number): { source: string; alt: string; width: number; height: number } {
+  const n = rows.length + 2 * QR_QUIET
+  const scale = Math.max(2, Math.min(6, Math.floor(((cols - CARD_CELLS) * CELL_PX) / n)))
+  let d = ''
+  rows.forEach((row, y) => {
+    for (const m of row.matchAll(/1+/g)) d += 'M' + ((m.index || 0) + QR_QUIET) + ' ' + (y + QR_QUIET) + 'h' + m[0].length + 'v1h-' + m[0].length + 'z'
+  })
+  const px = n * scale
+  const source = '<svg xmlns="http://www.w3.org/2000/svg" width="' + px + '" height="' + px + '" viewBox="0 0 ' + n + ' ' + n + '" shape-rendering="crispEdges">'
+    + '<rect width="' + n + '" height="' + n + '" rx="1" fill="' + QR_FIELD + '"/><path fill="' + QR_INK + '" d="' + d + '"/></svg>'
+  return { source, alt: "QR code of a single-use sign-in link to the board's web views", width: px, height: px }
+}
+
+const clockWords = (iso: string) => {
+  const t = new Date(iso)
+  return Number.isFinite(t.getTime()) ? t.getHours() + ':' + String(t.getMinutes()).padStart(2, '0') : iso
+}
+
+/* the press; once pressed, the code and its expiry until the link dies, then the press again */
+function phoneRow(d: Draw): any {
+  const { Box, Text, Svg } = d.els
+  const p = d.v.phone || {}
+  const live = Array.isArray(p.rows) && p.rows.length > 0 && !!p.url && Date.parse(p.expires || '') > Date.now()
+  const parts: any[] = [labelOf(d, PHONE), <Box key="set-line-phone"><Text dimColor wrap="wrap">{PHONE.line}</Text></Box>]
+  if (live) {
+    const pic = qrPicture(p.rows as string[], d.cols)
+    if (d.desk) parts.push(<Box key="set-phone-qr" flexShrink={0} alignSelf="flex-start"><Svg source={pic.source} alt={pic.alt} width={pic.width} height={pic.height} /></Box>)
+    /* the terminal draws no Svg: the link itself, to open on the phone */
+    else parts.push(<Box key="set-phone-url"><Text wrap="wrap">{p.url}</Text></Box>)
+    parts.push(<Box key="set-phone-until"><Text dimColor wrap="wrap">{'It signs in one phone, once, until ' + clockWords(p.expires as string) + '.'}</Text></Box>)
+  } else if (p.busy) parts.push(<Box key="set-phone-busy"><Text dimColor wrap="wrap">Asking the board for a link...</Text></Box>)
+  else {
+    parts.push(<Box key="set-phone-act" flexDirection="row">{actButton(d, 'set-phone', 'Show a sign-in code', () => d.act.phone())}</Box>)
+    if (p.error) parts.push(<Box key="set-note-phone"><Text color="warning" wrap="wrap"><Text weight="semibold">No code.</Text>{' ' + p.error}</Text></Box>)
+  }
+  return <Box key="set-row-phone" flexDirection="column" rowGap={0.5}>{parts}</Box>
+}
+
+/* the explanation opens and shuts on the pane's one fold control, the ring; the terminal its arrow */
+function moreRing(d: Draw, k: string): any {
+  const { Box, Button } = d.els
+  const open = d.v.more.has(k)
+  const toggle = () => { if (!d.v.more.delete(k)) d.v.more.add(k); d.act.redraw() }
+  if (d.desk) return foldRing(d.els, open, { key: 'set-ring-' + k, pressKey: 'set-more-' + k, press: toggle })
+  return <Box key={'set-ring-' + k} flexShrink={0}><Button key={'set-more-' + k} plain dimColor label={open ? OPEN : SHUT} onPress={toggle} /></Box>
+}
+
+/* One setting: its label and changed dot, its line, the control and the chip, the saved line or
+   the refusal, then the fold and the picker when open; the fold's ring ends the first line. */
 function settingRow(d: Draw, row: any): any {
   const { Box, Text, Button } = d.els
   const k = row.key
-  const more = d.v.more.has(k)
-  const lab = labelOf(d, row)
-  const help = (
-    <Box key={'set-help-' + k} flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="flex-start">
-      <Box key={'set-line-' + k} flexShrink={1} minWidth={0}><Text dimColor wrap="wrap">{row.line}</Text></Box>
-      <Box key={'set-morebox-' + k} flexShrink={0}><Button key={'set-more-' + k} plain dimColor label={more ? 'less' : 'more'} onPress={() => { if (!d.v.more.delete(k)) d.v.more.add(k); d.act.redraw() }} /></Box>
-    </Box>)
+  const ring = moreRing(d, k)
+  const help = <Box key={'set-help-' + k}><Text dimColor wrap="wrap">{row.line}</Text></Box>
   const tail: any[] = []
-  if (more) tail.push(moreFold(d, row))
+  if (d.v.more.has(k)) tail.push(moreFold(d, row))
   if (d.v.picker === k) tail.push(picker(d, row))
   if (d.board && k === 'contract.custom') {
     const say = (
@@ -234,18 +296,20 @@ function settingRow(d: Draw, row: any): any {
         <Text wrap="wrap">Yours ride your profile as rule lines, so every session and agent on every PC carries them:</Text>
         <Button key="set-see-rules" plain label="see Rules" onPress={() => { d.v.sub = 'rules'; findClear(d.v); d.act.redraw() }} />
       </Box>)
-    return <Box key={'set-row-' + k} flexDirection="column" rowGap={0.5}>{[lab, help, say, ...tail]}</Box>
+    return <Box key={'set-row-' + k} flexDirection="column" rowGap={0.5}>{[labelOf(d, row, ring), help, say, ...tail]}</Box>
   }
   const ctl = control(d, row)
   const note = noteOf(d, row)
   const chipBox = chip(d, row)
   if (d.wide) {
+    /* the ring a cell past the chip, at the grid's end */
     return (
       <Box key={'set-row-' + k} flexDirection="column" rowGap={0.5}>
         <Box key={'set-grid-' + k} flexDirection="row" columnGap={2} alignItems="flex-start">
-          <Box key={'set-lc-' + k} width={0} flexGrow={5} flexDirection="column" rowGap={0.3}>{[lab, help]}</Box>
+          <Box key={'set-lc-' + k} width={0} flexGrow={5} flexDirection="column" rowGap={0.3}>{[labelOf(d, row), help]}</Box>
           <Box key={'set-cc-' + k} width={0} flexGrow={4} flexDirection="column" rowGap={0.5}>{[ctl, note]}</Box>
           <Box key={'set-kc-' + k} width={CHIP_COLS} flexShrink={0} flexDirection="row" justifyContent="flex-end">{chipBox}</Box>
+          <Box key={'set-fc-' + k} flexShrink={0} marginLeft={-1}>{ring}</Box>
         </Box>
         {tail}
       </Box>)
@@ -254,7 +318,7 @@ function settingRow(d: Draw, row: any): any {
   const fill = row.editable && ['text', 'texts'].includes(row.kind)
   return (
     <Box key={'set-row-' + k} flexDirection="column" rowGap={0.5}>
-      {lab}
+      {labelOf(d, row, ring)}
       {help}
       <Box key={'set-ck-' + k} flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={0.5} alignItems="center">
         <Box key={'set-cc-' + k} flexShrink={1} minWidth={0} {...(fill ? { width: '100%' } : {})}>{ctl}</Box>
@@ -265,16 +329,19 @@ function settingRow(d: Draw, row: any): any {
     </Box>)
 }
 
-function labelOf(d: Draw, row: any): any {
+/* the label and its changed dot; a ring given ends the line, level with the label's first line */
+function labelOf(d: Draw, row: any, ring?: any): any {
   const { Box, Text, Svg } = d.els
   const k = row.key
   const dot = !row.changed ? null : d.desk ? <Box key={'set-dot-' + k} flexShrink={0}><Svg {...dotPicture()} /></Box>
     : <Text key={'set-dot-' + k} color="suggestion">•</Text>
-  return (
-    <Box key={'set-lab-' + k} flexDirection="row" columnGap={0.8} alignItems="center">
+  const lab = (
+    <Box key={'set-lab-' + k} flexDirection="row" columnGap={0.8} alignItems="center" {...(ring ? { flexShrink: 1, minWidth: 0 } : {})}>
       <Box key={'set-labw-' + k} flexShrink={1} minWidth={0}><Text weight="semibold" wrap="wrap">{row.label}</Text></Box>
       {dot}
     </Box>)
+  if (!ring) return lab
+  return <Box key={'set-labr-' + k} flexDirection="row" columnGap={1} alignItems="flex-start">{lab}{foldEnd(d.els, ring, 1)}</Box>
 }
 
 /* a toggle, a short choice's Buttons, a number or a line with its save, a list with drop and add */
@@ -330,18 +397,20 @@ function control(d: Draw, row: any): any {
       const words = String(t ?? d.v.drafts[k] ?? '').trim()
       if (words) d.act.set(k, JSON.stringify([...list, words]), at)
     }
+    /* minWidth 0: a field's 20em would hold a narrow pane's row open past its edge; its Box never
+       grows past the field (an Input stops at 20em), so Add and Save sit beside it at any width */
     return (
-      <Box key={'set-ctl-' + k} flexDirection="column" rowGap={0.5}>
+      <Box key={'set-ctl-' + k} flexDirection="column" rowGap={0.5} flexShrink={1} minWidth={0}>
         {items.length ? items : <Text key={'set-noitems-' + k} dimColor>None here.</Text>}
         <Box key={'set-addrow-' + k} flexDirection="row" columnGap={1} alignItems="center">
-          <Box key={'set-inbox-' + k} flexGrow={1} flexShrink={1} minWidth={0}><Input key={fieldKey(d.v, 'set-in-' + k, k)} placeholder="your own rule" value={d.v.drafts[k] || ''} onInput={keep} onSubmit={add} /></Box>
+          <Box key={'set-inbox-' + k} flexShrink={1} minWidth={0}><Input key={fieldKey(d.v, 'set-in-' + k, k)} placeholder="your own rule" value={d.v.drafts[k] || ''} onInput={keep} onSubmit={add} /></Box>
           {actButton(d, 'set-add-' + k, 'Add', () => add())}
         </Box>
       </Box>)
   }
   return (
-    <Box key={'set-ctl-' + k} flexDirection="row" columnGap={1} alignItems="center">
-      <Box key={'set-inbox-' + k} flexGrow={1} flexShrink={1} minWidth={0}><Input key={fieldKey(d.v, 'set-in-' + k, k)} placeholder="none" value={draft} onInput={keep} onSubmit={save} /></Box>
+    <Box key={'set-ctl-' + k} flexDirection="row" columnGap={1} alignItems="center" flexShrink={1} minWidth={0}>
+      <Box key={'set-inbox-' + k} flexShrink={1} minWidth={0}><Input key={fieldKey(d.v, 'set-in-' + k, k)} placeholder="none" value={draft} onInput={keep} onSubmit={save} /></Box>
       {actButton(d, 'set-save-' + k, 'Save', () => save())}
     </Box>)
 }
@@ -414,28 +483,46 @@ function moreFold(d: Draw, row: any): any {
   return <Box key={'set-fold-' + k} flexDirection="column" rowGap={0.3} borderStyle="round" borderDimColor backgroundColor={TILE} paddingX={1} paddingY={0.5}>{parts}</Box>
 }
 
+/* a bordered Box's border and padding across, in cells: 1 px and a cell a side on the desktop */
+const boxCells = (d: Draw) => (d.desk ? 2 + 2 / CELL_PX : 4)
+/* a choice's least width in cells: narrower, side by side they squeeze each to a few words */
+const TILE_MIN = 30
+
 function example(d: Draw, row: any): any {
   const { Box, Text } = d.els
   const k = row.key
   const e = row.example
-  const tile = (key: string, cap: string, text: string, now: boolean) => (
-    <Box key={'set-ex-' + k + '-' + key} flexDirection="column" borderStyle="round" {...(now ? { borderColor: SKY } : { borderDimColor: true })} paddingX={1} paddingY={0.3}
-      {...(d.cols >= 60 ? { width: 0, flexGrow: 1 } : {})}>
-      <Text dimColor wrap="wrap">{cap + (now ? ', now' : '')}</Text>
-      {String(text).split('\n').map((l, i) => <Text key={'set-exl-' + k + '-' + key + '-' + i} wrap="wrap">{l}</Text>)}
-    </Box>)
-  const row2 = (kids: any[]) => <Box key={'set-exs-' + k} flexDirection={d.cols >= 60 ? 'row' : 'column'} columnGap={1} rowGap={0.5} alignItems="stretch">{kids}</Box>
+  const tiles: { key: string; cap: string; text: string }[] = []
+  let now = ''
   if (e.kind === 'pair') {
-    const now = row.kind === 'bool' ? (row.value ? 'b' : 'a') : 'b'
-    return row2([tile('a', e.a[0], e.a[1], now === 'a'), tile('b', e.b[0], e.b[1], now === 'b')])
+    now = row.kind === 'bool' ? (row.value ? 'b' : 'a') : 'b'
+    tiles.push({ key: 'a', cap: e.a[0], text: e.a[1] }, { key: 'b', cap: e.b[0], text: e.b[1] })
+  } else if (e.kind === 'values') {
+    now = String(row.value)
+    for (const [val, t] of Object.entries(e.values || {})) tiles.push({ key: val, cap: valueWords(row, val), text: String(t) })
+  } else return <Box key={'set-exs-' + k}><Text wrap="wrap">{e.text}</Text></Box>
+  for (const t of tiles) if (t.key === now) t.cap += ', now'
+  /* Each tile a width from bodyColumns, as many to a row as fit at their least, the rest on new rows;
+     the room is the row's less the card's and the fold's borders and padding. */
+  const box = boxCells(d)
+  const room = d.desk ? d.cols - 2 * box : Math.floor(d.cols - 2 * box)
+  const widest = (s: string) => Math.max(0, ...s.split(/\s+/).map((w) => (d.desk ? paneCells(w) : cellWidth(w))))
+  const least = Math.max(TILE_MIN, Math.ceil(box + Math.max(...tiles.map((t) => Math.max(widest(t.cap), widest(t.text))))))
+  const n = Math.max(1, Math.min(tiles.length, Math.floor((room + 1) / (least + 1))))
+  /* a desktop cell may be cut to a tenth; the terminal's are whole */
+  const share = (room - (n - 1)) / n
+  const width = Math.max(1, d.desk ? Math.floor(share * 10) / 10 : Math.floor(share))
+  const tile = (t: { key: string; cap: string; text: string }) => (
+    <Box key={'set-ex-' + k + '-' + t.key} flexDirection="column" borderStyle="round" {...(t.key === now ? { borderColor: SKY } : { borderDimColor: true })} paddingX={1} paddingY={0.3}
+      width={width} flexShrink={0}>
+      <Text dimColor wrap="wrap">{t.cap}</Text>
+      {t.text.split('\n').map((l, i) => <Text key={'set-exl-' + k + '-' + t.key + '-' + i} wrap="wrap">{l}</Text>)}
+    </Box>)
+  const rows: any[] = []
+  for (let r = 0; r * n < tiles.length; r++) {
+    rows.push(<Box key={'set-exr-' + k + '-' + r} flexDirection="row" columnGap={1} alignItems="stretch">{tiles.slice(r * n, r * n + n).map(tile)}</Box>)
   }
-  if (e.kind === 'values') {
-    const vals = Object.entries(e.values || {})
-    /* three or more choices stack: side by side they squeeze each to a few words */
-    const kids = vals.map(([val, t]: any) => tile(val, valueWords(row, val), t, val === row.value))
-    return vals.length > 2 ? <Box key={'set-exs-' + k} flexDirection="column" rowGap={0.5}>{kids}</Box> : row2(kids)
-  }
-  return <Box key={'set-exs-' + k}><Text wrap="wrap">{e.text}</Text></Box>
+  return <Box key={'set-exs-' + k} flexDirection="column" rowGap={0.5}>{rows}</Box>
 }
 
 /* back to built-in, or off this layer with what applies then */
@@ -575,20 +662,16 @@ function rulesBody(d: Draw): any {
 function listHead(d: Draw, l: any, changed: boolean): any {
   return settingHead(d, { key: l.key || 'rules', label: l.label || '', line: l.line || '', changed })
 }
-/* a list setting's label and line, its more fold the copy alone */
+/* a list setting's label and line, its fold the copy alone */
 function settingHead(d: Draw, row: any): any {
-  const { Box, Text, Button } = d.els
+  const { Box, Text } = d.els
   const k = row.key
-  const more = d.v.more.has(k)
   const l = ((d.m.json.lists || []) as any[]).find((x: any) => x.key === k) || {}
   return (
     <Box key={'set-row-' + k} flexDirection="column" rowGap={0.3}>
-      {labelOf(d, row)}
-      <Box key={'set-help-' + k} flexDirection="row" flexWrap="wrap" columnGap={1}>
-        <Box key={'set-line-' + k} flexShrink={1} minWidth={0}><Text dimColor wrap="wrap">{row.line}</Text></Box>
-        <Box key={'set-morebox-' + k} flexShrink={0}><Button key={'set-more-' + k} plain dimColor label={more ? 'less' : 'more'} onPress={() => { if (!d.v.more.delete(k)) d.v.more.add(k); d.act.redraw() }} /></Box>
-      </Box>
-      {more ? moreFold(d, { ...l, key: k, editable: false }) : null}
+      {labelOf(d, row, moreRing(d, k))}
+      <Box key={'set-help-' + k}><Text dimColor wrap="wrap">{row.line}</Text></Box>
+      {d.v.more.has(k) ? moreFold(d, { ...l, key: k, editable: false }) : null}
     </Box>)
 }
 

@@ -11,7 +11,8 @@ const HINT = { isDraft: false, isWorking: false, hint: '? for shortcuts' }
 /* the engine's own hint under the status line, as status.test.tsx stands it in */
 function world(on: any, opts?: Parameters<typeof base>[1]) {
   const w = base(on, opts)
-  on('ui.render', { component: 'PromptHint' }, () => ({ type: 'Box', props: { key: 'engine-hint' }, children: [] }))
+  w.hints = 0
+  on('ui.render', { component: 'PromptHint' }, () => { w.hints++; return { type: 'Box', props: { key: 'engine-hint' }, children: [] } })
   return w
 }
 const BAND = { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 100, scroll: { offset: 0, bodyRows: 11 }, view: {} }
@@ -248,10 +249,14 @@ describe('the agent guard', () => {
      finished one waits in a fold of its own, shut until pressed, under the running ones */
   test('an agent in flight shows on the status row and Home, and leaves when it ends', async ($: any, on: any) => {
     /* Agents shut under the saved key stays shut after the update, though nothing saved opens it */
-    const w = world(on, { store: { agentsOpen: false } })
+    const card = { id: 'Q106', name: 'store shape', gist: 'One file or many?', blocking: true, pick: 'b',
+      options: [{ type: 'a', option: 'one file', getsYou: 'simple', costsYou: 'churn' }, { type: 'b', option: 'many files', getsYou: 'isolation', costsYou: 'more files' }] }
+    const w = world(on, { store: { agentsOpen: false, told: { 'tu-0': card }, toldAt: { 'msg-1': ['tu-0'] } } })
     /* a hard limit apart from the default, so Home and the row name the same one */
     guardOn(w, { hard: 400000 })
     on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }))
+    let replies = 0
+    on('ui.render', { component: 'AssistantMessage' }, () => { replies++; return { type: 'Box', props: { key: 'engine-reply' }, children: [] } })
     let n = 0
     on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'ag-' + ++n }))
     await start($, w)
@@ -266,23 +271,60 @@ describe('the agent guard', () => {
     expect([label.children.join(''), label.props.color]).toEqual(['1', 'warning'])
     const pane = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'Pane', requestId: 'askerdo', props: { title: 'AskerDo', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } })
     expect([(await pane.find({ key: 'agents-sum' }))?.text, await pane.find({ key: 'agent-ag-1' })]).toEqual([expect.stringContaining('deepest 340k of 400k'), undefined])
+    /* the running time turns over each second on the status row, never a card under a reply */
+    const hint = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'PromptHint', props: HINT })
+    const reply = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AssistantMessage', requestId: 'msg-1', props: { text: 'Q106 waits.', isFirstOfReply: true } })
+    await w.clock.settle()
+    expect(await reply.find({ key: 'qhead-Q106' })).toBeDefined()
+    const [hints, drawn] = [w.hints, replies]
+    for (let i = 0; i < 3; i++) { await w.clock.advance(1000); await w.clock.settle() }
+    expect([w.hints > hints, replies - drawn]).toEqual([true, 0])
+    await reply.unmount()
+    await hint.unmount()
     await ui.press({ key: 'status-agents-open' })
     await w.clock.settle()
     expect((await pane.find({ key: 'agent-ag-1' }))?.text).toMatch(/Opus 5\.5, \D*\d+s,/)
     expect(await pane.find({ key: 'agents-done' })).toBeUndefined()
-    await $.agent.spawn({ description: 'Pane lane', prompt: 'Go.', tool_use_id: 'tu-2' })
-    await $.turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 't-ag-2', reason: 'answer', agentId: 'ag-2' })
+    await $.agent.spawn({ description: 'Pane lane', name: 'pane-lane', prompt: 'Go.', tool_use_id: 'tu-2' })
+    await $.turn.complete({ answer: 'Leg 1 done.\nCONTINUE: docs/pane-state.md, leg 2', durationMs: 5, isAborted: false, turnId: 't-ag-2', reason: 'answer', agentId: 'ag-2' })
     await w.clock.settle()
     expect([(await pane.find({ key: 'agents-done-head' }))?.text, await pane.find({ key: 'agent-ag-2' }), !!(await pane.find({ key: 'agent-ag-1' }))])
       .toEqual([expect.stringMatching(/1 done.*Pane lane/), undefined, true])
+    /* the stop marks the task whose agent is that job, its next leg due; an older board without the verb changes nothing here */
+    const ends = () => w.verbs.filter((v: any) => v.name === 'agentEnded').map((v: any) => [v.body.input.jobs.includes('pane-lane'), v.body.input.how, v.body.session])
+    expect(ends().filter((x: any) => x[1] !== 'running')).toEqual([[true, 'stopped', 'sess-1']])
+    w.fail.agentEnded = 'the board has no verb named "agentEnded"'
     await pane.press({ key: 'agents-done-fold' })
     await w.clock.settle()
     expect([(await pane.find({ key: 'agent-ag-2' }))?.text, !!(await pane.find({ key: 'agent-ag-1' }))]).toEqual([expect.stringContaining('done'), true])
     await $.turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 't-ag-1', reason: 'answer', agentId: 'ag-1' })
     await w.clock.settle()
     expect([await ui.find({ key: 'status-agents' }), await pane.find({ key: 'agents' })]).toEqual([undefined, undefined])
+    /* a nudge sends the stopped lane on: its tasks read running again */
+    await $.agent.spawn({ description: 'Pane lane', name: 'pane-lane', prompt: 'Go on.', tool_use_id: 'tu-3', resume: true })
+    await w.clock.settle()
+    expect(ends().slice(-1)).toEqual([[true, 'running', 'sess-1']])
     await pane.unmount()
     await ui.unmount()
+  })
+
+  /* a hot reload empties the module; the load rebuilds from the store's copy and the
+     engine's list, so the agent still running counts, its own helper under it, and its end lands */
+  test('a reload keeps the session\'s agents, a helper under the agent that started it', async ($: any, on: any) => {
+    const kept = { id: 'ag-r', job: 'Rehearsal', model: 'claude-opus-5-5', calls: 4, tokens: 1000, start: Date.now() - 60000 }
+    const w = world(on, { store: { 'flights:sess-1': { at: Date.now() - 60000, list: [kept] } } })
+    on('agent.list', () => ({ value: [{ id: 'ag-r', description: 'Rehearsal', type: 'general-purpose', status: 'running' },
+      { id: 'ag-h', parentId: 'ag-r', description: 'Helper', type: 'general-purpose', status: 'running' }] }))
+    await start($, w)
+    await w.clock.settle()
+    const pane = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'Pane', requestId: 'askerdo', props: { title: 'AskerDo', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } })
+    expect([(await pane.find({ key: 'agents-head' }))?.text, (await pane.find({ key: 'agent-ag-r' }))?.text, !!(await pane.find({ key: 'agent-ag-h' }))])
+      .toEqual([expect.stringMatching(/1 running/), expect.stringContaining('4 tool calls'), true])
+    await $.turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 't-ag-h', reason: 'answer', agentId: 'ag-h' })
+    await w.clock.settle()
+    expect([(await pane.find({ key: 'agents-head' }))?.text, w.stored['flights:sess-1'].list.map((f: any) => [f.id, !!f.done])])
+      .toEqual([expect.stringMatching(/1 running(?!,)/), [['ag-r', false], ['ag-h', true]]])
+    await pane.unmount()
   })
 })
 

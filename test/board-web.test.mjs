@@ -10,7 +10,8 @@ const w = await import('../server/verbs/work.mjs');
 const t = await import('../server/verbs/tracks.mjs');
 const gr = await import('../server/verbs/graph.mjs');
 const q = await import('../server/verbs/questions.mjs');
-const { SKIN_WEB, drawGraph, lineWords, stripWindows } = await import('../server/web/draw.mjs');
+const { lineWords } = await import('../server/web/draw.mjs');
+const { detail } = await import('../server/web/picture-draw.mjs');
 const o = await import('../server/verbs/override.mjs');
 const pf = await import('../server/verbs/profiles.mjs');
 const u = await import('../server/verbs/upkeep.mjs');
@@ -33,17 +34,17 @@ async function signIn(b) {
 }
 
 const heading = (html) => (/<h1[^>]*>([\s\S]*?)<\/h1>/.exec(html) || [])[1] || '';
-/* the picture a page's script would paint, from the data the page carries */
-function pictureOf(html) {
+/* the picture's data a page carries, P, which the page's script draws */
+function pictureIn(html) {
   const m = /<script type="application\/json" id="gdata">([\s\S]*?)<\/script>/.exec(html);
-  if (!m) return null;
-  const G = JSON.parse(m[1]);
-  return drawGraph(G.L, G.D, G.g, SKIN_WEB, { interactive: true });
+  return m ? JSON.parse(m[1]).P : null;
 }
-/* a station's link and its drawn words (title and hover left out) */
-function station(svg, id) {
-  const m = new RegExp('<a href="([^"]+)"><g class="stn" data-task="' + id + '">[\\s\\S]*?</title>([\\s\\S]*?)</g></a>').exec(svg);
-  return m ? { href: m[1], words: m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ') } : null;
+/* a station's page and the words of its strip, as a press on it shows them */
+function station(P, id) {
+  const t = P && P.tasks[id];
+  if (!t) return null;
+  const V = { level: 2, ws: t.ws, tr: t.tr, sel: 'stn:' + id };
+  return { href: t.url, words: JSON.stringify(detail(P, V, V.sel).facts) };
 }
 
 test('a reused label: a page by it and a day shows the holder then; an old row or note opens its own record', async () => {
@@ -71,12 +72,12 @@ test('a reused label: a page by it and a day shows the holder then; an old row o
 
     /* the track's done row and a note's prose name the task that held the label then */
     const trPage = await get('/r/' + tr.id);
-    const done = /<details class="done-f">[\s\S]*?<a class="id" href="([^"]+)"/.exec(trPage);
+    const done = /<details class="done-f"[^>]*>[\s\S]*?<a class="id" href="([^"]+)"/.exec(trPage);
     assert.match(heading(await get(done[1])), /Paint the lamp room/);
     /* s1's lease, unseen since January, reads quiet and offers a new session the take over */
     assert.ok(trPage.includes('/askerdo resume ' + tr.id + ' --take-over'), 'a quiet lease offers the take over');
     const hangPage = await get('/r/' + hang.id);
-    const note = /<ul class="notes">[\s\S]*?<a href="([^"]+)">/.exec(hangPage);
+    const note = /<ul class="notes">[\s\S]*?<a href="([^"]+)"/.exec(hangPage);
     assert.match(heading(await get(note[1])), /Paint the lamp room/);
     /* the holder reads as a session, never its raw id, and an empty Intent draws no heading */
     assert.match(hangPage, /<dt>inHand<\/dt><dd>a session<\/dd>/);
@@ -100,13 +101,39 @@ test('the drawn pages and the task page: a station opens its own task, a track p
     const cookie = await signIn(b);
     const get = async (p) => (await fetch(b.url + p, { headers: { cookie } })).text();
 
-    const lampSvg = pictureOf(await get('/r/' + lamp.id));
-    assert.ok(lampSvg, 'the track page carries its graph');
-    const h = station(lampSvg, hang.id);
+    const lampP = pictureIn(await get('/r/' + lamp.id));
+    assert.ok(lampP && lampP.ws[harbour.id], 'the track page carries its picture');
+    const h = station(lampP, hang.id);
     assert.match(heading(await get(h.href)), /Hang the lamp/, 'the station opens its own task');
-    assert.ok(h.words.includes(rope.id) && h.words.includes(docks.id), 'the far wait under the waiting station: ' + h.words);
-    const r = station(pictureOf(await get('/ws/' + docks.id)), rope.id);
-    assert.ok(r.words.includes(hang.id) && r.words.includes(harbour.id), 'and under the station it waits on: ' + r.words);
+    assert.ok(h.words.includes(rope.id) && h.words.includes(docks.id), 'the far wait in the waiting station\'s strip: ' + h.words);
+    const r = station(pictureIn(await get('/ws/' + docks.id)), rope.id);
+    assert.ok(r.words.includes(hang.id) && r.words.includes(harbour.id), 'and in the strip of the station it waits on: ' + r.words);
+    /* every module the page's script imports is served, or the picture never draws */
+    const seen = new Set();
+    const follow = async (src) => {
+      if (seen.has(src)) return;
+      seen.add(src);
+      const res = await fetch(b.url + src, { headers: { cookie } });
+      assert.equal(res.status, 200, src);
+      for (const m of (await res.text()).matchAll(/from '\.\/([^']+)'/g)) await follow('/web/' + m[1]);
+    };
+    await follow(/<script type="module" src="([^"]+)"/.exec(await get('/'))[1]);
+    assert.ok(seen.size >= 4, 'the client and the picture modules: ' + [...seen].join(' '));
+    /* a workstream with only an inbox shows once on the Overview, as its pill */
+    const pier = w.createRecord(b.db, { kind: 'workstream', name: 'Pier', description: 'd' }, day);
+    task(pier, 'Count the planks');
+    const home = await get('/');
+    const listed = (/<p class="quiet">([\s\S]*?)<\/p>/.exec(home) || ['', ''])[1];
+    assert.ok(pictureIn(home).ov.some((o) => o.id === pier.id) && !listed.includes(pier.id), 'once, as a pill: ' + listed);
+    /* its inbox panel names a waiting task's wake by its track's name; the task filed in March is due, marked amber */
+    const lit = w.createRecord(b.db, { kind: 'task', name: 'Light the pier', description: 'd', workstream: pier.id, unplaced: 'after the lamp is hung', wake: 'track-ends ' + lamp.id }, day);
+    const rows = (/<section class="panel" id="inbox">([\s\S]*?)<\/section>/.exec(await get('/ws/' + pier.id)) || ['', ''])[1].split('<li>').slice(1);
+    const row = (id) => rows.find((x) => x.includes('>' + id + '<')) || '';
+    assert.ok(row(lit.id).includes('Lamp line') && !/amber/.test(row(lit.id)), 'the wake names the track: ' + row(lit.id));
+    assert.ok(/class="amber">due\b/.test(rows[0]) && rows[0].includes('Count the planks'), 'the due task first, marked due: ' + rows[0]);
+    /* and the Overview's pill for it counts the due as its page does */
+    const pill = pictureIn(await get('/')).ov.find((x) => x.id === pier.id);
+    assert.ok(/\b1 due\b/.test(pill.counts) && pill.due, 'the pill counts the due: ' + pill.counts);
 
     /* the page a station opens says what holds it, what waits on it and the question gating it */
     const ask = q.register(b.db, { name: 'lamp colour', gist: '**The glass:** clear or red\n**Why now:** the lamp is hung next', projectDir: 'C:/repos/harbour', session: 's1', blocking: false,
@@ -129,22 +156,6 @@ test('the drawn pages and the task page: a station opens its own task, a track p
   } finally { await b.close(); }
 });
 
-test('a picture past its box runs in strips line by line, a line only where it has a station or its caption', () => {
-  const mark = (line, x, top) => ({ line, x, top, bottom: top + 80 });
-  const P = { cols: 6, w: 600, h: 400, padX: 10, pitch: 100, marks: [mark('A', 60, 10), mark('A', 260, 10), mark('A', 460, 10), mark('B', 260, 130)],
-    bands: [{ id: 'A', top: 0, h: 100, rows: 30, x1: 5 }, { id: 'B', top: 120, h: 100, rows: 150, x1: 205 }] };
-  const wins = stripWindows(P, 2, 250);
-  assert.deepEqual(wins.map((f) => [Math.round(f.x), Math.round(f.y)]), [[0, 0], [204, 0], [404, 0], [204, 118]]);
-  assert.equal(stripWindows(P, 6, 700).length, 1, 'whole when every column fits');
-  /* drawn as cards, a strip past the caption's is as tall as its stations, not the whole card */
-  const tall = { ...P, split: true, rails: [], skin: { fs: { sub: 12 } }, marks: [mark('A', 60, 10), mark('A', 260, 150)],
-    bands: [{ ...P.bands[0], h: 300, cx: 20 }, { ...P.bands[1], cx: 220 }] };
-  const [first, next] = stripWindows(tall, 2, 250);
-  assert.equal(first.fy1, 0, "the caption's strip keeps the card's top");
-  assert.ok(next.fy1 > 100 && next.fy1 < 150 && next.fy2 >= 230 && next.fy2 < 300, 'the next strip frames its station: ' + [next.fy1, next.fy2]);
-  assert.ok(next.y <= next.fy1 && next.y + next.h >= next.fy2, 'inside its window');
-});
-
 test('a write on the board answers a page held on its long poll', async () => {
   const b = await startBoard();
   try {
@@ -156,7 +167,7 @@ test('a write on the board answers a page held on its long poll', async () => {
     const held = fetch(b.url + '/web/wait?after=' + seq, { headers: { cookie }, signal: AbortSignal.timeout(3000) }).then((r) => r.json());
     const early = await Promise.race([held, new Promise((ok) => setTimeout(() => ok('held'), 150))]);
     assert.equal(early, 'held', 'nothing new yet, so the poll waits');
-    await boardCall('createRecord', { kind: 'task', name: 'One', description: 'A step.', workstream: ws.id });
+    await boardCall('createRecord', { kind: 'task', name: 'One', description: 'A step.', workstream: ws.id, wake: '2099-01-01' });
     assert.ok((await held).seq > seq, 'the write answered the held poll');
     const ahead = await fetch(b.url + '/web/wait?after=' + (seq + 1000), { headers: { cookie }, signal: AbortSignal.timeout(2000) });
     assert.ok((await ahead.json()).seq > seq, 'a page ahead of a restored board is answered at once');
@@ -236,6 +247,11 @@ test('what waits on you reads the same on every view: a question, a live handoff
   const tr = wsm.g.tracks[0];
   assert.equal(tr.since, h.created, 'waiting since its handoff');
   assert.ok(lineWords(tr, wsm.D).some((b) => b[1].includes('Mar 2')), 'not the later note: ' + JSON.stringify(lineWords(tr, wsm.D)));
+  /* the pages carry the redrawn picture's data, the same reading of what holds the line */
+  const pill = over.picture.ov.find((x) => x.id === ws.id);
+  assert.ok(pill && pill.opens && pill.gatedQ.length === 1 && pill.needs, JSON.stringify(pill));
+  const P = wsm.picture.ws[ws.id];
+  assert.deepEqual([P.tracks.map((x) => x.id), P.crit.n, wsm.picture.tasks[hang.id].st], [[line.id], 1, 'gated']);
 });
 
 test('the activity page lists newest first and a workstream keeps its own; the rulings file a question with no workstream under its project', async () => {

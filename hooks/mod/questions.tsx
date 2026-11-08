@@ -250,13 +250,11 @@ export function cardTree(els: any, c: any, view: QuestionsView, act: QuestionsAc
   const metaRow: any[] = [<Box key={'qmetatext-' + c.id} flexShrink={1} flexDirection="row" flexWrap="wrap" columnGap={1}>{meta}</Box>]
   if (c.url) metaRow.push(wordLink(els, 'qlink-' + c.id, c.url, OUT, opts.surface === 'desktop'))
   /* the head leads with a reversal's marker, then the id in bold, then the ask */
-  const beside = c.beside && c.beside.length ? 'Asked in one reply with ' + c.beside.join(', ') + '; a reversal is told alone' : ''
   const groups: any[] = [
     <Box key={'qhead-' + c.id} flexDirection="column">
       {done}
       {queuedLine}
       {c.reverses ? <Box key={'qrev-' + c.id}><Text color="warning" bold>{c.reverses}</Text></Box> : null}
-      {beside ? <Box key={'qbeside-' + c.id}><Text color="warning">{beside}</Text></Box> : null}
       {chipHead}
       <Box key={'qtitle-' + c.id} flexDirection="row" columnGap={1}>
         <Box key={'qglyph-' + c.id} flexShrink={0}>{glyphOf(els, c)}</Box>

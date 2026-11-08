@@ -135,6 +135,47 @@ describe('the procedure watcher', () => {
     expect(pointers(w)[0]).toContain('the edit of public/index.html matches site:public/*.html')
   })
 
+  /* a knowledge record's file glob points as a decision's does, and pointers.knowledge off silences it */
+  const FACT = {
+    id: 'K-20', key: 'kf20abcd', name: 'Schema edits need a migration', type: 'gotcha', files: ['src/db/**'], commands: [],
+    scope: 'project', projectRepos: ['proj'], tasks: [], project: 'C:/src/proj',
+  }
+  const facts = (w: any) => w.appends.filter((m: any) => String(m.content[0].text).startsWith('AskerDo knowledge pointer')).map((m: any) => m.content[0].text)
+
+  test('an edit a knowledge record\'s glob takes points at it once; another file draws nothing', async ($: any, on: any) => {
+    const w = procWorld(on)
+    w.rulings = [FACT]
+    await start($, w)
+    await $.tool.call({ tool: 'Edit', file_path: 'C:/src/proj/src/app.ts', old_string: 'a', new_string: 'b' })
+    /* the first call starts the read; the next ones match against it */
+    await w.clock.settle()
+    expect(facts(w)).toEqual([])
+    await $.tool.call({ tool: 'Edit', file_path: 'C:/src/proj/src/db/schema.ts', old_string: 'a', new_string: 'b' })
+    await $.tool.call({ tool: 'Edit', file_path: 'C:/src/proj/src/db/seed.ts', old_string: 'a', new_string: 'b' })
+    expect(facts(w).length).toBe(1)
+    expect(facts(w)[0]).toContain('K-20')
+    expect(facts(w)[0]).toContain('Schema edits need a migration')
+    await w.clock.advance(8000)
+    await w.clock.settle()
+    expect(w.toasts.some((t: string) => t.includes('K-20'))).toBe(true)
+  })
+
+  test('with pointers.knowledge off, a knowledge record points at nothing and a decision still does', async ($: any, on: any) => {
+    const w = procWorld(on)
+    w.rulings = [RULING, FACT]
+    w.rules = { record: 'proj', inject: true, revision: 'r1', text: 'Rules in force (AskerDo rev r1, for proj):', values: { 'pointers.knowledge': false } }
+    await start($, w)
+    await $.tool.call({ tool: 'Edit', file_path: 'C:/src/proj/src/app.ts', old_string: 'a', new_string: 'b' })
+    await w.clock.settle()
+    await $.tool.call({ tool: 'Edit', file_path: 'C:/src/proj/src/db/schema.ts', old_string: 'a', new_string: 'b' })
+    await w.clock.advance(8000)
+    await w.clock.settle()
+    expect(facts(w)).toEqual([])
+    expect(w.toasts.some((t: string) => t.includes('K-20'))).toBe(false)
+    await $.tool.call({ tool: 'Bash', command: 'git commit -m "release: 1"' })
+    expect(w.appends.some((m: any) => String(m.content[0].text).startsWith('AskerDo decision pointer'))).toBe(true)
+  })
+
   test('a command outside every covered repo and an unrelated command point at nothing', async ($: any, on: any) => {
     const w = procWorld(on)
     w.cwd = 'C:/src/elsewhere'

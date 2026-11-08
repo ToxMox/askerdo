@@ -186,9 +186,7 @@ async function pulled(cfg) {
     /* the board itself only through this PC's local server, never a direct call at session start */
     if (/^https?:/i.test(url) && !localRoute(url)) return cfg;
     const { contractOf } = await import('../server/verbs/profile-rules.mjs');
-    let timer;
-    const late = new Promise((ok) => { timer = setTimeout(() => { pullHung = true; ok(null); }, PULL_MS); });
-    const list = await Promise.race([boardCall('profileList', {}), late]).finally(() => clearTimeout(timer));
+    const list = await inTime(boardCall('profileList', {}));
     if (!list) { log("options pull: no answer in " + PULL_MS / 1000 + " s; built from this PC's copy"); return cfg; }
     const { profile, values } = contractOf(list);
     if (!Object.keys(values).length) return cfg;
@@ -202,6 +200,13 @@ async function pulled(cfg) {
     log("options pull failed, built from this PC's copy: " + ((e && e.message) || e));
     return cfg;
   }
+}
+
+/* a board read at session start waits PULL_MS at most: null when it ran out */
+function inTime(call) {
+  let timer;
+  const late = new Promise((ok) => { timer = setTimeout(() => { pullHung = true; ok(null); }, PULL_MS); });
+  return Promise.race([call, late]).finally(() => clearTimeout(timer));
 }
 
 function read(path) {
@@ -362,6 +367,8 @@ async function hubMain() {
     /* the ensure points the one machine-wide scheduled task, so a sandbox never runs it */
     if (sandbox) appendLog(root, 'board ensure skipped: sandbox seam (' + sandbox.from + ')');
     else await ensureBoard(root);
+    /* a sandbox's rules are not the project's, so it never writes into one */
+    if (!sandbox) await agentsOverride();
     /* the board this PC hosts gets its copy at the day's first session start */
     const { dailyBackup } = await import('../lib/board-backup.mjs');
     await dailyBackup(root, { cfg });
@@ -379,6 +386,26 @@ async function learnProject() {
     for (const a of r.added) log('project map: ' + a.name + ' is ' + a.dir);
   } catch (e) {
     log('ERROR project map ' + ((e && e.message) || e));
+  }
+}
+
+/* Codex's copy of the project's AGENTS.md with the board's rules for agents, written
+   when it changed; the board is reached as the options pull reaches it. */
+async function agentsOverride() {
+  try {
+    const { boardUrl, localRoute } = await import('../lib/board-call.mjs');
+    const url = boardUrl();
+    if (!url || (/^https?:/i.test(url) && !localRoute(url))) return;
+    const { refreshAgentsOverride } = await import('../lib/agents-override.mjs');
+    const r = await inTime(refreshAgentsOverride(process.env.CLAUDE_PROJECT_DIR || process.cwd()));
+    if (!r) log('AGENTS.override.md: no board answer in ' + PULL_MS / 1000 + ' s; left as it was');
+    else if (r.did === 'left') log('left ' + r.path + ' alone: AskerDo did not write it');
+    else if (r.did === 'wrote') {
+      log((r.created ? 'created ' : 'rewrote ') + r.path + (r.left ? ', ' + r.left + " rules or decisions left out for Codex's 32 KiB limit" : '')
+        + (r.excluded ? "; added to the repo's info/exclude" : ''));
+    }
+  } catch (e) {
+    log('ERROR AGENTS.override.md ' + ((e && e.message) || e));
   }
 }
 

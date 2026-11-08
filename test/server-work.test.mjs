@@ -12,7 +12,7 @@ import { fileParts, inTodaysOrder } from './helpers/old-store.mjs';
 
 const w = await import('../server/verbs/work.mjs');
 const L = await import('../server/verbs/labels.mjs');
-const { decide, decisionsFor } = await import('../server/verbs/decisions.mjs');
+const { decide, decisionsFor, decisionTriggers } = await import('../server/verbs/decisions.mjs');
 const { recordHistory } = await import('../server/verbs/history.mjs');
 const { putRecord } = await import('../server/records.mjs');
 const { renderRecord } = await import('../server/render.mjs');
@@ -23,6 +23,7 @@ const qv = await import('../server/verbs/questions.mjs');
 const pf = await import('../server/verbs/profiles.mjs');
 const pv = await import('../server/verbs/procedures.mjs');
 const pr = await import('../server/verbs/projects.mjs');
+const cv = await import('../server/verbs/conversion.mjs');
 
 /* noon on a day, as a session acting then */
 const on = (day, session = 's1') => {
@@ -234,6 +235,20 @@ test('knowledge supersede mints or links the replacement, a superseded fact stay
   const back = w.readRecord(db, d.id);
   assert.deepEqual([back.tasks, back.workstreams, back.labels, back.files], [[task.id], [ws.id], [ws.id], ['lib/*.mjs']]);
   assert.deepEqual(decisionsFor(db, { task: task.id }).map((x) => x.id), [d.id], 'the superseded one is out of force');
+  /* the words' token answers the question the ruling names; without one the result warns it is still open */
+  const ask = () => qv.register(db, {
+    name: 'which', gist: 'Which?', projectRepo: 'C:/repos/app', session: 's1', blocking: false, workstream: ws.id,
+    ask: 'Rows (a, my pick) or cards (b)?', pick: 'a', options: [{ type: 'a', option: 'rows' }, { type: 'b', option: 'cards' }],
+  }, null, on('2026-10-26'));
+  const [q1, q2] = [ask(), ask()];
+  const n1 = q1.id.slice(1);
+  const said = decide(db, { title: 'Cards', words: n1 + 'b, cards it is', question: q1.id, global: true }, on('2026-10-26'));
+  assert.deepEqual([said.answered, said.warning, qv.show(db, { id: q1.id }).status], [q1.id + 'b', undefined, 'answered']);
+  const odd = decide(db, { title: 'Rows', words: q2.id.slice(1) + 'z please', question: q2.id, global: true }, on('2026-10-26'));
+  assert.ok(!odd.answered && /still open/.test(odd.warning), 'a letter no option has answers nothing');
+  const bare = decide(db, { title: 'Rows', words: 'rows', question: q2.id, global: true }, on('2026-10-26'));
+  assert.ok(bare.warning.startsWith(q2.id) && /still open/.test(bare.warning) && !bare.answered, bare.warning);
+  assert.equal(decide(db, { title: 'Again', words: n1 + 'a', question: q1.id, global: true }, on('2026-10-26')).warning, undefined, 'an answered question gives no warning');
 
   /* rewritten in place until another session reads it; then an amend keeps the number and the old text */
   const k = w.createKnowledge(db, { type: 'decision', title: 'Bands first', body: 'bands', global: true, session: 's1' }, on('2026-10-26'));
@@ -242,6 +257,14 @@ test('knowledge supersede mints or links the replacement, a superseded fact stay
   w.editKnowledge(db, { id: k.id, name: 'Bands come first' }, on('2026-10-26'));
   w.readRecord(db, { id: k.id, session: 's2' });
   assert.throws(() => w.editKnowledge(db, { id: k.id, body: 'rows' }, on('2026-10-27')), (e) => /in use \(.*read it/.test(e.message) && !/\bs2\b/.test(e.message));
+  /* a ref and a project change no text a reader relied on, so they land on a record in use */
+  assert.deepEqual(w.editKnowledge(db, { id: k.id, addRef: ['onboard:fact:x'], addProject: ['C:/Work/App'] }, on('2026-10-27')).changed, ['refs', 'projectRepos']);
+  assert.ok(w.readRecord(db, k.id).refs.includes('onboard:fact:x'));
+  /* a gotcha's file globs reach the mod's watcher beside the decisions (its files alone), and an edit adds one */
+  const g = w.createKnowledge(db, { type: 'gotcha', title: 'Schema edits need a migration', body: 'b', files: ['src\\db\\**'], commands: ['npm run db'], projects: ['C:/repos/app'] }, on('2026-10-27'));
+  w.editKnowledge(db, { id: g.id, addFile: ['./migrations/*.sql'] }, on('2026-10-27'));
+  const fired = decisionTriggers(db, { project: 'C:/repos/app' }).find((t) => t.id === g.id);
+  assert.deepEqual([fired.type, fired.files, fired.commands], ['gotcha', ['src/db/**', 'migrations/*.sql'], []]);
   /* the lease names the caller's device, as the amend does, never the hostname its input sent */
   const desk = { ...on('2026-10-27', 's2'), pc: 'DESK' };
   const line = tr.newTrack(db, { name: 'Desk line', workstream: ws.id }, 'cli');
@@ -398,14 +421,15 @@ test('an override: Allow fixes a used record and keeps the old text; Keep stops 
   assert.deepEqual([drop.dropped[1], drop.asker[1]], ['expired', 's1'], 'the drop names the asker for its inbox');
 });
 
-test('an override batch rewrites tasks all or nothing and sets each close; a batch holding a ruling is refused', () => {
+test('an override batch rewrites tasks all or nothing and sets each close; a batch may hold a ruling, as a reversal', () => {
   const { db, ws } = upkeepBoard();
   const [a, b, c] = ['Alpha', 'Beta', 'Gamma'].map((name) => w.createRecord(db, { name, description: 'old ' + name, workstream: ws.id }, on('2026-10-25')));
   for (const t of [a, b]) w.noteRecord(db, { id: t.id, text: 'started' }, on('2026-10-25'));
   const ruling = decide(db, { title: 'Rows first', words: 'rows', global: true }, on('2026-10-25'));
   w.readRecord(db, { id: ruling.id, session: 's2' });
   const items = [{ record: a.id, intent: 'Alpha, clean', close: { kind: 'with', task: c.id } }, { record: b.id, description: 'Beta, clean', close: { kind: 'look' } }];
-  assert.throws(() => ask(db, 'fix', [...items, { record: ruling.id, name: 'Rows' }], '2026-10-26'), /not rulings: K-\d+ is a ruling/);
+  const mixed = o.overrideRequest(db, { kind: 'fix', items: [...items, { record: ruling.id, name: 'Rows' }], reason: 'T-316', summary: 'Two tasks and a ruling', dryRun: true }, on('2026-10-26'));
+  assert.equal(mixed.reversal, true, 'a ruling rides a batch, which is then a reversal');
   const dry = o.overrideRequest(db, { kind: 'fix', items, reason: 'T-316: one clean intent and close per task', summary: 'Two tasks', dryRun: true }, on('2026-10-26'));
   assert.deepEqual([dry.dryRun, dry.measure.records, db.prepare('SELECT count(*) AS n FROM overrides').get().n], [true, 2, 0], 'a dry run measures and writes nothing');
   const first = ask(db, 'fix', items, '2026-10-26');
@@ -514,11 +538,12 @@ test('projects rename moves every record of a project onto its new name in one g
   pf.profileDefine(db, { name: 'dev', set: ['agent.soft=200k'] }, day);
   pf.profileAdd(db, { record: MAIN, name: 'dev', repo: OLD }, day);
   pf.profileAdd(db, { record: TREE, name: 'guard-on', repo: OLD }, day);
+  cv.conversionPut(db, { project: OLD, run: 'r1', rows: [{ source: 'docs/rules.md', kind: 'file', hash: 'abc', records: [k.id] }] }, day);
 
   assert.throws(() => projectsRename(db, { from: OLD, to: 'github.com/someone/other' }, day), /already holds records \(WS-2\)/);
   const rows = db.prepare('SELECT count(*) AS n FROM activity').get().n;
   const dry = projectsRename(db, { from: OLD, to: NEW, folders: [{ from: MAIN, to: 'C:/repos/new-name' }], dryRun: true }, day);
-  assert.deepEqual([dry.moved, dry.retired, dry.unmapped], [{ question: 1, workstream: 1, knowledge: 1, procedure: 1, profile: 1 }, [twin], [TREE]]);
+  assert.deepEqual([dry.moved, dry.retired, dry.unmapped], [{ question: 1, workstream: 1, knowledge: 1, procedure: 1, profile: 1, conversion: 1 }, [twin], [TREE]]);
   assert.equal(db.prepare('SELECT count(*) AS n FROM activity').get().n, rows, 'the dry run writes nothing');
   assert.equal(L.resolveRecord(db, question.id).fields.projectRepo, OLD);
 
@@ -529,6 +554,7 @@ test('projects rename moves every record of a project onto its new name in one g
   assert.deepEqual([at(question.id).projectRepo, at(question.id).project, at(ws.id).projectRepos, at(k.id).projectRepos, at(card).projectRepo, at(twin).status],
     [NEW, 'new-name', [NEW], [NEW], NEW, 'retired']);
   assert.deepEqual(at('WS-2').projectRepos, ['github.com/someone/other'], 'another project stays');
+  assert.deepEqual([cv.conversionMap(db, { project: OLD }).rows.length, cv.conversionMap(db, { project: NEW }).rows.map((r) => r.source)], [0, ['docs/rules.md']], 'the map moves too');
   const subs = pf.loadProfiles(db).subscriptions;
   assert.deepEqual([subs['repo:' + OLD], subs['repo:' + NEW].dirs], [undefined, ['C:/repos/new-name', 'C:/repos/new-name-lane']]);
   /* the readers find the project by its new name */

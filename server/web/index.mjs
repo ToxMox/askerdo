@@ -13,7 +13,7 @@ import {
   faceNow, findRecord, lastSeq, needsYouModel, overviewModel, recordModel, searchModel, trackModel, workstreamKey, workstreamModel,
 } from './data.mjs';
 import {
-  graphData, needsYouPage, notFoundPage, overridePage, overviewPage, pageKit, recordPage, searchPage, shell, signInPage, trackPage, workstreamPage,
+  needsYouPage, notFoundPage, overridePage, overviewPage, pageKit, pictureData, recordPage, searchPage, shell, signInPage, trackPage, workstreamPage,
 } from './pages.mjs';
 import { overrideView } from '../verbs/override.mjs';
 import { boardVersion } from '../version.mjs';
@@ -28,6 +28,10 @@ const STATIC = {
   'board.css': 'text/css; charset=utf-8',
   'client.mjs': 'text/javascript; charset=utf-8',
   'draw.mjs': 'text/javascript; charset=utf-8',
+  /* the picture the client draws, and the model whose since reading it runs */
+  'graph.mjs': 'text/javascript; charset=utf-8',
+  'picture-model.mjs': 'text/javascript; charset=utf-8',
+  'picture-draw.mjs': 'text/javascript; charset=utf-8',
   'geist.woff2': 'font/woff2',
   /* Unraid's Docker tab fetches the app's icon from here */
   'icon.png': 'image/png',
@@ -43,17 +47,21 @@ function loadAssets() {
     files[name] = { body: readFileSync(path), type: STATIC[name] };
     files[name].v = hash(files[name].body);
   }
-  /* the client imports the drawing at its own version */
+  /* each module imports the ones it needs at their own versions, so a module comes after the ones it imports */
+  for (const name of ['draw.mjs', 'graph.mjs', 'picture-model.mjs', 'picture-draw.mjs', 'client.mjs']) {
+    const f = files[name];
+    f.body = Buffer.from(f.body.toString('utf8').replace(/from '\.\/([\w-]+\.mjs)'/g, (m, dep) => (files[dep] ? "from './" + dep + '?v=' + files[dep].v + "'" : m)));
+    f.v = hash(f.body);
+  }
   const client = files['client.mjs'];
-  client.body = Buffer.from(client.body.toString('utf8').replace("'./draw.mjs'", "'./draw.mjs?v=" + files['draw.mjs'].v + "'"));
-  client.v = hash(client.body);
   const css = files['board.css'];
   css.body = Buffer.from(css.body.toString('utf8').replace('/web/geist.woff2', '/web/geist.woff2?v=' + files['geist.woff2'].v));
   css.v = hash(css.body);
   /* the real marks, byte for byte, as data URLs */
   const svg = (f) => 'data:image/svg+xml;base64,' + readFileSync(join(HERE, 'assets', f)).toString('base64');
   const marks = { app: svg('app-mark-dark.svg'), waiting: svg('favicon.svg'), quiet: svg('favicon-quiet.svg'), blocking: svg('favicon-blocking.svg') };
-  return { files, kit: pageKit({ marks, assets: { css: '/web/board.css?v=' + css.v, client: '/web/client.mjs?v=' + client.v }, version: boardVersion() }) };
+  const icons = { fav: readFileSync(join(HERE, 'assets', 'favicon.svg'), 'utf8') };
+  return { files, kit: pageKit({ marks, icons, assets: { css: '/web/board.css?v=' + css.v, client: '/web/client.mjs?v=' + client.v }, version: boardVersion() }) };
 }
 
 /* A path segment decoded, or null when it is not valid percent-encoding. */
@@ -86,14 +94,14 @@ export function createWeb({ db, clock = null } = {}) {
     return shell(kit, { title, view, main, seq: seq ?? lastSeq(db), face: face || faceNow(db, opts()), links: navLinks(db, ws, track), data, status });
   }
 
-  function wsPage(key) {
+  function wsPage(key, at = null) {
     const m = workstreamModel(db, key, opts());
-    return page('ws', m.ws.id + ' ' + m.ws.name, workstreamPage(kit, m), { seq: m.seq, ws: m.ws.id, data: graphData(m) });
+    return page('ws', m.ws.id + ' ' + m.ws.name, workstreamPage(kit, m, at), { seq: m.seq, ws: m.ws.id, data: pictureData(kit, m.picture, { kind: 'ws', ws: m.ws.id }) });
   }
 
   function trackPageOf(key) {
     const m = trackModel(db, key, opts());
-    return page('track', m.track.id + ' ' + m.track.name, trackPage(kit, m), { seq: m.seq, ws: m.ws.id, track: m.track.id, data: m.L.lines.length ? graphData(m) : null });
+    return page('track', m.track.id + ' ' + m.track.name, trackPage(kit, m), { seq: m.seq, ws: m.ws.id, track: m.track.id, data: m.picture ? pictureData(kit, m.picture, { kind: 'track', ws: m.ws.id, tr: m.track.id }) : null });
   }
 
   function recordRoute(label, at) {
@@ -199,11 +207,11 @@ export function createWeb({ db, clock = null } = {}) {
     let out;
     if (path === '/' || path === '') {
       const m = overviewModel(db, opts());
-      out = page('overview', 'AskerDo board', overviewPage(kit, m), { seq: m.seq, face: m.face });
+      out = page('overview', 'AskerDo board', overviewPage(kit, m), { seq: m.seq, face: m.face, data: pictureData(kit, m.picture, { kind: 'overview' }) });
     } else if (path.startsWith('/ws/')) {
       const label = decoded(path.slice(4));
       const key = label === null ? null : workstreamKey(db, label);
-      out = key ? wsPage(key) : page('ws', 'Not found', notFoundPage(kit, 'No workstream is labelled ' + (label ?? path.slice(4)) + '.'), { status: 404 });
+      out = key ? wsPage(key, url.searchParams.get('at')) : page('ws', 'Not found', notFoundPage(kit, 'No workstream is labelled ' + (label ?? path.slice(4)) + '.'), { status: 404 });
     } else if (path.startsWith('/r/')) {
       const label = decoded(path.slice(3));
       const at = url.searchParams.get('at') || undefined;

@@ -1,6 +1,6 @@
 {
   "name": "askerdo",
-  "version": "0.8.15",
+  "version": "0.8.16",
   "description": "Questions, tracks and handoffs for Claude Code sessions on one board for every PC, with a glanceable reply contract, a band and pane in the app, and a tray for notifications",
   "author": {
     "name": "ToxMox",
@@ -9,6 +9,7 @@
   "homepage": "https://github.com/ToxMox/askerdo",
   "repository": "https://github.com/ToxMox/askerdo",
   "license": "MIT",
+  "types": "./types/index.d.ts",
   "keywords": [
     "formatting",
     "replies",

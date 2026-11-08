@@ -23,6 +23,8 @@ export const READS_SINCE = 'reads.since';
 /* the commits each task finished with and the reviews' covers, one row per line */
 export const COMMITS_FILE = 'coverage/commits.jsonl';
 export const COVERS_FILE = 'coverage/covers.jsonl';
+/* each project's conversion map, one row per line */
+export const CONVERSION_FILE = 'conversion/map.jsonl';
 /* the override requests waiting at the export, one per line; a scrub's seal never leaves the database */
 export const OVERRIDES_FILE = 'overrides/pending.jsonl';
 /* the board's settings (meta rows), so automatic upkeep stays on through an export and import */
@@ -133,8 +135,12 @@ export function* storeFiles(db) {
   yield { path: READS_FILE, text: readsText(since ? since.value : null, reads) };
   const commits = db.prepare('SELECT repo, sha, task, at, via, session, agent_job, files, added, removed, linked FROM commits ORDER BY repo, sha, task').all();
   if (commits.length) yield { path: COMMITS_FILE, text: commits.map((r) => JSON.stringify({ ...r, files: JSON.parse(r.files) })).join('\n') + '\n' };
-  const covers = db.prepare('SELECT review, task, at, through, through_at FROM covers ORDER BY review, task').all();
-  if (covers.length) yield { path: COVERS_FILE, text: covers.map((r) => JSON.stringify({ ...r })).join('\n') + '\n' };
+  /* given only where a row carries it, so a row from before the flag renders as it did */
+  const covers = db.prepare('SELECT review, task, at, through, through_at, given FROM covers ORDER BY review, task').all()
+    .map(({ given, ...r }) => (given === null ? { ...r } : { ...r, given: given === 1 }));
+  if (covers.length) yield { path: COVERS_FILE, text: covers.map((r) => JSON.stringify(r)).join('\n') + '\n' };
+  const conv = db.prepare('SELECT project, source, kind, hash, sha, records, fate, why, answer, detail, run, at FROM conversion ORDER BY project, source').all();
+  if (conv.length) yield { path: CONVERSION_FILE, text: conv.map((r) => JSON.stringify({ ...r, records: JSON.parse(r.records), detail: JSON.parse(r.detail) })).join('\n') + '\n' };
   const set = db.prepare(`SELECT name, value FROM meta WHERE name IN (${SETTINGS.map(() => '?').join(', ')}) ORDER BY name`).all(...SETTINGS);
   if (set.length) yield { path: SETTINGS_FILE, text: JSON.stringify(Object.fromEntries(set.map((r) => [r.name, r.value])), null, 2) + '\n' };
   const reqs = db.prepare('SELECT id, kind, summary, reason, session, at, reversal, measure, changed FROM overrides ORDER BY id').all();

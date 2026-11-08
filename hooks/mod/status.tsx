@@ -7,7 +7,7 @@ import { cardText, cellWidth, chipGroups, chipHeader, rowParts, rowsText, status
 
 type CardPart = { text: string; tone?: string; pic?: any; href?: string; weight?: string }
 /* an agent's row in its card, its depth bar drawn on the desktop */
-type CardRow = { id: string; job: string; detail: string; tone: string; done?: boolean; meter?: any }
+type CardRow = { id: string; job: string; detail: string; tone: string; done?: boolean; meter?: any; under?: number }
 export type StatusSegment = {
   key: string; text: string; tone: string; tip: string; press?: string; href?: string; pic?: any; empty?: boolean
   card?: { title: string; parts: CardPart[]; press?: string; rows?: CardRow[]; head?: CardHead; groups?: CardFact[][]; where?: CardFact[] | null; questions?: any[]; here?: any; foot?: string }
@@ -106,14 +106,15 @@ export function pressOver(els: any, key: string, cells: number, act: () => void,
 /* a face and its press as one, the one grey highlight: the face drawn on
    its own Box (PRESS_LIT), whose hover lights behind the icon and label, inside PRESS_RIM, which
    cuts the light to a subtle corner and gives the room back. shrink: the face may be cut. */
-export function pressFace(els: any, key: string, face: any, press: any, o: { shrink?: boolean; gap?: number; chip?: { pick?: boolean; only?: boolean; lit?: boolean } } = {}): any {
+export function pressFace(els: any, key: string, face: any, press: any, o: { shrink?: boolean; gap?: number; chip?: { pick?: boolean; only?: boolean; lit?: boolean; still?: boolean } } = {}): any {
   const { Box } = els
   if (o.chip) {
     /* a band chip is one Box, its own fill lit grey, 28 px on the 20 px line, the kit's corner by a border sky on the pick;
-       the chip whose strip is open stays lit, rimmed in sky */
+       the chip whose strip is open stays lit, rimmed in sky; a still chip takes no press, so no light */
     const pad = o.chip.only ? { paddingX: CHIP_ONLY_X } : { paddingLeft: CHIP_LEFT, paddingRight: CHIP_RIGHT }
+    const { hover, ...rest } = CHIP
     return (
-      <Box key={key} {...CHIP} borderColor={o.chip.pick || o.chip.lit ? SKY : CLEAR} {...(o.chip.lit ? { backgroundColor: CHIP_LIT } : {})} {...pad} flexShrink={0}>{face}{press}</Box>
+      <Box key={key} {...(o.chip.still ? rest : CHIP)} borderColor={o.chip.pick || o.chip.lit ? SKY : CLEAR} {...(o.chip.lit ? { backgroundColor: CHIP_LIT } : {})} {...pad} flexShrink={0}>{face}{press}</Box>
     )
   }
   const size = o.shrink ? { flexShrink: 1, minWidth: 0 } : { flexShrink: 0 }
@@ -386,8 +387,10 @@ export function agentRow(els: any, r: CardRow, prefix: string, glyph?: string): 
   const m = r.meter
   const bar = m && Svg ? <Box key={prefix + 'bar-' + r.id} flexShrink={0}><Svg source={m.source} alt={m.alt} width={m.width} height={m.height} /></Box>
     : glyph ? <Box key={prefix + 'bar-' + r.id} flexShrink={0}><Text {...(TONES[ROW_TONE[r.tone]] || {})}>{glyph}</Text></Box> : null
+  /* an agent another agent started is indented under it */
+  const under = Math.min(2, Number(r.under) || 0)
   return (
-    <Box key={prefix + r.id} flexDirection="row" columnGap={1}>
+    <Box key={prefix + r.id} flexDirection="row" columnGap={1} {...(under ? { paddingLeft: 3 * under } : {})}>
       {bar}
       <Box key={prefix + 'body-' + r.id} flexDirection="column" flexShrink={1}>
         <Text {...(r.done ? { dimColor: true } : { weight: 'semibold' })} wrap="wrap">{r.job}</Text>

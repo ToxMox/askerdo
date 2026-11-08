@@ -488,17 +488,31 @@ describe('the band', () => {
     w.change()
     await w.clock.settle()
     expect((await ui.find({ key: 'band-offline' }))?.text).toContain('board offline')
+    /* a board that refuses this PC's protocol draws one row naming the update in place of
+       the offline line, and /askerdo leads with it */
+    const one = [q('Q106', 'store shape')]
+    w.near = () => ({ ...live(), questions: one, model: bandModel({ questions: one, shelfRows: [], sid: 'sess-1' }), online: false, offline: true, stale: true, board: 'board offline: refused',
+      protocol: { key: 'board', says: 'update the board server: it speaks protocol 1 and this PC 2, so it refuses this PC', fix: 'back it up, then rebuild it', pc: 2, board: 1 } })
+    w.change()
+    await w.clock.settle()
+    const health = async () => (await rowKeys(ui)).find((k: string) => k.startsWith('call-health'))
+    expect(await ui.find({ key: 'band-offline' })).toBeUndefined()
+    expect((await ui.find({ key: (await health())! }))!.text).toMatch(/board server[^]*rebuild/)
+    /* its cached chips draw with no press, since none could land */
+    expect([await ui.find({ key: 'answer-106a' }), !!(await ui.find({ key: 'answerstill-106a' }))]).toEqual([undefined, true])
+    expect((await $.command.run({ command: 'askerdo', args: '' })).text).toMatch(/needs a fix: Update the board server/)
     w.near = live
     w.change()
     await w.clock.settle()
-    expect(await ui.find({ key: 'band-offline' })).toBeUndefined()
+    expect([await ui.find({ key: 'band-offline' }), await health()]).toEqual([undefined, undefined])
     /* the local server gone and its start refused, the band says why; no store read stands in */
+    const ran = w.cliRuns().length
     w.serverDown = true
     w.fail.board = 'the port is taken'
     w.change()
     await w.clock.settle()
     expect((await ui.find({ key: 'band-offline' }))?.text).toContain('the port is taken')
-    expect(w.cliRuns().filter((r: any) => ['activity', 'list', 'shelf'].includes(r.args[0]))).toEqual([])
+    expect(w.cliRuns().slice(ran).filter((r: any) => ['activity', 'list', 'shelf'].includes(r.args[0]))).toEqual([])
     await ui.unmount()
   })
 

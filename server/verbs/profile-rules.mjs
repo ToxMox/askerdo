@@ -7,7 +7,7 @@ import { isKey } from '../records.mjs';
 
 /* The working-rule line each value writes into the rules in force; the settings'
    examples read these same lines. */
-const RULE_TEXT = {
+export const RULE_TEXT = {
   'tests.policy': {
     few: 'Few tests: one only for a failure someone would actually hit or a standing ruling, one per behaviour at the cheapest layer, extending an existing test first; never a test per item; report tests added and removed.',
     standard: 'Tests as the change needs, extending existing test files first.',
@@ -124,17 +124,17 @@ export const SETTINGS = Object.freeze({
     kind: 'slugs', def: [], rule: true, list: true, label: 'Dropped lines', takes: 'rules',
     line: 'A built-in or wider line you switch off here and below.',
     changes: 'Switches a line off by its name at this layer and every narrower one; the line comes back when you drop the drop.',
-    example: { kind: 'text', text: 'Drop opus-workers on a track, and its agents no longer hear the built-in line about Opus workers.' },
+    example: { kind: 'text', text: 'Drop lay-out-first on a track, and its sessions and agents no longer hear the built-in line about laying work out on the track first.' },
   },
   /* review coverage, read by the board wherever it totals a track's code */
   'review.depth': {
     kind: 'choice', values: ['off', 'light', 'full'], def: 'light', label: 'Review coverage', takes: 'review',
     line: 'How closely the board tracks which finished code a review has read.',
-    changes: "Off computes and shows nothing. Light nudges on the band and the Tracks tab once a track's unreviewed code tasks reach the review size. Full also reopens a completed review when work it read changes, so what waits on it waits again, and holds a track's finish until a review covers its finished code.",
+    changes: "Off computes and shows nothing. Light nudges on the Tracks tab, in the kickoff and the handoff once a track's unreviewed code tasks reach the review size. Full also reopens a completed review when work it read changes, so what waits on it waits again, and holds a track's finish until a review covers its finished code.",
     choices: { off: 'off', light: 'a nudge', full: 'nudge and gates' },
     example: { kind: 'values', values: {
-      off: 'Nothing about reviews on the band, the Tracks tab or a kickoff.',
-      light: 'Five code tasks on TR-4 since its last review: the band shows review due and the Tracks tab marks the track.',
+      off: 'Nothing about reviews on the Tracks tab, the kickoff or the handoff.',
+      light: 'Five code tasks on TR-4 since its last review: the Tracks tab marks the track review due and the kickoff names it.',
       full: 'T-12 gains a commit after its review T-14 completed: T-14 reopens and the tasks after it wait again; TR-4 finishes only once a review covers its code, or with a waiver.',
     } },
   },
@@ -149,6 +149,20 @@ export const SETTINGS = Object.freeze({
     line: 'Files a review never needs to read, as globs.',
     changes: 'A commit that changes only these files counts as no code, so its task needs no review. Lockfiles, generated files, docs and Markdown are never counted.',
     example: { kind: 'text', text: 'build/generated/** and schema/*.gen.ts: a commit that only regenerates these needs no review.' },
+  },
+  /* the drift line on the pane's Home, read once as a session starts */
+  'doctor.drift': {
+    kind: 'bool', def: true, label: 'Drift line', takes: 'drift',
+    line: "Home says when the project's rules or CLAUDE.md point at files that are gone, or a retired workflow folder gains files.",
+    changes: "On, each session start checks the paths that CLAUDE.md, AGENTS.md and the rule lines in force cite, the rule lines' length, and, where the project was onboarded, the retired workflow folders; Home shows one line only when something is off. Off, Home never shows it.",
+    example: { kind: 'pair', a: ['Off', 'Home shows no drift line, whatever the project cites.'], b: ['On', 'Drift: handoff/ holds 3 files again since the conversion of 2026-11-02 (next.md and more); CLAUDE.md cites RESULTS.md (retired); run the doctor'] },
+  },
+  /* the mod's pointer at a knowledge record whose file globs an edit matches */
+  'pointers.knowledge': {
+    kind: 'bool', def: true, label: 'Knowledge pointers', takes: 'pointers',
+    line: 'A session editing a file a knowledge record names is pointed at that record.',
+    changes: "On, an edit of a file one of a knowledge record's file globs takes gets a toast and a one-line pointer naming the record and its title, once per record in a session; nothing is blocked. Off, knowledge records point at nothing. Decisions and procedure cards point either way.",
+    example: { kind: 'pair', a: ['Off', 'An edit of src/db/schema.ts draws no pointer, whatever the knowledge records name.'], b: ['On', 'An edit of src/db/schema.ts: knowledge K-41 (Migrations run in order) is about it; askerdo show K-41 reads it whole.'] },
   },
   /* a board user's options (config.json less the board keys and the queue,
      which the join sets per PC), read from the profiles held on default */
@@ -337,6 +351,8 @@ export const TAKES_EFFECT = Object.freeze({
   backups: 'The next copy: askerdo backup, or the first session start of the next day.',
   presses: "This session's cards at once when saved from its Settings tab; other open sessions at their next start.",
   updates: "The app's switch at once; the app looks for a new AskerDo as each session starts.",
+  drift: 'Each session at its next start: Home reads the line once as the session starts.',
+  pointers: "From your next prompt in every open session, its agents' edits included: the session reads the rules in force again when a profile changes.",
 });
 /* settings that are gone; a stored value is ignored, a new set refused in these words */
 export const RETIRED = Object.freeze({ 'contract.name': 'The name setting is retired: the contract always says "the user" (contract.name)' });
@@ -700,7 +716,6 @@ export function settingsText(settings) {
 
 /* Free-text lines the built-in level carries; a profile drops one by its slug. */
 export const BUILTIN_LINES = Object.freeze([
-  { slug: 'opus-workers', text: 'Dispatch workers on Opus; keep the session model for design and final judgment, and never tag fable.' },
   { slug: 'audits-and-seams', text: "An audit is intent coverage: every record in scope, open or closed, clause by clause against evidence in the repo (a journal's done is a claim), then the work no record carries; a status review is never called an audit. A review reads the seams: every reader of what each change touched, read against it, and one real call through each flow the changes touched; a fake on the other side is not evidence." },
   { slug: 'run-it-first', text: 'Ask the user to look, test or sit, or for a commit, push or release go, only once every audit, fix and open decision that could change it has landed and the related work is closed; before a look, run each step yourself on their surface and ask only for what needs their hand.' },
   { slug: 'lessons-to-profile', text: "A lasting working lesson goes into a profile rule on the board, never only into one machine's memory." },
@@ -780,6 +795,8 @@ export function rulesBlock(eff) {
   const agents = blockOf(eff.record, rows.filter((r) => r.for !== 'session'), split ? 'its agents' : '');
   const values = {};
   for (const k of RULE_KEYS) values[k] = eff.settings[k].value;
+  /* the mod skips the drift line and the knowledge pointers on these */
+  for (const k of ['doctor.drift', 'pointers.knowledge']) if (eff.settings[k]) values[k] = eff.settings[k].value;
   return { record: eff.record, inject: eff.settings['dispatch.inject'].value !== false, revision: agents.revision, text: agents.text, rows, values, session, agents };
 }
 
@@ -841,11 +858,11 @@ export function contractHeld(data) {
 
 /* ---- the settings list: one row per setting for every renderer --- */
 
-export const FAMILIES = Object.freeze(['contract', 'handoffs and context', 'agents', 'tests', 'reviews', 'dispatch', 'rule lines', 'this PC']);
-const FAMILY_BY = { contract: 'contract', main: 'handoffs and context', agent: 'agents', tests: 'tests', review: 'reviews', dispatch: 'dispatch', rules: 'rule lines' };
+export const FAMILIES = Object.freeze(['contract', 'handoffs and context', 'agents', 'tests', 'reviews', 'dispatch', 'rule lines', 'doctor', 'pointers', 'this PC']);
+const FAMILY_BY = { contract: 'contract', main: 'handoffs and context', agent: 'agents', tests: 'tests', review: 'reviews', dispatch: 'dispatch', rules: 'rule lines', doctor: 'doctor', pointers: 'pointers' };
 /* the pane's sub-tabs and the board page's groups, in order */
 export const TABS = Object.freeze([['replies', 'Replies'], ['sessions', 'Sessions'], ['agents', 'Agents'], ['tests', 'Tests'], ['rules', 'Rules'], ['pc', 'This PC']]);
-const TAB_BY = { contract: 'replies', main: 'sessions', agent: 'agents', dispatch: 'agents', tests: 'tests', review: 'tests', rules: 'rules' };
+const TAB_BY = { contract: 'replies', main: 'sessions', agent: 'agents', dispatch: 'agents', tests: 'tests', review: 'tests', rules: 'rules', doctor: 'sessions', pointers: 'sessions' };
 /* the scope chip's words for a layer, and whom a value set there reaches */
 const SCOPE = { 'built-in': 'built-in', default: 'everywhere', project: 'this project', workstream: 'this workstream', track: 'this track only', task: 'this task only', pc: 'this PC' };
 const REACH = {

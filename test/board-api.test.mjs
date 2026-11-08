@@ -10,10 +10,11 @@ import { childEnv, tempDir } from './helpers/sandbox.mjs';
 import { runCli } from './helpers/cli.mjs';
 
 process.removeAllListeners('warning');
-const { boardCall, boardEvents, boardJoin, boardJoinCode, boardLoginLink, boardRequest, startBoard } = await import('../lib/board-call.mjs');
+const { boardCall, boardEvents, boardJoin, boardJoinCode, boardLoginLink, boardRequest, loginUrl, phoneUrl, startBoard } = await import('../lib/board-call.mjs');
 const { newToken, revokeToken } = await import('../server/api.mjs');
 const { dataDir, storeRoot } = await import('../lib/node-helpers.mjs');
 const { hostDir } = await import('../lib/board-host.mjs');
+const { PROTOCOL } = await import('../server/paths.mjs');
 
 process.env.ASKERDO_SANDBOX_HOME = tempDir('askerdo-store-');
 
@@ -68,15 +69,21 @@ test('a verb over HTTP with a device token writes and reads back; no token or a 
   } finally { await b.close(); }
 });
 
-test('a PC on another protocol version gets a plain message naming both', async () => {
+test('a PC on another protocol is refused with words naming the side to update and how, and /health names the protocol', async () => {
   const b = await startBoard();
   try {
-    const r = await raw(b.url + '/api/v1/snapshot', { authorization: 'Bearer ' + b.token, 'x-askerdo-protocol': '99' });
-    assert.equal(r.status, 426);
-    const msg = JSON.parse(r.body).error;
-    assert.match(msg, /99/);
-    assert.match(msg, /speaks (protocol )?1\b/);
-    assert.doesNotMatch(r.body, /at .*\.mjs/, 'never a stack');
+    const ask = async (v) => {
+      const r = await raw(b.url + '/api/v1/snapshot', { authorization: 'Bearer ' + b.token, 'x-askerdo-protocol': String(v) });
+      return { status: r.status, body: JSON.parse(r.body), raw: r.body };
+    };
+    const newer = await ask(PROTOCOL + 1);
+    const older = await ask(PROTOCOL - 1);
+    assert.deepEqual([newer.status, older.status], [426, 426]);
+    assert.equal(newer.body.data.protocol, PROTOCOL, 'a newer PC words it from its own side');
+    assert.match(newer.body.error, /board server/);
+    assert.match(older.body.error, /claude plugin update askerdo/, 'an older PC shows these words as they come');
+    assert.doesNotMatch(newer.raw + older.raw, /at .*\.mjs/, 'never a stack');
+    assert.equal(JSON.parse((await raw(b.url + '/health')).body).protocol, PROTOCOL, 'askerdo status compares this');
   } finally { await b.close(); }
 });
 
@@ -87,14 +94,14 @@ test('a PC resuming from its cursor gets exactly the missing events, in order, o
     useBoard(b);
     const ws = await boardCall('createRecord', { kind: 'workstream', name: 'Board', description: 'One board.' });
     const cursor = lastSeq(b.db);
-    await boardCall('createRecord', { kind: 'task', name: 'One', description: 'A step.', workstream: ws.id });
-    await boardCall('createRecord', { kind: 'task', name: 'Two', description: 'A step.', workstream: ws.id });
+    await boardCall('createRecord', { kind: 'task', name: 'One', description: 'A step.', workstream: ws.id, wake: '2099-01-01' });
+    await boardCall('createRecord', { kind: 'task', name: 'Two', description: 'A step.', workstream: ws.id, wake: '2099-01-01' });
     const missed = b.db.prepare('SELECT seq FROM activity WHERE seq > ? ORDER BY seq').all(cursor).map((r) => r.seq);
 
     const got = [];
     streams.push(boardEvents({ after: cursor, onEvent: (name, data, id) => { if (name !== 'ping' && name !== 'board') got.push({ name, id, data }); } }));
     await until(() => got.length >= missed.length);
-    await boardCall('createRecord', { kind: 'task', name: 'Three', description: 'A step.', workstream: ws.id });
+    await boardCall('createRecord', { kind: 'task', name: 'Three', description: 'A step.', workstream: ws.id, wake: '2099-01-01' });
     const all = b.db.prepare('SELECT seq FROM activity WHERE seq > ? ORDER BY seq').all(cursor).map((r) => r.seq);
     await until(() => got.length >= all.length);
     await new Promise((r) => setTimeout(r, 30));
@@ -139,16 +146,53 @@ test('a login link sets the web cookie once and never again; a page without it, 
     assert.equal(first.status, 302);
     assert.equal(first.headers.location, '/r/T-1');
     const cookie = String(first.headers['set-cookie']).split(';')[0];
-    const read = await raw(b.url + '/api/v1/snapshot', { cookie, 'x-askerdo-protocol': '1' });
+    const read = await raw(b.url + '/api/v1/snapshot', { cookie, 'x-askerdo-protocol': String(PROTOCOL) });
     assert.equal(read.status, 200);
     assert.match((await raw(b.url + '/r/' + ws.id, { cookie })).body, /Lighthouse rebuild/);
     assert.equal((await raw(link.url)).status, 410);
 
+    /* a phone opens no loopback or bare PC name: the code goes by this PC's LAN IPv4 the board
+       answers on (a VM adapter's skipped), a bare name by an IPv4 it resolves to that the board answers
+       on (link-local and a VM subnet's skipped), else by the LAN one; with none, no code */
+    const nets = { 'VMware Network Adapter VMnet8': [{ family: 'IPv4', address: '172.20.80.1', netmask: '255.255.255.0', internal: false }],
+      Ethernet: [{ family: 'IPv4', address: '172.16.0.7', internal: false }, { family: 'IPv4', address: '10.0.1.20', internal: false }] };
+    const resolved = [{ address: '169.254.83.107' }, { address: '172.20.80.5' }, { address: '10.0.1.9' }];
+    const at = (ok) => ({ nets, lookup: async () => resolved, answers: async (u) => ok.includes(new URL(u).hostname) });
+    assert.equal(await phoneUrl('http://127.0.0.1:7777', at(['172.16.0.7', '10.0.1.20'])), 'http://10.0.1.20:7777');
+    assert.equal(await phoneUrl('http://localhost:7777', at([])), null);
+    assert.equal(await phoneUrl('http://boxpc:7777', at(['169.254.83.107', '172.20.80.5', '10.0.1.9', '10.0.1.20'])), 'http://10.0.1.9:7777');
+    assert.equal(await phoneUrl('http://boxpc:7777', at(['169.254.83.107', '172.20.80.5', '10.0.1.20'])), 'http://10.0.1.20:7777');
+    assert.equal(await phoneUrl('https://board.example.net', at([])), 'https://board.example.net');
+    const qr = await runCli(['login', '--qr'], { env: { ...childEnv(), ASKERDO_BOARD_URL: b.url, ASKERDO_BOARD_TOKEN: b.token } });
+    assert.ok(qr.code !== 0 && /phone/.test(qr.err) && !/\x1b\[30;107m/.test(qr.out), 'a board answering on 127.0.0.1 alone draws no code');
+    /* the link keeps the scheme and path of the address the PC called (a TLS proxy) */
+    assert.equal(loginUrl('https://board.example.net/askerdo/', 'http://board.example.net/login/x?n=1'), 'https://board.example.net/askerdo/login/x?n=1');
+
     /* a revoked device's browser (a lost phone) is signed out with it */
     revokeToken(b.db, 'test');
     assert.equal((await raw(b.url + '/r/' + ws.id, { cookie })).status, 401);
-    assert.equal((await raw(b.url + '/api/v1/snapshot', { cookie, 'x-askerdo-protocol': '1' })).status, 401);
+    assert.equal((await raw(b.url + '/api/v1/snapshot', { cookie, 'x-askerdo-protocol': String(PROTOCOL) })).status, 401);
   } finally { await b.close(); }
+});
+
+/* the vendored encoder against a second one: node-qrcode 1.5.4 drew this matrix
+   (byte mode, level M, version 2, mask 6) for the same link */
+test('a login link encodes as the standard QR matrix', async () => {
+  const { qrRows, qrText } = await import('../lib/cli-commands.mjs');
+  /* the terminal draws the code in half blocks on a light field, two module rows to a line */
+  const code = qrText(qrRows('http://10.0.1.20:17481/login/x')).split('\n');
+  const glyphs = code.map((l) => /^\x1b\[30;107m([ █▀▄]+)\x1b\[0m$/.exec(l));
+  assert.ok(code.length >= 15 && glyphs.every((g) => g && g[1].length === glyphs[0][1].length), 'every code line is the same width of half blocks: ' + code[0]);
+  assert.ok(code.length === Math.ceil(glyphs[0][1].length / 2), 'square with its quiet zone');
+  assert.deepEqual(qrRows('http://pc:17481/login/x'), [
+    '1111111011111010001111111', '1000001011000000001000001', '1011101011011111001011101', '1011101001110101101011101',
+    '1011101011011010101011101', '1000001000000110001000001', '1111111010101010101111111', '0000000001100101100000000',
+    '1001111111001010110010111', '0010000101111111110011110', '0001011011011011110101001', '0010010000011010110001111',
+    '1001111110101001011100001', '1111000010100011010010010', '1101101100011011101101111', '1001000110110010111010101',
+    '1000011101000110111110110', '0000000011111101100010010', '1111111010010000101011001', '1000001010101100100010010',
+    '1011101011001011111111011', '1011101010100100101101011', '1011101001101010000110111', '1000001000000001001110111',
+    '1111111011001111100001001',
+  ]);
 });
 
 test('a join code puts a new PC on the board once, within its ten minutes, under the name it was minted for, and never cuts off a PC already on it', async () => {

@@ -1,57 +1,381 @@
-/* The board page's one script: paints the drawn graph at its box's
-   width, wires Copy and the cards, and holds a long poll that swaps the page in
-   place when the board changes. */
-import { SKIN_NARROW, SKIN_WEB, drawFit } from './draw.mjs';
+/* The board page's one script: draws the picture and answers its
+   presses, wires Copy and the cards, and holds a long poll that swaps the page in place when the
+   board changes. */
+import { esc } from './draw.mjs';
+import { crumbs, detail, drawPicture, legend, pressView, sinceWords, skinOf, viewOf, viewPath } from './picture-draw.mjs';
+import { sinceLook } from './picture-model.mjs';
 
-const narrow = () => window.innerWidth < 700;
+const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
-/* captions and labels wrap on measured widths, since bold Geist runs wider than any estimate */
+/* labels wrap on measured widths, since bold Geist runs wider than any estimate */
 const pen = document.createElement('canvas').getContext('2d');
 const widths = new Map();
-function measure(text, size, weight) {
-  const key = weight + ' ' + size + ' ' + text;
+const FONT = skinOf('web').font;
+function measure(text, px, weight) {
+  const key = weight + ' ' + px + ' ' + text;
   let w = widths.get(key);
   if (w === undefined) {
-    pen.font = weight + ' ' + size + 'px ' + SKIN_WEB.font;
+    pen.font = weight + ' ' + px + 'px ' + FONT;
     w = pen.measureText(text).width;
     widths.set(key, w);
   }
   return w;
 }
 
-/* the picture is drawn after its box is in the page, so it knows the box's width */
-function paint() {
-  const data = document.getElementById('gdata');
-  const box = document.querySelector('.gbox[data-graph]');
-  if (!data || !box) return;
-  const G = JSON.parse(data.textContent);
-  /* interactive: each station and caption is a link to its own record */
-  box.innerHTML = drawFit(G.L, G.D, G.g, narrow() ? SKIN_NARROW : SKIN_WEB,
-    { interactive: true, view: box.clientWidth, measure, label: 'The drawn graph of ' + box.getAttribute('data-graph') });
+/* ---- the picture: three levels with a zoom between them; a press selects and traces, a second opens ----
+   G is the page's data ({ P, page, icons }), V the view its address names. A zoom plays in the box,
+   then the address and the page's other sections follow, so Back steps a level. */
+let G = null;
+let V = null;
+let HOV = null;
+let lastPic = null;
+let drawn = null;
+let navSeq = 0;
+const phone = () => window.matchMedia('(max-width: 640px)').matches;
+const canHover = window.matchMedia('(hover: hover)');
+
+function readData(root) {
+  const n = (root || document).querySelector('#gdata');
+  try { return n ? JSON.parse(n.textContent) : null; } catch { return null; }
 }
 
-function wire() {
-  document.querySelectorAll('[data-href]').forEach((n) => n.addEventListener('click', (e) => {
-    if (e.target.closest('a, button')) return;
-    location.href = n.getAttribute('data-href');
-  }));
-  document.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', () => {
-    const text = b.getAttribute('data-copy');
-    const done = () => { b.textContent = 'Copied'; b.classList.add('done'); setTimeout(() => { b.textContent = 'Copy'; b.classList.remove('done'); }, 1400); };
-    const fallback = () => {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand('copy'); } catch {}
-      ta.remove();
-      done();
-    };
-    try { navigator.clipboard.writeText(text).then(done, fallback); } catch { fallback(); }
-  }));
+/* the last look: one moment per workstream and one for the Overview, read once a page and kept as it goes */
+const LOOK = 'askerdo.look.';
+const looks = {};
+const seenAt = {};
+function lookFor(k) {
+  if (!(k in looks)) {
+    let v = null;
+    try { v = localStorage.getItem(LOOK + k); } catch {}
+    looks[k] = v;
+  }
+  return looks[k];
+}
+function keepLooks() { for (const [k, at] of Object.entries(seenAt)) try { localStorage.setItem(LOOK + k, at); } catch {} }
+const lookKey = (v) => (v.level === 0 ? 'overview' : 'ws:' + ((G.P.ws[v.ws] || {}).key || v.ws));
+function shown() {
+  const k = lookKey(V);
+  if (!drawn || drawn.src !== G.P || drawn.k !== k) drawn = { src: G.P, k, P: sinceLook(G.P, lookFor(k)) };
+  seenAt[k] = G.P.at;
+  return drawn.P;
 }
 
-const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+function viewHere() {
+  const u = new URL(location.href);
+  const page = G.page || {};
+  const v = page.kind === 'track' ? viewOf('/r/' + page.tr, u.search, G.P) : viewOf(u.pathname, u.search, G.P);
+  if (v) return v;
+  return page.kind === 'overview' ? { level: 0, ws: null, tr: null, sel: null } : { level: 1, ws: page.ws || null, tr: null, sel: null };
+}
+/* a view's address; a track's own page keeps its own */
+function addressOf(v) {
+  const p = viewPath(v);
+  if (G.page.kind !== 'track' || v.level !== 2 || v.tr !== G.page.tr) return p;
+  const q = p.indexOf('sel=');
+  return G.page.path + (q > 0 ? '?' + p.slice(q) : '');
+}
+function canDraw(P, v) {
+  if (v.level === 0) return P.ov.length > 0;
+  const W = P.ws[v.ws];
+  return !!W && (v.level === 1 || W.tracks.some((t) => t.id === v.tr));
+}
+function urlOf(id) {
+  const P = G.P;
+  const t = P.tasks[id] || P.ans[id];
+  if (t && t.url) return t.url;
+  for (const w of Object.values(P.ws)) {
+    if (w.id === id && w.url) return w.url;
+    const tr = w.tracks.find((x) => x.id === id);
+    if (tr && tr.url) return tr.url;
+  }
+  const o = P.ov.find((x) => x.id === id);
+  if (o && o.url) return o.url;
+  return (/^WS-\d+$/.test(id) ? '/ws/' : '/r/') + encodeURIComponent(id);
+}
+
+/* the strip: the selection in words, its acts as buttons, an open as a link */
+function hrefOf(k) {
+  const i = k.indexOf(':');
+  const kind = k.slice(0, i);
+  const id = k.slice(i + 1);
+  if (kind === 'open' || kind === 'answer') return urlOf(id);
+  if (kind === 'list') return urlOf(id) + '#done';
+  return null;
+}
+function stripHtml(d) {
+  if (!d) return '<div class="pstrip empty">Press a ' + (V.level === 0 ? 'workstream' : V.level === 1 ? 'track or a wait' : 'station') + ' to see what it waits on and what it frees.</div>';
+  const fav = G.icons && G.icons.fav ? '<img class="face" width="16" height="16" alt="" src="data:image/svg+xml,' + encodeURIComponent(G.icons.fav) + '">' : '';
+  // a track nobody holds offers its resume command, as the Overview's cards did
+  const val = (f) => (f[0] === 'Resume' ? '<div class="cmd"><code>' + esc(f[1]) + '</code><button class="copy" type="button" data-copy="' + esc(f[1]) + '">Copy</button></div>'
+    : Array.isArray(f[1]) ? f[1].map(esc).join('<br>') : esc(f[1]));
+  const act = (a) => {
+    const href = hrefOf(a.k);
+    const inner = (a.answer ? fav : '') + esc(a.label);
+    const cls = a.answer ? 'ans' : 'copy';
+    return href ? '<a class="' + cls + '" href="' + esc(href) + '">' + inner + '</a>' : '<button type="button" class="' + cls + '" data-k="' + esc(a.k) + '">' + inner + '</button>';
+  };
+  return '<div class="pstrip"><div class="sh">' + (d.id ? '<span class="id">' + esc(d.id) + '</span>' : '') + '<span class="nm">' + esc(d.name) + '</span>'
+    + d.chips.map((c) => '<span class="chip ' + c[1] + '">' + esc(c[0]) + '</span>').join('') + '</div>'
+    + '<dl class="facts">' + d.facts.map((f) => '<dt>' + esc(f[0]) + '</dt><dd>' + val(f) + '</dd>').join('') + '</dl>'
+    + '<div class="acts">' + d.acts.map(act).join('') + (d.hint ? '<span class="hint">' + esc(d.hint) + '</span>' : '') + '</div></div>';
+}
+
+/* the Overview's pills, for a workstream page's press on another workstream: read once from the Overview page */
+const ovTried = new WeakSet();
+function needOverview() {
+  const src = G.P;
+  if (ovTried.has(src) || src.ov.length) return;
+  ovTried.add(src);
+  pageAt('/').then((doc) => {
+    const d = doc && doc !== 'reload' ? readData(doc) : null;
+    if (!d || !d.P || !G || G.P !== src) return;
+    src.ov = d.P.ov;
+    src.ovLinks = d.P.ovLinks;
+    drawn = null;
+    render();
+  }).catch(() => {});
+}
+
+function drawNow(P) {
+  const gv = document.querySelector('#pic .gview');
+  return drawPicture(P, V, { skin: phone() ? 'narrow' : 'web', width: gv.clientWidth, measure, icons: G.icons, hover: HOV, top: 50 });
+}
+function originOf(key) {
+  if (!key || !lastPic) return null;
+  const p = lastPic.pos[key.slice(key.indexOf(':') + 1)];
+  return p ? { x: p.x + (p.w || 0) / 2, y: p.y + (p.h || 0) / 2 } : null;
+}
+/* the mock's zoom: the old picture grows past you (or shrinks away) as the new one comes in about the pressed pill */
+function zoomPlay(gv, oldSvg, anim, W) {
+  const o = anim.origin || { x: W / 2, y: 120 };
+  const inward = anim.dir > 0;
+  const at = (s) => 'translate(' + o.x + 'px,' + o.y + 'px) scale(' + s + ') translate(' + -o.x + 'px,' + -o.y + 'px)';
+  const ghost = document.createElement('div');
+  ghost.className = 'layer ghost';
+  ghost.style.top = gv.style.paddingTop;
+  ghost.innerHTML = oldSvg;
+  gv.appendChild(ghost);
+  const layer = gv.querySelector('.layer');
+  layer.style.transition = 'none';
+  layer.style.opacity = '0';
+  layer.style.transform = at(inward ? 0.35 : 2.2);
+  void layer.offsetWidth;
+  layer.style.transition = '';
+  layer.style.opacity = '1';
+  layer.style.transform = 'none';
+  ghost.style.opacity = '0';
+  ghost.style.transform = at(inward ? 2.6 : 0.4);
+  setTimeout(() => ghost.remove(), 380);
+}
+
+function render(anim) {
+  const pic = document.getElementById('pic');
+  if (!pic || !G || !V) return;
+  const gv = pic.querySelector('.gview');
+  const W = gv.clientWidth;
+  if (W < 40) return;
+  const narrow = phone();
+  const old = gv.querySelector('.layer:not(.ghost)');
+  const oldSvg = anim && old ? old.innerHTML : '';
+  if (V.sel && V.sel.startsWith('ws:') && !G.P.ov.some((o) => 'ws:' + o.id === V.sel)) needOverview();
+  let P = shown();
+  pic.querySelector('.crumbs').innerHTML = crumbs(P, V, { pane: narrow }).map((c) => {
+    if (!c.k) return '<span class="cur">' + esc(c.words) + '</span>';
+    const r = pressView(G.P, V, c.k);
+    return '<a href="' + esc(r.view ? addressOf(r.view) : '/') + '" data-k="' + esc(c.k) + '">' + esc(c.words) + '</a>';
+  }).join('<span class="sep">›</span>');
+  pic.querySelector('[data-k="out"]').disabled = V.level === 0;
+  pic.querySelector('[data-k="in"]').disabled = V.level === 2 || (V.level === 0 && !G.P.ov.some((o) => o.opens));
+  // the picture starts below the crumbs, however many lines they wrap to
+  gv.style.paddingTop = Math.max(0, pic.querySelector('.gbar').offsetHeight + 8 - 46) + 'px';
+  let out = drawNow(P);
+  // a selection the picture no longer draws (a task finished since, an old link) lets go
+  if (V.sel && !out.hits.some((h) => h.k === V.sel)) {
+    V = { ...V, sel: null };
+    history.replaceState(null, '', addressOf(V));
+    P = shown();
+    out = drawNow(P);
+  }
+  gv.innerHTML = '<div class="layer">' + out.svg + '</div>';
+  pic.querySelector('.pslot').innerHTML = stripHtml(V.sel ? detail(P, V, V.sel) : null);
+  pic.querySelector('.legend').innerHTML = legend(P, V, narrow ? 'narrow' : 'web', { measure }).map((e) => '<span>' + e.svg + esc(e.words) + '</span>').join('');
+  const s = sinceWords(P, V);
+  const since = pic.querySelector('.since');
+  since.hidden = !s;
+  since.innerHTML = s ? '<span class="cdot' + (s.moved ? '' : ' still') + '"></span><span>Since your last look, <b>' + esc(s.when) + '</b>: ' + esc(s.words) + '</span>' : '';
+  pic.querySelector('.urlline').textContent = addressOf(V);
+  if (oldSvg) zoomPlay(gv, oldSvg, anim, W);
+  lastPic = out;
+}
+
+/* a page fetched to swap in, 'reload' when the browser's login has gone */
+async function pageAt(addr) {
+  const res = await fetch(addr, { cache: 'no-store' });
+  if (res.status === 401) { location.reload(); return 'reload'; }
+  const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+  return doc.getElementById('view') ? doc : null;
+}
+
+/* the page's sections around the picture swapped in place; the picture's box stays, so a zoom in it plays on */
+function applyDoc(doc, addr, keepOpen) {
+  const next = doc.getElementById('view');
+  const view = document.getElementById('view');
+  const pic = document.getElementById('pic');
+  const npic = next.querySelector(':scope > #pic');
+  const open = keepOpen ? [...view.querySelectorAll('details')].map((d) => d.open) : [];
+  if (pic && npic && pic.parentNode === view) {
+    const before = [];
+    const after = [];
+    let past = false;
+    for (const n of [...next.childNodes]) { if (n === npic) past = true; else (past ? after : before).push(n); }
+    for (const n of [...view.childNodes]) if (n !== pic) n.remove();
+    pic.before(...before);
+    pic.after(...after);
+    for (const a of [...next.attributes]) view.setAttribute(a.name, a.value);
+  } else view.replaceWith(next);
+  document.querySelectorAll('#view details').forEach((d, i) => { if (open[i]) d.open = true; });
+  document.title = doc.title;
+  document.body.dataset.seq = doc.body.dataset.seq;
+  const icon = doc.getElementById('favicon');
+  if (icon) document.getElementById('favicon').href = icon.href;
+  const nav = doc.getElementById('nav');
+  if (nav) document.getElementById('nav').innerHTML = nav.innerHTML;
+  G = readData();
+  if (G && G.P) G.page.path = new URL(addr, location.href).pathname;
+  else G = null;
+  drawn = null;
+  settingsApply();
+}
+
+/* a step to another view: drawn at once when this page's data holds it, else after its page arrives */
+async function go(nv, dir, from, { push = true, addr = null } = {}) {
+  const mine = ++navSeq;
+  const to = addr || addressOf(nv);
+  const anim = dir ? { dir, origin: dir > 0 ? originOf(from) : lastPic ? { x: lastPic.w / 2, y: 140 } : null } : null;
+  HOV = null;
+  if (nv && canDraw(G.P, nv)) {
+    V = nv;
+    if (push) history.pushState(null, '', to);
+    render(anim);
+    const t0 = Date.now();
+    const doc = await pageAt(to).catch(() => null);
+    // the zoom plays out before the page's sections move under it
+    await sleep(380 - (Date.now() - t0));
+    if (mine !== navSeq || !doc || doc === 'reload') return;
+    applyDoc(doc, to);
+    if (G) { V = viewHere(); render(); }
+    return;
+  }
+  const doc = await pageAt(to).catch(() => null);
+  if (mine !== navSeq || doc === 'reload') return;
+  if (!doc) { location.href = to; return; }
+  if (push) history.pushState(null, '', to);
+  applyDoc(doc, to);
+  if (G) { V = viewHere(); render(anim); }
+}
+function select(v) {
+  V = v;
+  HOV = null;
+  history.replaceState(null, '', addressOf(V));
+  render();
+}
+
+function press(k) {
+  if (!G || !V) return;
+  let r = null;
+  if (k === 'in' && V.level === 0) {
+    // the Overview's data holds no workstream's tracks: + opens the selected one, else the first
+    const s = V.sel && V.sel.startsWith('ws:') ? V.sel.slice(3) : null;
+    const o = G.P.ov.find((x) => x.id === s && x.opens) || G.P.ov.find((x) => x.opens);
+    if (o) r = { view: { level: 1, ws: o.id, tr: null, sel: null }, dir: 1, from: 'ws:' + o.id };
+  } else r = pressView(G.P, V, k);
+  if (!r) return;
+  if (r.view) {
+    // a jump to a task on another workstream opens its page
+    if (r.view.level === 2 && !canDraw(G.P, r.view) && k.startsWith('jump:')) location.href = urlOf(k.slice(5));
+    else if (r.dir) go(r.view, r.dir, r.from);
+    else select(r.view);
+  } else if (r.open) {
+    const o = G.P.ov.find((x) => x.id === r.open);
+    if (/^WS-\d+$/.test(r.open) && (!o || o.opens)) go({ level: 1, ws: r.open, tr: null, sel: null }, 1, 'ws:' + r.open);
+    else location.href = urlOf(r.open);
+  } else if (r.list) location.href = urlOf(r.list) + '#done';
+  else if (r.answer) location.href = urlOf(r.answer);
+  else if (r.copy) copyText(location.origin + addressOf(V), document.querySelector('#pic [data-k="copy"]'), 'Copy link');
+}
+
+/* the board is served over plain http on a LAN, where the browser offers no navigator.clipboard */
+function copyText(text, b, label) {
+  const done = () => {
+    if (!b) return;
+    b.textContent = 'Copied';
+    b.classList.add('done');
+    setTimeout(() => { b.textContent = label; b.classList.remove('done'); }, 1400);
+  };
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch {}
+    ta.remove();
+    done();
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+  else fallback();
+}
+
+document.addEventListener('click', (e) => {
+  const c = e.target.closest('[data-copy]');
+  if (c) { copyText(c.getAttribute('data-copy'), c, 'Copy'); return; }
+  const pic = document.getElementById('pic');
+  if (pic && pic.contains(e.target)) {
+    const el = e.target.closest('[data-k]');
+    if (el && pic.contains(el)) {
+      // a crumb is a link too: a modified press opens it in a new tab
+      if (el.tagName === 'A' && (e.ctrlKey || e.metaKey || e.shiftKey || e.button)) return;
+      e.preventDefault();
+      press(el.getAttribute('data-k'));
+      return;
+    }
+    // the ground lets the selection go
+    if (e.target.closest('.gview') && V && V.sel) select({ ...V, sel: null });
+    return;
+  }
+  const card = e.target.closest('[data-href]');
+  if (card && !e.target.closest('a, button')) location.href = card.getAttribute('data-href');
+});
+// hover previews the trace on the board page only; a phone and the pane have no hover
+document.addEventListener('mouseover', (e) => {
+  // Chrome sends a mouseover at a press under a pointer that has not moved: a redraw then would swallow the press
+  if (!G || !V || V.sel || e.buttons || !canHover.matches || phone()) return;
+  const el = e.target.closest('#pic .gview [data-k]');
+  let k = el ? el.getAttribute('data-k') : null;
+  if (k && !/^(stn|pill|ws|link):/.test(k)) k = null;
+  if (k === HOV) return;
+  HOV = k;
+  const layer = document.querySelector('#pic .gview .layer:not(.ghost)');
+  if (!layer) return;
+  lastPic = drawNow(shown());
+  layer.innerHTML = lastPic.svg;
+});
+// the wheel over the picture scrolls the page and Ctrl with it zooms the page: levels change by presses, crumbs, + and - and Back
+window.addEventListener('popstate', () => {
+  if (!G || !V) { location.reload(); return; }
+  const u = new URL(location.href);
+  const nv = viewOf(u.pathname, u.search, G.P);
+  const dir = nv ? Math.sign(nv.level - V.level) : 0;
+  go(nv, dir, nv && dir > 0 ? (nv.level === 2 ? 'pill:' + nv.tr : 'ws:' + nv.ws) : null, { push: false, addr: u.pathname + u.search });
+});
+
+function startPicture() {
+  G = readData();
+  if (!G || !G.P) { G = null; return; }
+  G.page.path = location.pathname;
+  V = viewHere();
+  render();
+}
+
 /* A wait that doubles to half a minute, so a failing reply never makes a tight loop. */
 function backoff() {
   let ms = 0;
@@ -65,25 +389,17 @@ function typing() {
   return [...document.querySelectorAll('#view [data-drawn]')].some((f) => f.value !== f.getAttribute('data-drawn'));
 }
 
-/* the page again, swapped in place: what is open stays open, the scroll stays put; false when no page came.
-   While a field is being typed in the page stays, and the next change swaps it once the field is left. */
+/* the page again, swapped in place: what is open stays open, the scroll and the picture's view stay put;
+   false when no page came. While a field is being typed in the page stays, and the next change swaps it once the field is left. */
 async function refresh() {
   if (typing()) return true;
-  const res = await fetch(location.href, { cache: 'no-store' });
-  if (res.status === 401) { location.reload(); return true; }
-  const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
-  const next = doc.getElementById('view');
-  if (!next) return false;
-  const open = [...document.querySelectorAll('#view details')].map((d) => d.open);
-  document.getElementById('view').replaceWith(next);
-  next.querySelectorAll('details').forEach((d, i) => { if (open[i]) d.open = true; });
-  document.title = doc.title;
-  document.body.dataset.seq = doc.body.dataset.seq;
-  const icon = doc.getElementById('favicon');
-  if (icon) document.getElementById('favicon').href = icon.href;
-  paint();
-  wire();
-  settingsApply();
+  const mine = navSeq;
+  const doc = await pageAt(location.href);
+  if (doc === 'reload') return true;
+  if (!doc) return false;
+  if (mine !== navSeq) return true;
+  applyDoc(doc, location.href, true);
+  if (G) { V = viewHere(); render(); }
   return true;
 }
 
@@ -299,10 +615,17 @@ window.addEventListener('pagehide', () => stepDown(true));
 window.addEventListener('pageshow', (e) => { if (e.persisted) lead(); });
 
 let resizing = 0;
-window.addEventListener('resize', () => { clearTimeout(resizing); resizing = setTimeout(paint, 150); });
-paint();
-// widths taken before Geist arrived were the fallback's: measure again once it has
-if (!document.fonts.check('700 14px Geist')) document.fonts.load('700 14px Geist').then(() => { widths.clear(); paint(); }, () => {});
-wire();
+window.addEventListener('resize', () => { clearTimeout(resizing); resizing = setTimeout(() => render(), 150); });
+window.addEventListener('pagehide', keepLooks);
+document.addEventListener('visibilitychange', () => { if (document.hidden) keepLooks(); });
+// the picture measures in Geist, so it draws once the face has come (or after a moment without it)
+let started = false;
+const first = () => { if (!started) { started = true; startPicture(); } };
+if (document.fonts && !document.fonts.check('600 15px Geist')) {
+  document.fonts.load('600 15px Geist').then(() => { if (started) { widths.clear(); render(); } else first(); }, first);
+  setTimeout(first, 1500);
+} else first();
+// a link to a track's finished list opens it
+if (location.hash === '#done') { const d = document.getElementById('done'); if (d) d.open = true; }
 settingsInit();
 lead();

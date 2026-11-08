@@ -10,6 +10,19 @@ const LINES_MAX = 3;
 const LINE_CUT = 200;
 const TABS = ['questions', 'work', 'both'];
 
+/* Each record's best-ranked row (its title and body, a note or a handoff) kept when it
+   passes the tab (?2) and the workstream key (?3). */
+const KEPT = `FROM %s m
+  LEFT JOIN records r ON r.key = m.key
+  LEFT JOIN handoffs h ON r.key IS NULL AND h.key = m.key
+  WHERE (r.key IS NOT NULL OR h.key IS NOT NULL)
+    AND (?2 = 'both' OR (?2 = 'questions') = (coalesce(r.kind, 'handoff') = 'question'))
+    AND (?3 IS NULL OR coalesce(r.workstream, (SELECT t.workstream FROM records t WHERE t.key = h.track)) = ?3)`;
+/* the best `limit` (?4) and the count of all */
+const TOP_SQL = 'SELECT m.key, count(*) OVER () AS total ' + KEPT.replace('%s', '(SELECT key, min(rank) AS rank FROM search WHERE search MATCH ?1 GROUP BY key)')
+  + ' ORDER BY m.rank LIMIT ?4';
+const KEEP_SQL = 'SELECT 1 AS kept ' + KEPT.replace('%s', '(SELECT ?1 AS key)');
+
 const clip = (s) => (s.length > LINE_CUT ? s.slice(0, LINE_CUT - 3) + '...' : s);
 
 function matchingLines(texts, terms) {
@@ -26,7 +39,8 @@ function matchingLines(texts, terms) {
   return out;
 }
 
-/* search(db, { text, limit, tab, workstream }): { text, hits, total }, best match first. */
+/* search(db, { text, limit, tab, workstream, count }): { text, hits, total }, best match first;
+   count false leaves the total null and stops at the limit (a write's near check). */
 export function search(db, input = {}) {
   const terms = String(input.text ?? '').split(/\s+/).filter(Boolean).slice(0, 12);
   if (!terms.length) throw new UsageError('search needs some words to look for');
@@ -43,20 +57,27 @@ export function search(db, input = {}) {
       if (!w) throw new UsageError('--ws names ' + input.workstream + ', which no workstream holds');
       ws = w.key;
     }
-    const keys = [];
-    for (const r of db.stmt('SELECT key FROM search WHERE search MATCH ? ORDER BY rank').all(match)) if (!keys.includes(r.key)) keys.push(r.key);
+    /* the count reads every match, so a knowledge write's near check (three of
+       these) walks the ranked rows only until it has its hits */
+    let top, total = null;
+    if (input.count === false) {
+      top = [];
+      const seen = new Set();
+      for (const { key } of db.stmt('SELECT key FROM search WHERE search MATCH ? ORDER BY rank').iterate(match)) {
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (db.stmt(KEEP_SQL).get(key, tab, ws)) top.push({ key });
+        if (top.length >= limit) break;
+      }
+    } else {
+      top = db.stmt(TOP_SQL).all(match, tab, ws, limit);
+      total = top.length ? top[0].total : 0;
+    }
     const hits = [];
-    let total = 0;
-    for (const key of keys) {
+    for (const { key } of top) {
       const rec = db.stmt('SELECT key, kind, label, title, status, workstream, body FROM records WHERE key = ?').get(key);
       const h = rec ? null : db.stmt('SELECT key, label, status, track, state, where_we_were, json_extract(fields, \'$.focus\') AS focus FROM handoffs WHERE key = ?').get(key);
-      if (!rec && !h) continue;
       const kind = rec ? rec.kind : 'handoff';
-      if (tab === 'questions' ? kind !== 'question' : tab === 'work' ? kind === 'question' : false) continue;
-      const home = rec ? rec.workstream : db.stmt('SELECT workstream FROM records WHERE key = ?').get(h.track)?.workstream;
-      if (ws && home !== ws) continue;
-      total += 1;
-      if (hits.length >= limit) continue;
       const texts = rec
         ? [rec.title, rec.body, ...db.stmt('SELECT body FROM notes WHERE record = ? ORDER BY position').all(key).map((n) => n.body)]
         : [h.focus, h.state, h.where_we_were];

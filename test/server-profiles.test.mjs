@@ -65,11 +65,11 @@ test('resolution: built-in < default < project < workstream < track < task, the 
   pf.profileRule(db, { name: 'lean', op: 'add', slug: 'unity-tests', text: 'Unity tests run in the editor only.' }, actor);
   pf.profileAdd(db, { record: 'WS-1', name: 'lean' }, actor);
   pf.profileDefine(db, { name: 'none', set: ['tests.policy=off'] }, actor);
-  pf.profileRule(db, { name: 'none', op: 'drop', slug: 'opus-workers' }, actor);
+  pf.profileRule(db, { name: 'none', op: 'drop', slug: 'lay-out-first' }, actor);
   pf.profileAdd(db, { record: 'T-1', name: 'none' }, actor);
   const rows = rulesBlock(eff(db, 'T-1')).rows;
   const source = (rule) => (rows.find((r) => r.rule === rule) || {}).source;
-  assert.deepEqual([source('tests.policy'), source('unity-tests'), source('opus-workers')], ['none on T-1', 'lean on WS-1', undefined]);
+  assert.deepEqual([source('tests.policy'), source('unity-tests'), source('lay-out-first')], ['none on T-1', 'lean on WS-1', undefined]);
   /* a profile line under a built-in's slug takes its place, so no rule rides a session twice */
   pf.profileRule(db, { name: 'lean', op: 'add', slug: 'naming', text: 'Name things plainly.' }, actor);
   const named = rulesBlock(eff(db, 'T-1')).rows;

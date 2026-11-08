@@ -67,9 +67,9 @@ The verbs, in one table:
 | `ws edit <id>` | `--name`, `--add-label`/`--remove-label`, `--add-ref`/`--remove-ref`, `--add-project`/`--remove-project`, `--add-outcome`/`--remove-outcome`, `--handoff` |
 | `ws close <id>` | status closed plus the date; `--outcome <text>` |
 | `reopen <WS-n>` | a prematurely closed workstream back to open |
-| `task create` | payload on stdin; issues `T-n`; a session's names its place, `--track TR-n` (with `--before`/`--after T-n`) or `--unplaced "why"` |
+| `task create` | payload on stdin; issues `T-n`; a session's names its place, `--track TR-n` (with `--before`/`--after T-n`) or `--unplaced "why"`; every filing on no track names its `--wake` |
 | `task update <id>` | `--status open\|in_progress\|dropped\|completed`, `--agent "<job name>"`, `--reason` (starting a task that is not ready), `--note` (a journal paragraph in the same call), `--priority`, `--name`, `--add-label`/`--remove-label`, `--in-hand`/`--let-go`, `--take-over`; the mod's `task_update` tool |
-| `task edit <id>` | the field flips: `--status`, `--priority`, `--name`, `--workstream`, `--clear-workstream`, `--serves`, `--clear-serves`, the label and ref flags, `--in-hand`, `--let-go`, `--take-over`; `--track TR-n` (with `--before`/`--after T-n`) or `--unplaced "why"` moves it. A task has no plan or ordinal on the board (`--plan` and `--ordinal` are refused) |
+| `task edit <id>` | the field flips: `--status`, `--priority`, `--name`, `--workstream`, `--clear-workstream`, `--serves`, `--clear-serves`, the label and ref flags, `--in-hand`, `--let-go`, `--take-over`; `--track TR-n` (with `--before`/`--after T-n`) or `--unplaced "why"` (with `--wake`) moves it, and `--wake` alone wakes an inbox task again. A task has no plan or ordinal on the board (`--plan` and `--ordinal` are refused) |
 | `note <id>` | `--body "text"`, or the body on stdin; appends one stamped journal paragraph to a workstream, task, track or knowledge record |
 | `track new`, `list`, `show`, `mine`, `park`, `finish`, `drop`, `splinter`, `capture`, `promote`, `fold`, `found` | tracks (Tracks and handoffs, below) |
 | `resume <TR-n>` | take a track with its kickoff |
@@ -125,8 +125,10 @@ is what a listing and the record's page lead with.
   never live status), `## Intent` (write-once: the goal and its
   acceptance), `## Journal`. Priority is `high`, `medium`, or `low`. A
   task sits on at most one track; one on none sits in its workstream's
-  inbox until it is captured onto a track. It may carry a checklist and
-  name the outcomes it `serves`.
+  inbox, with its wake, until it is captured onto a track. The inbox holds
+  only work no plan reaches: work that starts later goes on a parked track
+  that opens on its own event. It may carry a checklist and name the
+  outcomes it `serves`.
 - **Question (`Qn`)**: documented in `question-hub.md`. It names its
   `workstream` and the tasks it `gates`, and `question edit` moves them
   after the fact.
@@ -153,7 +155,7 @@ node ~/.claude/askerdo/cli.mjs task create --json < payload.json
 | Kind | Required | Optional |
 |-|-|-|
 | `ws create` | `name`, `description` | `projects` (array), `outcomes` (array of lines), `handoff`, `labels`, `refs`, `session`, `created` |
-| `task create` | `name`, `description`; from a session, `track` or `unplaced` | `intent`, `workstream`, `track` (a TR-n id: the task lands on that track), `before` and `after` (T-n ids on that track: the steps that wait on it, the ones it waits on), `unplaced` (why it waits on no track), `priority`, `status`, `serves` (outcome ids), `labels`, `refs`, `origin`, `session`, `created` |
+| `task create` | `name`, `description`; from a session, `track` or `unplaced`; on no track, `wake` (what brings it back), unless it is filed completed or dropped | `intent`, `workstream`, `track` (a TR-n id: the task lands on that track), `before` and `after` (T-n ids on that track: the steps that wait on it, the ones it waits on), `unplaced` (why no plan reaches it), `priority`, `status`, `serves` (outcome ids), `labels`, `refs`, `origin`, `session`, `created` |
 | `track new` | `--workstream`, `--name` | `--goal`, `--task T-n`, `--label`, `--ref` (each repeatable; labels and refs come at birth only), `--session` (the session takes it) |
 
 `session` is your own session id, read from the scratchpad path the
@@ -168,7 +170,7 @@ key, kind, name}`. Use the returned id from then on.
 **Found work never goes quiet.** A task a session files names its
 place, judged from what the work is and what it blocks: a track (this one
 or another, `before` or `after` the steps around it, the release among
-them) or `unplaced` with the reason it waits on no track. The session is
+them) or `unplaced` with the reason no plan reaches it. The session is
 the payload's `session`, else `--session`, else the shell's
 `CLAUDE_CODE_SESSION_ID`, so a filing from a session's shell counts as
 the session's. A filing with neither place nor reason is refused, and the
@@ -178,9 +180,42 @@ task names), the session's own track first among ties, with the matches
 it found. The hint is one input beside the session's judgment, never
 applied and never required; the result carries it as `suggested` when
 the task went elsewhere. A creation with no session (a person's own call,
-the import, the board's own verbs) keeps no such rule. `track capture`
+the import, the board's own verbs) keeps no such rule, though a filing
+into the inbox still names its wake (below). `track capture`
 into the inbox takes `--unplaced` the same way, and `task edit T-n
 --track TR-n --before T-m` or `--unplaced "why"` moves a task later.
+
+**The inbox holds only work no plan reaches.** Work that starts later
+goes on a parked track that opens on its own event: `track new
+--workstream WS-n --name "..." --goal "..."`, `track park TR-n --reason
+"..." --unpark-when "task-completes T-n"`, then the place command. An
+unplaced reason that says no track carries the work ("no track carries
+it yet", "needs its own track") is refused with those three commands.
+Every inbox filing names its wake, whoever files it (a session, a
+terminal, code): `--wake` on `task create`, `task edit`, `track capture`,
+and `track finish` or `drop` with `--leftovers inbox`, in the vocabulary
+`track park --unpark-when` uses (`"track-ends TR-n"`, `"task-completes
+T-n"`, `"question-answered Q-n"`) or a date (`2026-12-01`). A filing
+with none is refused with the inbox's rule and both ways out as
+commands: put it on a track, or file it again with its wake. A wake that
+has already fired, a date today or earlier or an event already ended, is
+refused the same way. A task filed completed or dropped needs none. Code
+that files passes its own, 14 days out: the user's `/askerdo track
+capture inbox`, an import's tasks and closes, the doctor's undo and the
+board picture's moves. A task with no wake stored reads as due 14 days
+after it entered the inbox (its last move off a track, else its birth).
+A task is due once its event ends or its date comes: it leads every
+kickoff on its project in a "Due for a home" line naming its workstream,
+with the place command on its own workstream's tracks (another's kickoff
+only names it), ahead of the inbox list, until it is placed or
+woken again (`task edit T-n --wake ...`, which takes a task on no track
+alone). The third wake in one inbox stay (counted from its last move off
+a track, else its birth) stores nothing: the user gets a question, not
+blocking, with three answers: place it, keep it with a reason and a new
+wake, or drop it. While it is open the task's inbox row names it and a
+further wake waits on it. A keep starts the count over; a place or a
+drop refuses further wakes. Placing the task on a track, or ending it,
+drops the open question. Placing a task on a track clears its wake.
 
 `track found TR-n` lists the tasks the track's arc made: the ones on it
 since it began (`--since handoff`: since its last handoff) and the ones
@@ -421,7 +456,7 @@ node ~/.claude/askerdo/cli.mjs shelf
   --session <own-id>` prints the held track (renewing its lease) and its
   workstream's tracks.
 - **A new idea.** `track capture --track TR-4 --name "..."` adds a task
-  to a track (`--workstream WS-3 --unplaced "why"` to its inbox, `--task T-20` to move an
+  to a track (`--workstream WS-3 --unplaced "why"`, with `--wake`, to its inbox, `--task T-20` to move an
   existing task) and the session carries on. `track splinter TR-4 --name
   "..."` starts a side track now: the parent parks with "splintered to
   TR-7 at T-41" as its reason (`--at T-n` names the task it leaves from,
@@ -429,10 +464,16 @@ node ~/.claude/askerdo/cli.mjs shelf
   chain is in view ("TR-7 under TR-5 under TR-2"), in the status row,
   the splinter's reply and each handoff.
 - **Ending one.** `track finish TR-4 --outcome "..."` (done) and `track
-  drop TR-4 --reason "..."` end it, `--leftovers inbox` or `drop` for
-  tasks still open. At full review depth a finish waits for a review of
+  drop TR-4 --reason "..."` end it, `--leftovers inbox --wake <event or
+  date>` or `--leftovers drop` for tasks still open. At full review depth a finish waits for a review of
   the track's finished code (Review coverage, below); `--waive
-  "<reason>"` goes ahead and records why. When a side track finishes or parks, the result hands
+  "<reason>"` goes ahead and records why. A finish, a drop and a handoff
+  write list the project's inbox as the kickoff does; where the mod runs,
+  the turn's end flags a task from that list still on no track that the
+  reply never names, and a due one of the closing track's workstream
+  still due however the reply words it: it is placed or woken again. A
+  due task of another workstream, or one the user is asked about, needs
+  only naming. When a side track finishes or parks, the result hands
   back its junction and the reply asks the user whether to go back on track
   there; nothing moves on its own.
 - **Big tasks.** Any task may carry a checklist: `check add T-13 --text
@@ -457,6 +498,13 @@ the tool share one check (`lib/handoff-payload.mjs`):
   `## Where we were` heading of its own.
 - `whereWeWere`: the previous session's own words, at most 4 KB.
 - `waitingOnUser`: a list of one-line items.
+- `leftovers`: the steps left, laid out on the track as `track layout`
+  lays them, each naming its `runBy`. One for later work names
+  `newTrack` (a name) and `unparkWhen` (`"track-ends TR-n"`,
+  `"task-completes T-n"`, or a leftover's number, `"task-completes 2"`,
+  or `"question-answered Q-n"`): the write makes that track in the
+  workstream, lays the step on it and parks it until the event; leftovers
+  naming the same name share it.
 - `rulings`: rulings made in chat and not yet registered. A string is a
   new ruling; each carries to every next handoff as R1, R2 until the
   writer marks it `{ "id": "R2", "registered": "Q61" }`.
@@ -493,15 +541,19 @@ the resume. It also checks the workstream's handoff folder and prints
 any file missing or over budget.
 
 THE KICKOFF is printed from the board, never stored: line one names the
-track and the resume command, then the chain, the junction, the focus
+track and the resume command, then the due inbox tasks of every open
+workstream in the project ("Due for a home", each naming its workstream
+and any question to the user about it, with the place command for the
+track's own workstream's; another's are only named), the chain, the junction, the focus
 (or "no handoff yet"), now with its agents, the ready set, the critical
 path and its length, the rest of the tasks in dependency order with
 their checklist progress; to the track's holder, its open tasks nothing
 waits on with the same confirm or wire ask as the handoff's result; side
 tracks, stalls in the workstream; to the holder, the inbox of every open
 workstream in the project (each open task on no track, oldest first,
-with its workstream), asking it to put each on a track, move it to the
-workstream it belongs in, or ask the user; what
+with its workstream and its wake, or "due"), asking it to put each on a
+track, move it to the workstream it belongs in, give it a new wake, or
+ask the user; what
 waits on the user (less what was answered since), the answers since, the
 unregistered rulings with their count, one `Read:` line for the
 workstream's handoff folder (rules.md whole, map.md by grep, each with
@@ -546,7 +598,7 @@ commits made outside a session whose messages name a task; `commit move
   project-wide review, and the commits no task owns: use it before a
   release that ships other tracks' work.
 - **Due:** a track whose unreviewed code tasks reach `review.tasks` (5)
-  reads review due on the user's band, in the kickoff and the handoff.
+  reads review due on the Tracks tab, in the kickoff and the handoff.
   `coverage TR-4` (`WS-n` for a workstream; the mod's `coverage` tool)
   lists each code task with the review covering it.
 - **Depth:** `review.depth` `light` (the default) only nudges. At `full`
@@ -569,7 +621,7 @@ waits on the user's answer (below), and the kickoff says so.
 
 How a session judges them, in order: what it already knows from its own
 context; then a quick look at each file it does not know; past about
-five files still unknown, one Sonnet agent looks at those; what is left
+five files still unknown, one agent looks at those; what is left
 is `undecided`. A file the payload leaves out carries what this PC kept
 for it, else it is `undecided`; the verb prints the undecided files and
 the kickoff names them first. A disposition for a path that is not
@@ -603,13 +655,20 @@ A **knowledge record** (`K-n`) is a gotcha or a decision: a fact, not
 work. It is private and cross-project.
 
 - Fields: `name` (the title), `type` (`gotcha` or `decision`), `status`
-  (`active`, or `superseded`, which is terminal) with `supersededBy`,
-  `scope` (`project` with `projects`, repo roots, or `global`),
-  `labels`, `refs`, `legacy` (the old `<slug>:<id>`, empty for new
-  records), `source`. Body: `## Description` (the title), `## Body` (the
+  (`active`, or `superseded` or `withdrawn`, both terminal) with
+  `supersededBy`, `scope` (`project` with `projects`, repo roots, or
+  `global`), `labels`, `refs`, `files` (repo globs: an edit of a match
+  points the session at the record, once), `legacy` (the old
+  `<slug>:<id>`, empty for new records), `source`. Body: `## Description` (the title), `## Body` (the
   text), `## Journal`.
 - `knowledge new` warns when two of the title's longest words reach an
   existing record. Search before writing one.
+- `knowledge edit K-n` rewrites `--name` or `--body` in place only while
+  the record is unused (no other session read it, and no record links or
+  refers to it); `--add-ref`, `--remove-ref`, `--add-project`,
+  `--remove-project`, `--add-file` and `--remove-file` work at any time.
+  Once it is used, `knowledge amend` appends a dated clarification and
+  `knowledge supersede` replaces it.
 - No inbox line and no subscribers. `note`, `show`, `list --kind
   knowledge` (`--all` brings back superseded records) and `search` serve
   it; the generic `edit`, `close` and `reopen` refuse it.

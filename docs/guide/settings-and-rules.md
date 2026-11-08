@@ -64,6 +64,12 @@ On a board these are set at the default layer only.
 |`dispatch.inject`|Rules ride every brief|on|The rules in force go with every agent you dispatch|
 |`dispatch.stateNote`|State notes|on|Each agent keeps a note of what is done and what is next|
 |`dispatch.outputRule`|Short reports|on|Each agent's final report stays under 2000 characters|
+|`doctor.drift`|Drift line|on|Home shows one line when the project's rules cite missing files or a retired workflow folder gains files|
+|`pointers.knowledge`|Knowledge pointers|on|A session editing a file a knowledge record names is pointed at that record|
+
+The drift line is read once as each session starts: it names a path that CLAUDE.md, AGENTS.md or a rule line in force cites and that does not exist, a rule line over 400 characters, and, from the project's conversion map on the board, a cite into a folder the conversion retired and files in such a folder again since the last run. A retired cite or a retired folder holding files closes the line with "run the doctor" and a link to the doctor's runs once the doctor has run, else with `/askerdo:doctor`; a missing cite alone ends with `(/askerdo:doctor)`, and a long rule line alone names neither. It shows on Home only, never on the band.
+
+Knowledge pointers follow the file globs a knowledge record carries (`knowledge new --file`, `knowledge edit --add-file`): an edit of a matching file gets a toast and a one-line pointer naming the record and its title, once per record in a session and in each of its agents; nothing is blocked. Off, knowledge records point at nothing; decisions and procedure cards point either way. The value is read from the rules in force, so a change reaches open sessions at their next prompt.
 
 ### Tests
 
@@ -108,7 +114,7 @@ The board links each commit to the task it belongs to, and a review task (labell
 The rules in force are the working rules every session reads on each prompt and every agent gets with its brief (while `dispatch.inject` is on). They are built from:
 
 1. The lines the test and dispatch settings write, such as the few-tests rule.
-2. The built-in lines, each with a short name (a slug) such as `opus-workers` or `run-it-first`.
+2. The built-in lines, each with a short name (a slug) such as `lay-out-first` or `run-it-first`.
 3. Rule lines of your own on your profiles.
 
 A rule line is a slug, the rule in plain words (at most 400 characters), and who it is for: the session, its agents, or both. A narrower layer's line with the same slug replaces the wider one, and a drop switches a line off by its slug at that layer and below; dropping the drop brings it back. A line made from one of your rulings (`--from`) changes only with a newer ruling.
@@ -150,6 +156,8 @@ A refused value says why in the setting's own words and writes nothing.
 
 On a board, the same settings are a web page at `/settings` on your board, after `askerdo login` signs your browser in. Chips at the top choose where you are setting: Everywhere (your default profile), a project, a workstream or one of its tracks. Every control is a plain form, so it works with scripts off. A reply option saved there reaches each PC at its next session start, `/clear` included; the other settings take effect as the table above says.
 
+A phone signs in by QR code: on a board, the Settings tab's **This PC** sub-tab has **Sign in a phone**, whose **Show a sign-in code** draws a single-use link to the board's web views for the phone's camera, and `askerdo login --qr` prints the same code in the terminal. The link signs in one phone, once, within five minutes. It goes by an address a phone on the same network opens: the board's own address, or for a board this PC reaches on loopback or by a bare PC name (which phones do not resolve), this PC's network address the board answers on, or the address that name resolves to. With no such address the card says so and draws no code.
+
 ### The settings verb
 
 ```sh
@@ -159,7 +167,7 @@ node ~/.claude/askerdo/cli.mjs settings set contract.forecast off
 node ~/.claude/askerdo/cli.mjs settings set tests.fullRun merge TR-12 --at track
 node ~/.claude/askerdo/cli.mjs settings unset main.window
 node ~/.claude/askerdo/cli.mjs settings rule add no-force-push --text "Never force-push." --for agents
-node ~/.claude/askerdo/cli.mjs settings rule drop opus-workers
+node ~/.claude/askerdo/cli.mjs settings rule drop lay-out-first
 ```
 
 - `settings set` writes into the profile that sets the value now, or your default profile when it is built in. `--at` picks a layer instead, with the record after the value: the profile held there that sets it, else the one held there, else a new one named `settings-<record>`.
@@ -178,7 +186,7 @@ The `profile` verbs work on named profiles directly:
 node ~/.claude/askerdo/cli.mjs profile define quick-merge --set tests.fullRun=merge --set main.window=25
 node ~/.claude/askerdo/cli.mjs profile add WS-16 quick-merge
 node ~/.claude/askerdo/cli.mjs profile rule-add quick-merge small-commits --text "Commit at each green checkpoint."
-node ~/.claude/askerdo/cli.mjs profile rule-drop quick-merge opus-workers
+node ~/.claude/askerdo/cli.mjs profile rule-drop quick-merge lay-out-first
 node ~/.claude/askerdo/cli.mjs profile show-effective TR-12
 node ~/.claude/askerdo/cli.mjs profile list
 node ~/.claude/askerdo/cli.mjs profile remove WS-16 quick-merge

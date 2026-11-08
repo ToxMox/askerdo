@@ -17,7 +17,6 @@ export { UsageError, byOf, canonLabel, snoozeFlat };
 
 export const ANSWER_PLACEHOLDER = '(filled at close: the choice and its why)';
 export const INBOX_LABEL = 'inbox';
-const ALONE_MS = 60000;
 const ASK_MAX = 400;
 const ASK_SHAPE = 'one plain question ending in "?" that names the options inline by letter'
   + ' with the pick marked, like "(a, my pick)" and "(b)"; the hub adds the question number at registration';
@@ -325,30 +324,6 @@ function subscribersOf(db, front) {
   return out;
 }
 
-/* One session's questions for the alone rule, off migration 002's index;
-   `memo` keeps a listing to one read per session. */
-function alonePeers(db, session, memo) {
-  if (!session) return [];
-  if (memo && memo.has(session)) return memo.get(session);
-  const peers = db.stmt(`SELECT key, label, json_extract(fields, '$.created') AS created,
-    coalesce(json_array_length(fields, '$.revisits'), 0) AS rev FROM records
-    WHERE kind = 'question' AND json_extract(fields, '$.session') = ?`).all(session)
-    .filter((r) => isFullStamp(r.created))
-    .map((r) => ({ key: r.key, label: r.label, ms: Date.parse(r.created), rev: r.rev > 0 }));
-  if (memo) memo.set(session, peers);
-  return peers;
-}
-
-/* a reversal is told alone, so two questions one session registered
-   within the minute, either reversing a ruling, are flagged on both cards. */
-function besideOf(db, front, memo) {
-  if (!isFullStamp(front.created)) return [];
-  const ms = Date.parse(front.created);
-  const mine = listOf(front, 'revisits').length > 0;
-  return alonePeers(db, front.session, memo)
-    .filter((p) => p.key !== front.key && Math.abs(p.ms - ms) < ALONE_MS && (mine || p.rev)).map((p) => p.label);
-}
-
 function reversalFields(f, sections) {
   return {
     ...(listOf(f, 'revisits').length ? { revisits: listOf(f, 'revisits') } : {}),
@@ -360,7 +335,6 @@ function reversalFields(f, sections) {
 
 function payloadOf(db, q) {
   const f = shownFront(db, q.front);
-  const beside = besideOf(db, q.front);
   return {
     ...f,
     subscribers: subscribersOf(db, q.front),
@@ -372,7 +346,6 @@ function payloadOf(db, q) {
     context: q.sections['Context'] ?? '',
     answer: q.sections['Answer'] ?? '',
     version: q.version,
-    ...(beside.length ? { beside } : {}),
   };
 }
 
@@ -590,7 +563,7 @@ function unlistedRuling(db, p, d) {
 }
 
 /* Revisits must name rulings (answered questions); both lists store keys. */
-function rulingChecks(db, p, at, strict, d) {
+function rulingChecks(db, p, strict, d) {
   const entry = (token, key) => {
     const e = resolve(db, token, ['question'], d);
     if (!e) throw new UsageError(key + ' names ' + token + ', and no question holds it');
@@ -610,12 +583,7 @@ function rulingChecks(db, p, at, strict, d) {
         + " or in revisits with a reversal when this question reopens it; an old queue's question is named by its title instead");
     }
   }
-  const beside = [];
-  const ms = Date.parse(at);
-  for (const peer of alonePeers(db, p.session)) {
-    if (Math.abs(ms - peer.ms) < ALONE_MS && (p.revisits.length || peer.rev)) beside.push(peer.label);
-  }
-  return { rulings, beside };
+  return { rulings };
 }
 
 /* ---- inherited scope ---- */
@@ -722,7 +690,7 @@ export function register(db, payload, actor, opts = {}) {
     if (p.track) p.track = refFor(db, p.track, 'track', d);
     p.gates = [...new Set(p.gates.map((g) => refFor(db, g, 'task', d)))];
     const at = stamp(opts);
-    const { rulings, beside } = rulingChecks(db, p, at, strict, d);
+    const { rulings } = rulingChecks(db, p, strict, d);
     const forced = rulings.length > 0 && !p.blocking;
     if (rulings.length) p.blocking = true;
     const inherited = opts.inherit ? inheritScope(db, p, at, d, who) : [];
@@ -748,10 +716,6 @@ export function register(db, payload, actor, opts = {}) {
     log(db, who, { at, verb: 'create', front, changes: changesOf({}, front) });
     const warnings = inherited.map((t) => id + ' filed under ' + t);
     if (forced) warnings.push(id + ' reverses a ruling, so it is stored blocking');
-    if (beside.length) {
-      warnings.push(id + ' shares the minute with ' + beside.join(', ') + ' and one of them reverses a ruling:'
-        + ' a reversal is told alone, so say in the reply that they were asked together');
-    }
     const pw = pickWarning(id, p);
     if (pw) warnings.push(pw);
     warnings.push(...headlineWarnings(id, p));
@@ -763,7 +727,6 @@ export function register(db, payload, actor, opts = {}) {
       ...(p.gates.length ? { gates: shown.gates } : {}),
       ...(p.revisits.length ? { revisits: shown.revisits, reverses: parseReverses(p.reverses) } : {}),
       ...(p.cites.length ? { cites: shown.cites } : {}),
-      ...(beside.length ? { beside } : {}),
       ...(warnings.length ? { warnings } : {}),
     };
   });
@@ -1097,7 +1060,6 @@ export function list(db, filters = {}, actor, opts = {}) {
     ? db.stmt("SELECT key, kind, slug, fields, body, layout, track, version FROM records WHERE kind = 'question' ORDER BY id").all()
     : db.stmt("SELECT key, kind, slug, fields, body, layout, track, version FROM records WHERE kind = 'question' AND status = ? ORDER BY id")
       .all(filters.snoozed ? 'snoozed' : 'open');
-  const memo = new Map();
   const out = [];
   for (const r of rows) {
     const raw = JSON.parse(r.fields);
@@ -1108,7 +1070,6 @@ export function list(db, filters = {}, actor, opts = {}) {
     if (filters.session && !subscribersOf(db, raw).includes(filters.session)) continue;
     const e = withSections(db, { ...r, fields: raw });
     const f = shownFront(db, raw);
-    const beside = besideOf(db, raw, memo);
     out.push({
       id: f.id, key: f.key, name: f.name, project: f.project, projectDir: f.projectDir,
       ...(f.projectRepo ? { projectRepo: f.projectRepo } : {}),
@@ -1126,7 +1087,6 @@ export function list(db, filters = {}, actor, opts = {}) {
       ...reversalFields(f, e.sections),
       version: r.version,
       ...(f.reworded ? { reworded: f.reworded } : {}),
-      ...(beside.length ? { beside } : {}),
     });
   }
   return out.sort(blockersThenOldest);
@@ -1284,7 +1244,7 @@ function reword(db, q, raw, at, d, warnings) {
   } catch (e) {
     throw e instanceof UsageError ? new UsageError(e.message.replace(/^register payload/, 'the reworded payload')) : e;
   }
-  const { rulings } = rulingChecks(db, p, at, true, d);
+  const { rulings } = rulingChecks(db, p, true, d);
   if (rulings.length && !p.blocking) warnings.push(f.id + ' reverses a ruling, so it is stored blocking');
   if (rulings.length) p.blocking = true;
   /* a ruling's quote is frozen at registration: the same rulings keep it */

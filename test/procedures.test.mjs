@@ -14,6 +14,7 @@ import { agentChecks } from '../lib/mod-core.mjs';
 import { childEnv, fixtureCopy, tempDir } from './helpers/sandbox.mjs';
 import { cliRoute, runCli as cliRun } from './helpers/cli.mjs';
 import { slicer } from './helpers/shard.mjs';
+import { cardRow, cardText } from '../skills/onboard/cards.mjs';
 
 /* run as two files: this file takes cases 1, 3, 5 and on, procedures-2
    the rest, so the git-bound cases are spread across processes */
@@ -146,6 +147,25 @@ test('the YAML subset reads flow lists, quotes, a list of maps and an empty map'
 
 /* ---- the file contract ---- */
 
+/* a routine bullet from an old how-to section becomes a card that parses clean, with and without an expect */
+test('a card written from an onboarding routine row parses clean, its steps and scripts carried', () => {
+  const routine = (text, lead, target) => ({ title: lead, fields: { target, lead, sourceText: text, expect: (/expect[^.]*/.exec(text) || [])[0],
+    commands: [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]), scripts: pr.commandScripts([...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]).join(' && ')) } });
+  const one = cardText(routine('Rebuild the driver: `pwsh scripts/build-driver.ps1 -Clean`. Then run `node scripts/test.mjs --fast`, expect `0 fail`.', 'Rebuild the driver', 'docs/procedures/rebuild-the-driver.md'));
+  const r = parse(one.text, one.name + '.md');
+  assert.equal(r.ok, true, r.errors.join('; ') + '\n' + one.text);
+  assert.deepEqual(r.proc.commands.map((c) => c.section + ': ' + c.line), ['Steps: pwsh scripts/build-driver.ps1 -Clean', 'Steps: node scripts/test.mjs --fast'], 'Verify reruns no step');
+  const release = cardText(cardRow({ title: 'Release', fields: { steps: [{ text: 'Publish', run: 'npm publish' }], verify: { expect: 'the version is live', run: 'npm view . version' } } }, 'docs/procedures/release.md'));
+  const rel = parse(release.text, release.name + '.md');
+  assert.equal(rel.ok, true, rel.errors.join('; ') + '\n' + release.text);
+  assert.deepEqual(rel.proc.commands.filter((c) => c.section === 'Verify').map((c) => c.line), ['npm view . version'], 'Verify runs the named check, never the publish');
+  assert.deepEqual(r.proc.refs.map((x) => x.target), ['scripts/build-driver.ps1', 'scripts/test.mjs']);
+  const bare = cardText(routine('Run the tests: `npm test`.', 'Run the tests', 'docs/procedures/run-the-tests.md'));
+  const b = parse(bare.text, bare.name + '.md');
+  assert.equal(b.ok, true, b.errors.join('; ') + '\n' + bare.text);
+  assert.deepEqual(b.proc.refs.map((x) => x.target), ['docs/procedures/run-the-tests.md'], 'a card with no repo script names itself');
+});
+
 test('the committed procedures and the demo parse; README and _template are never procedures', () => {
   for (const n of readdirSync(join(pluginRoot, 'docs', 'procedures')).filter((f) => f.endsWith('.md') && f !== 'README.md' && !f.startsWith('_'))) {
     const r = parse(readFileSync(join(pluginRoot, 'docs', 'procedures', n), 'utf8').replace(/\r\n/g, '\n'), n);
@@ -209,6 +229,11 @@ test('staleness: a referenced file changed, a symbol gone, a flag gone, a script
   const proc = parse(DEMO).proc;
   assert.deepEqual(pr.judge(dir, proc, {}), [], 'fresh against the commit that wrote the file');
   assert.deepEqual(pr.lint(dir, proc), ['lib/b.mjs (in Steps) is not in References']);
+  /* a build output git ignores need not be a reference */
+  mkdirSync(join(dir, 'out'));
+  writeFileSync(join(dir, 'out', 'app.exe'), 'x');
+  writeFileSync(join(dir, '.git', 'info', 'exclude'), 'out/\n');
+  assert.deepEqual(pr.lint(dir, { ...proc, backticks: proc.backticks.concat({ section: 'Steps', token: 'out/app.exe' }) }), ['lib/b.mjs (in Steps) is not in References']);
   const head = git(dir, 'rev-parse', 'HEAD');
   commitFile(dir, 'lib/a.mjs', 'export const SYMBOL = 2;\n');
   assert.deepEqual(pr.judge(dir, proc, { self: head }), ['changed since ' + head.slice(0, 7) + ': lib/a.mjs (1 commit)']);
@@ -300,6 +325,8 @@ test('/askerdo proc words, ran and scan parse; a deviated run needs its note', (
   assert.match(pm.parseProc('ran release deviated').error, /needs a note/);
   assert.match(pm.parseProc('ran release').error, /^Usage/);
   assert.deepEqual(pm.parseProc('scan'), { sub: 'scan' });
+  assert.deepEqual(pm.parseProc('scan --check'), { sub: 'scan', check: true });
+  assert.match(pm.scanText({ project: 'C:/main', created: [], here: 'C:/wt' }), /main checkout.*C:.wt/);
   assert.match(pm.parseProc('').error, /^Usage/);
 });
 
@@ -307,6 +334,7 @@ test('the Agent check names the testing rule only where a brief runs tests witho
   const ids = (prompt) => agentChecks({ prompt: 'Keep x-state.md. Final response under 2000 characters. ' + prompt }, { rules: {} }).map((s) => s.id);
   assert.deepEqual(ids('Fix the band.'), []);
   assert.deepEqual(ids('Fix the band and run the tests.'), ['tests']);
+  assert.deepEqual(ids('Run the tests you change while working; do not run the full suite, the orchestrator does.'), []);
   assert.deepEqual(ids('Run only the test files you touch, one full run at the end.'), []);
   assert.deepEqual(ids('Run tests per docs/procedures/run-tests.md.'), []);
   assert.deepEqual(ids('Read your brief docs/briefs/lane.md, then run the suite.'), []);
@@ -339,11 +367,19 @@ test('the proc verbs on a board: scan from a second checkout, find, ran, trigger
   const env = childEnv({ ASKERDO_ROOT: root, ASKERDO_BOARD_URL: 'memory:procedures-cli' });
   const route = await cliRoute(root, env);
   try {
+    /* --check reads the branch's own files and writes nothing, so the scan below still creates the card */
+    writeFileSync(join(lane, 'docs', 'procedures', 'bad.md'), DEMO.replace('name: demo', 'name: bad').replace('`scripts/build.mjs`: the build.', '`scripts/gone.mjs`: the build.'));
+    const check = await cliRun(['proc', 'scan', '--check', '--json'], { env, cwd: lane });
+    assert.equal(check.code, 1, 'a file with errors fails the check');
+    const files = JSON.parse(check.out).files;
+    assert.deepEqual(files.map((x) => [x.name, x.errors.length > 0]), [['bad.md', true], ['demo.md', false]]);
+    assert.ok(files[0].errors.includes('gone: scripts/gone.mjs'), files[0].errors.join('; '));
     const scan = await cliRun(['proc', 'scan', '--json'], { env, cwd: lane });
     assert.equal(scan.code, 0, scan.err);
     const made = JSON.parse(scan.out);
     assert.equal(made.created.length, 1);
     assert.equal(slash(made.project).toLowerCase(), dir.toLowerCase(), 'a second checkout scans for the main one');
+    assert.equal(slash(made.here).toLowerCase(), lane.toLowerCase(), 'and says which checkout it was asked for');
     const id = made.created[0];
     const find = await cliRun(['proc', 'find', 'demo', 'build', '--json'], { env, cwd: dir });
     assert.deepEqual(JSON.parse(find.out).map((c) => c.id), [id]);

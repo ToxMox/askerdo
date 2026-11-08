@@ -18,7 +18,6 @@ From the top, a band can hold:
 | The count line | With two or more of this session's questions open, one line instead: `3 open`, and `1 blocking` in amber when any block. | Opens the pane on Questions. |
 | This PC's health | When something in AskerDo on this PC is wrong (the local server down, the board join lost, a copy an update replaced), its first problem with the fix, as `askerdo status` reports it. | **Start**, **Restart** or **Run** runs the fix here; **Copy** copies a command to run on another PC. A fix only you can make, such as starting a new session, has no press. |
 | A board call | Something only you can close: a look ("its work landed, and it closes at your look" with **Close** and **Not yet**), a judgment call (**Close it**, **Park it**, **Keep**), or an override request (**Allow**, **Keep**). Several override requests fold into one line. | Records your call on the board at once. |
-| Review due | A track whose finished code tasks wait for a review, once they reach the review size ([Review coverage](concepts.md#review-coverage)). | **Open the track** opens the Tracks tab at that track. |
 | Answers waiting | `1 answer waiting` (or `2 updates waiting`): answers and board news this session has not heard yet, with a **submit 1** chip (the count of what waits). | **submit 1** starts one turn carrying them. Nothing starts a turn by itself; a prompt you type also carries them. |
 | Answers queued | `2 answers queued` in amber, with **Send**: answers you queued on a card or the band, kept on this PC and off the board ([Queued answers](#queued-answers)). | **Send** records them all and delivers them together. |
 | Board offline | `board offline: drawn from this PC's last copy`, when the board cannot be reached. | None. See [Troubleshooting](troubleshooting.md#the-board-is-offline). |
@@ -72,11 +71,12 @@ The pane opens beside the conversation. Open it from the band (the mark, the cou
 
 ### Home
 
-![The pane on Home: the band's copy with Q617's row over the status line, Agents unfolded with two running agents, Where we stand with TR-29's graph, an amber bead before T-577 and another before T-586, the review still to do drawn as an outlined diamond, and the legend naming finished, not reviewed and a review to do, then the Activity feed under its filter field](img/pane-home.png)
+![The pane on Home: the band's copy with Q617's row over the status line, Agents unfolded with two running agents, and Where we stand on My track's lines: TR-29's tasks top to bottom on a white spine, 4 done folded into a bead at the top, T-577 running with the session's train, T-581 and T-578 ready on side lines that join the spine, T-586 the review still to do as an outlined diamond on its own, and the legend naming the marks](img/pane-home.png)
 
 - **The band's copy** at the top: the same rows and status line, at the pane's width.
-- **Agents**, while any run. Shut, it is one line: the deepest agent's depth meter, how many run and the longest running time; press the ring to unfold a row per agent with its depth meter, job, model, running time, tool calls, current tool and depth.
-- **Where we stand**: the held track drawn as a station map of its tasks, running ones lit, ready ones ringed, waiting ones joined by the edges they wait on. Finished code no review has read sits between the stations as amber beads, and a review still to do is a diamond, amber once reopened; a finished review leaves the map like any finished station, and its track's board page lists what it covered ([Review coverage](concepts.md#review-coverage)). **My track's lines** draws your track; **Whole workstream** draws every track in it. Every name on the map opens its board page, and the legend under it names the marks.
+- **Agents**, while any run. Shut, it is one line: the deepest agent's depth meter, how many run and the longest running time; press the ring to unfold a row per agent with its depth meter, job, model, running time, tool calls, current tool and depth. An agent that another agent started sits indented under it and counts with it.
+- **Where we stand**: the picture the board draws, at the pane's width. **My track's lines** draws the held track's stations: running ones lit, ready ones ringed, waiting ones joined by what they wait on, the critical path a straight spine, a run of finished tasks folded into one bead, review stations as diamonds ([Review coverage](concepts.md#review-coverage)), your answers as chips on what they settled, and the session on the track as a train with a car for each agent. A station whose agent has stopped drops its car and reads **finished: job, landing**, or **stopped: job, next leg due** when the agent handed on, until the session closes the task or sends the next leg. **Whole workstream** zooms out to its tracks, each a pill with its waits on the others counted, and the crumbs above step out to the **Overview** of every workstream. Press a station, pill or wait to select it: what it waits on and what it frees light up, and a strip under the picture says where it stands, with presses to open it, answer the question holding it or resume its track; press it again to open the task or zoom into the track. The line over the picture says what changed since your last look, and the stations that changed carry a tag. A picture past what the pane draws ends in a **+N more on the board** row that opens the board's page, and the legend under it names the marks.
+- **Inbox N**, under the picture on **Whole workstream**: the workstream's tasks on no track, with how many are due in amber, and amber when the inbox has stalled. Unfold it for each task, its id opening its page, and its wake under it: the day or event that brings it back, amber once due ([Workstreams](concepts.md#workstreams)).
 - **Activity**: the board's changes in this project, newest first, grouped by day. The filter takes words, a kind (`task`, `question`) or an id, and widening it reaches every project.
 - **Versions** at the foot: this PC's AskerDo version and the board's, under the line **How it all works: the Guide tab**, which opens the Guide tab. When the board runs an older one, a line at the top of Home says so.
 
@@ -105,7 +105,7 @@ Every track, task, question and decision name on the tab opens its board page: a
 
 ![The pane on Settings: the Sessions sub-tab with the depth meter on, the handoff window at 30% and the wrap line at 40%, each set built-in](img/pane-settings.png)
 
-The first line names the record this session's settings come from (its track, else its project). Search across every setting, or turn on **Changed only**. The sub-tabs are **Replies**, **Sessions**, **Agents**, **Tests**, **Rules** and **This PC**, each with a count of changed values. Every row has a label, one line on what it does, **more** for the full help, its control, and a chip naming where the value is set; press the chip to set it somewhere else. [Settings and rules](settings-and-rules.md) covers every setting and the layers.
+The first line names the record this session's settings come from (its track, else its project). Search across every setting, or turn on **Changed only**. The sub-tabs are **Replies**, **Sessions**, **Agents**, **Tests**, **Rules** and **This PC**, each with a count of changed values. Every row has a label, one line on what it does, its control, a chip naming where the value is set, and the ring at the end of its first line, which unfolds the full help: what changes, what each choice does, when it takes effect and its command; press the chip to set it somewhere else. [Settings and rules](settings-and-rules.md) covers every setting and the layers.
 
 ### Guide
 
@@ -195,7 +195,7 @@ Type `/askerdo` in the prompt; the typeahead lists every subcommand with one lin
 | `/askerdo track park [TR-n] "reason"` | Parks a track at once, with no handoff. | `/askerdo track park TR-9 "waits on the tile format"` |
 | `/askerdo track finish [TR-n] ["outcome"]` | Closes a track as done. | `/askerdo track finish "cache capped at 500 MB"` |
 | `/askerdo track splinter [T-n] <name>` | Starts a side track from this one and moves this session onto it. | `/askerdo track splinter T-44 Slow disk tests` |
-| `/askerdo track capture [inbox] <idea>` | Adds a task to the held track, or to the workstream's inbox. | `/askerdo track capture inbox Cache size in settings` |
+| `/askerdo track capture [inbox] <idea>` | Adds a task to the held track, or to the workstream's inbox, where it wakes 14 days out ([Workstreams](concepts.md#workstreams)). | `/askerdo track capture inbox Cache size in settings` |
 | `/askerdo track pane` | Opens the pane on Tracks. | `/askerdo track pane` |
 | `/askerdo park "reason"` | Asks the session to write a parked handoff of its track. | `/askerdo park "waits on the design review"` |
 | `/askerdo handoff` | Asks the session to write its handoff now. | `/askerdo handoff` |
@@ -208,6 +208,7 @@ Type `/askerdo` in the prompt; the typeahead lists every subcommand with one lin
 | `/askerdo proc ran <name> clean` | Records a clean run of a procedure. | `/askerdo proc ran release clean` |
 | `/askerdo proc ran <name> deviated "note"` | Records a run that left the steps, and how. | `/askerdo proc ran release deviated "skipped the tray rebuild"` |
 | `/askerdo proc scan` | Reads the project's procedure files again and updates their cards. | `/askerdo proc scan` |
+| `/askerdo proc scan --check` | Checks the procedure files of this checkout, a worktree's branch included, and writes nothing to the board. | `/askerdo proc scan --check` |
 | `/askerdo allow K-n` | Your Allow on an override request for that record. | `/askerdo allow K-12` |
 | `/askerdo keep K-n` | Your Keep: the record stays as written. | `/askerdo keep K-12` |
 | `/askerdo unscrub K-n` | Puts back text a scrub removed, within 7 days. | `/askerdo unscrub K-12` |

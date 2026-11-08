@@ -11,6 +11,7 @@ const GROUPS = [
   ['Workstreams and tasks', ['ws create', 'ws edit', 'ws close', 'task create', 'task edit', 'task update', 'check add', 'check done', 'check move', 'edge add', 'edge remove']],
   ['Tracks and handoffs', ['resume', 'shelf', 'track list', 'track show', 'track mine', 'track new', 'track park', 'track finish', 'track drop', 'track splinter', 'track capture', 'track layout', 'track promote', 'track fold', 'track reorder', 'track found', 'handoff write', 'handoff update']],
   ['Commits and reviews', ['commit link', 'commit move', 'review covers', 'coverage']],
+  ['Conversion map', ['conversion', 'conversion put', 'conversion drop']],
   ['Knowledge and decisions', ['knowledge new', 'knowledge supersede', 'knowledge amend', 'knowledge edit', 'decide', 'decisions', 'decisions triggers']],
   ['Settings and profiles', ['settings', 'settings set', 'settings unset', 'settings rule', 'profile add', 'profile remove', 'profile show-effective', 'profile rule-add', 'profile rule-drop', 'profile rule-clear', 'profile define', 'profile list', 'profile guard']],
   ['Procedures', ['proc scan', 'proc ran', 'proc find', 'proc triggers']],

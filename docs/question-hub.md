@@ -73,8 +73,9 @@ board.
 ```text
 ~/.claude/askerdo/
   cli.mjs        the launcher the SessionStart sync keeps current
-  board/         the local server: local.json (its localhost route), cursor.json (its place in
-                 the stream), sessions.json, secret and port, notify.json, recent.json,
+  board/         the local server: local.json (its localhost route and the copy of AskerDo
+                 it runs, so a CLI from another copy runs its own code), cursor.json (its
+                 place in the stream), sessions.json, secret and port, notify.json, recent.json,
                  tray.json, timings-local.log
   inbox/         the lines waiting for each session
   log            the fail-open log
@@ -292,9 +293,9 @@ RULINGS (T-6, the what-happened guard). An answered question is a ruling.
 - `reversal` (text): required with `revisits` and refused without it: what changed since the ruling.
 - The board writes `## Reverses` in the same transaction, frozen: each ruling's label and name, its Answer's first paragraph verbatim, and each option it did not choose with its catch; the reversal goes in `## Reversal`.
 - A question with `revisits` is stored `blocking: true` (a warning says so when the payload said false).
-- Told alone: when the same session registered another question within 60 seconds and either carries `revisits`, the board still registers it and returns `beside` (the other labels) with a warning; the mod's `ask` tool flags the same within one turn on both cards and in the turn-end note, and never refuses it (Q32, 32a).
+- A reversal may share a reply with other questions: its `Reversal of` lead and the quoted ruling mark it.
 - `cites` (array of `Q-n`): rulings mentioned as context only. A `Q-n` label of an answered question in the ask, crux, gist, stakes or option text that is in neither list is refused; answer tokens are not checked.
-- `register --json` returns `revisits`, `reverses` (each ruling as `{id, name, quote, declined}`), `cites` and `beside` when set; `list --json` and `show --json` add `reversal`.
+- `register --json` returns `revisits`, `reverses` (each ruling as `{id, name, quote, declined}`), and `cites` when set; `list --json` and `show --json` add `reversal`.
 
 THE ANSWER TOKEN (T-79, Q99 = a). An option's stored `type` is ONE lowercase letter,
 a to z, unique within the question. The token a reader sees and types is

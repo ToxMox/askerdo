@@ -18,6 +18,7 @@ const { dataDir } = await import('../lib/node-helpers.mjs');
 const { growthLine } = await import('../server/verbs/outcomes.mjs');
 const { kickoffText } = await import('../server/verbs/kickoff.mjs');
 const { proseOrder } = await import('../lib/handoff-payload.mjs');
+const { wakeIn } = await import('../server/handoff-text.mjs');
 const { entryDrift, forgetInMap, learnProjects, readMap, scanProjects } = await import('../lib/project-map.mjs');
 
 let n = 0;
@@ -39,7 +40,7 @@ test('a handoff lets the lease go and the track waits; parked, its handoff parks
   const first = (await boardCall('trackView', { track: tr.id })).tasks[0];
   await boardCall('taskUpdate', { id: first.id, status: 'completed' });
   const tasks = [];
-  for (const name of ['wire', 'test', 'ship']) tasks.push((await boardCall('createRecord', { kind: 'task', name, description: 'd' })).id);
+  for (const name of ['wire', 'test', 'ship']) tasks.push((await boardCall('createRecord', { kind: 'task', name, description: 'd', wake: wakeIn() })).id);
   /* a ruling made before the leg began stays out of the kickoff, one made since is listed; the held track fills the links */
   const ruling = (title, opts = {}) => boardCall('decide', { title, tasks: [tasks[0]], projects: ['C:/repo'] }, { session: 'a1', ...opts });
   const before = await ruling('Cards first', { now: new Date(Date.now() - 3600e3) });
@@ -169,13 +170,23 @@ test('the kickoff lists the ready set and the critical path from the tables, nev
   const ws = (name, repo) => boardCall('createRecord', { kind: 'workstream', name, description: 'One line of work.', projectRepos: [repo] });
   const [home, sibling, other] = [await ws('Kickoff home', 'example.com/kick'), await ws('Kickoff sibling', 'example.com/kick'), await ws('Kickoff other', 'example.com/other')];
   const held = await boardCall('newTrack', { name: 'Inbox line', workstream: home.id, session: 'd3' }, { session: 'd3', pc: 'pc1' });
-  const filed = await boardCall('capture', { workstream: sibling.id, name: 'Filed in the sibling' });
-  const away = await boardCall('capture', { workstream: other.id, name: 'Filed in another project' });
+  const filed = await boardCall('capture', { workstream: sibling.id, name: 'Filed in the sibling', wake: wakeIn() });
+  const away = await boardCall('capture', { workstream: other.id, name: 'Filed in another project', wake: wakeIn() });
+  /* a due task of any workstream on the project leads the kickoff, ahead of the inbox list, naming its workstream */
+  const then = new Date(Date.now() - 20 * 86400e3);
+  const stale = await boardCall('capture', { workstream: sibling.id, name: 'Filed long ago', wake: wakeIn(1, then) }, { now: then });
   const own = (await resume(held.id, 'd3')).kickoff;
   assert.ok(has(own, filed.id) && !has(own, away.id), own);
+  const rows = own.split('\n');
+  const dueAt = rows.findIndex((l) => l.startsWith('Due for a home') && has(l, stale.id) && has(l, sibling.id) && !has(l, filed.id));
+  assert.ok(dueAt >= 0 && dueAt < rows.findIndex((l) => l.startsWith('Inbox (')), own);
+  /* the inbox's place line owes this track's workstream its due tasks, and only names another's; the lead agrees */
+  const place = rows.find((l) => l.startsWith('Place each:')) || '';
+  assert.ok(place.includes(stale.id + ' (' + sibling.id + ')'), place);
+  assert.ok(rows[dueAt].includes(stale.id + ' (' + sibling.id + ')') && !rows[dueAt].includes('<T-n> --track'), rows[dueAt]);
   /* the handoff write returns the same set */
   const wrote = await handoff(held.id, 'd3');
-  assert.deepEqual(wrote.inbox.map((x) => x.id), [filed.id]);
+  assert.deepEqual(wrote.inbox.map((x) => x.id + ' ' + x.due), [stale.id + ' true', filed.id + ' false']);
 });
 
 test('a handoff lays its leftovers out on the track with their edges, each naming who runs it; a Next list in the state is refused before anything is written', async () => {
@@ -205,6 +216,14 @@ test('a handoff lays its leftovers out on the track with their edges, each namin
     (e) => /step 2/.test(e.message) && /runBy/.test(e.message), 'a leftover naming nobody to run it is refused');
   assert.equal((await boardCall('trackHandoffs', { track: tr.id })).handoffs.length, 1, 'only the first handoff is on the board');
   assert.ok(!(await boardCall('trackView', { track: tr.id })).tasks.some((t) => t.name === 'Ship it'), 'no leftover was laid out');
+
+  /* a leftover for later goes on a new track the write makes and parks until its event */
+  const later = await handoff(tr.id, 'g2', { leftovers: [{ name: 'Cut the release', runBy: 'orchestrator' },
+    { name: 'Port the docs', runBy: 'agent:opus', newTrack: 'Docs port', unparkWhen: 'task-completes 1' }] });
+  const [release, port] = later.laidOut;
+  const docs = later.parkedTracks[0];
+  assert.deepEqual([port.track, docs.name, (await boardCall('trackSummary', { track: docs.id })).state], [docs.id, 'Docs port', 'parked']);
+  assert.ok(docs.unpark.includes(release.id), docs.unpark);
 });
 
 test('a handoff written through the launcher keeps its loose-file lists on the PC; the board gets each repo summary and no question', async () => {
@@ -229,6 +248,8 @@ test('a handoff written through the launcher keeps its loose-file lists on the P
   const tr = await line('e1');
   const ids = [];
   for (const name of ['Write the code', 'Write the docs']) ids.push((await boardCall('capture', { track: tr.id, name }, { session: 'e1' })).id);
+  /* filed off the track this arc, so the growth lines name the place command */
+  await boardCall('createRecord', { kind: 'task', name: 'Ask about the logo', description: 'd', workstream: tr.ws, unplaced: 'waits on the user', wake: wakeIn() }, { session: 'e1' });
   const asked = async () => (await boardCall('list', {})).length + (await boardCall('list', { snoozed: true })).length;
   const before = await asked();
   let h;
@@ -242,6 +263,8 @@ test('a handoff written through the launcher keeps its loose-file lists on the P
     const launcher = pc.launcherHere(env);
     const cmd = (h.leavesLine.match(/`([^`]+)`/) || [])[1] || '';
     assert.ok(cmd.startsWith(launcher + ' edge add '), cmd);
+    const placeEach = h.growthLines.find((l) => l.startsWith('Unplaced: ')) || '';
+    assert.ok(placeEach.includes(launcher + ' task edit ') && !placeEach.includes('.claude/askerdo/cli.mjs'), placeEach);
     const leaf = h.leaves[0].id;
     const later = ids.find((id) => id !== leaf);
     const argv = cmd.slice(launcher.length).replace('<the later task>', later).replace('<this one>', leaf).replace('<why>', 'the docs follow the code')

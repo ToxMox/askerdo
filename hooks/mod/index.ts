@@ -6,6 +6,7 @@
  * answer delivery that replaces them, the depth meter and the agent guard.
  * Every store write goes through bin/askerdo.mjs, the one writer path. */
 import type { Register } from 'claude-code'
+import { update } from 'claude-code'
 import {
   BAND_MAX, bandSection, COMMAND, COMMAND_DESCRIPTION, COMMAND_HINT, NEEDS_TRACK, OLD_PANE_IDS, PANE_ID, POLL_MS,
   agentDenyReason, agentNote, agentStage, agentTokens, alertUrl, askPrompt, askResult,
@@ -22,7 +23,6 @@ import { clashText, toldClash } from '../../lib/mod-core.mjs'
 import { closedFinished, inboxWaiting, withWaiting } from '../../lib/mod-core.mjs'
 import { withColumns } from '../../lib/mod-core.mjs'
 import { receiptRow, receiptsOf } from '../../lib/mod-core.mjs'
-import { aloneInTurn, besideSlip } from '../../lib/mod-core.mjs'
 import { changedStub, rewordResult, rewordedSince } from '../../lib/mod-core.mjs'
 import { briefPaths, withRules } from '../../lib/mod-core.mjs'
 import { handedOn, laneNote, latestLane, tasksOfDispatch } from '../../lib/mod-core.mjs'
@@ -46,25 +46,25 @@ import { heldTrack, homeGraph, localUrl, mineOf, statusModel, versionWords } fro
 import { answeringOf } from '../../lib/mod-core.mjs'
 import { callPressText, parseOverride } from '../../lib/mod-core.mjs'
 import { briefDecisionIds, isHubOverride, overrideArgs, overrideCard, overrideOn, overrideResult, overrideTold } from '../../lib/mod-core.mjs'
-import { agentsModel } from '../../lib/mod-core.mjs'
-import { closedInbox, commitsIn, offTrackSlip } from '../../lib/mod-core.mjs'
+import { LIVE_AGENT, agentsModel, flightsRebuilt } from '../../lib/mod-core.mjs'
+import { closedInbox, commitsIn, dueAway, inboxLeft, offTrackSlip } from '../../lib/mod-core.mjs'
 import { LINK_VERB, captureCommit, headsOf, repoCandidates, shaHint, taggedTasks } from '../../lib/commit-capture.mjs'
-import { inboxLines, staleToolsLine } from '../../server/handoff-text.mjs'
+import { inboxLines, staleToolsLine, wakeIn } from '../../server/handoff-text.mjs'
 import { STOP_FIRST, handoffCurrency, stepChanges, stepTool } from '../../lib/mod-core.mjs'
 import { updateProblems } from '../../lib/handoff-payload.mjs'
 import { statusTree } from './status.tsx'
 import { bandTree } from './band.tsx'
 import { checkHealth, health, healthDue, healthStale, sawLocal } from './health.ts'
-import { withHealth } from '../../lib/mod-core.mjs'
+import { healthCall, withHealth } from '../../lib/mod-core.mjs'
 import { paneLoading, paneTree } from './pane.tsx'
 import { GUIDE_HOME, guideIndex, guideTree } from './guide.tsx'
 import type { GuidePage } from './guide.tsx'
 import type { PaneView } from './pane.tsx'
 import { firstTellingTree, pinnedOf, questionsLoading, questionsTree, ringKey } from './questions.tsx'
 import type { QuestionsActions, QuestionsView } from './questions.tsx'
-import { COMMAND_TOOLS, FILE_TOOLS, findText, matchCall, parseProc, procNote, procToast, ranText, scanText } from '../../lib/proc-match.mjs'
+import { COMMAND_TOOLS, FILE_TOOLS, checkText, findText, matchCall, parseProc, procNote, procToast, ranText, scanText } from '../../lib/proc-match.mjs'
 import { decisionHits } from '../../lib/decision-match.mjs'
-import { decideArgs, decidedText, decisionNote, decisionsBlock, heldDecisionsNote, withDecisions } from '../../lib/mod-core.mjs'
+import { decideArgs, decidedText, decisionNote, decisionsBlock, heldDecisionsNote, knowledgeNote, withDecisions } from '../../lib/mod-core.mjs'
 
 const PLUGIN = 'askerdo'
 const SHOW_MAX = 8
@@ -130,7 +130,7 @@ async function liftFreeze($: any, sid: string): Promise<void> {
   await readClosed($, sid)
   if (!closedAs(sid)) return
   await keepClosed($, sid)
-  try { $.ui.invalidate('ui.render') } catch {}
+  qpaneRedraw($)
   startPoll($)
   kick($)
 }
@@ -304,7 +304,7 @@ function routeVersion($: any, env: Record<string, string>): Promise<string> {
 }
 
 /* the scripts the local server runs in process (lib/mod-scripts.mjs) */
-const ROUTED_SCRIPTS = ['mod-alias', 'mod-contract', 'mod-inbox', 'mod-queue', 'rules', 'depth-marker']
+const ROUTED_SCRIPTS = ['mod-alias', 'mod-contract', 'mod-inbox', 'mod-queue', 'rules', 'depth-marker', 'drift']
 
 /* Which route runs an argv, or null for a process. */
 function routeOf(argv: string[]): { path: string; args: string[] } | null {
@@ -577,8 +577,9 @@ async function followFolder($: any): Promise<void> {
   feed.own = undefined
   /* the old project's scope too, so its Needs-you link goes with it */
   band.scope = undefined
+  drift.line = null
   kick($)
-  void readWhere($).catch(() => {})
+  void readWhere($).then(() => readDrift($)).catch(() => {})
 }
 
 /* the folder and branch the pane's title and the AskerDo button's card name; read at the
@@ -615,6 +616,38 @@ async function readWhere($: any): Promise<void> {
     qpaneRedraw($)
     await retitle($)
   }
+}
+
+/* the drift line on Home, read once per folder: at the session's start and after a
+   move, never per turn or on a timer. Off when the rules say doctor.drift is false; no band, no toast */
+const drift: { root?: string; line: { text: string; doctor: boolean } | null; gen: number } = { line: null, gen: 0 }
+async function readDrift($: any): Promise<void> {
+  const root = where.now && where.now.root
+  /* after the band's first load too, which carries the held track the rules read keys on */
+  if (!root || !band.loaded || drift.root === root) return
+  drift.root = root
+  const gen = ++drift.gen
+  /* the prompt's own cached rules read; with no board the setting is its default, on */
+  const b = await readRules($).catch(() => null)
+  if (gen !== drift.gen) return
+  let line: any = null
+  if (!(b && b.values && b.values['doctor.drift'] === false)) {
+    const r = await spawn($, ['node', $.plugin.root + '/scripts/drift.mjs', '--root', root], { timeoutMs: 15000, stdin: JSON.stringify((b && b.rows) || []) }).catch(() => null)
+    try { line = r && r.exitCode === 0 ? JSON.parse(String(r.stdout || '')) : null } catch {}
+  }
+  if (gen !== drift.gen) return
+  const next = line && typeof line.text === 'string' ? { text: line.text, doctor: !!line.doctor } : null
+  if ((next && next.text) === (drift.line && drift.line.text)) return
+  drift.line = next
+  qpaneRedraw($)
+}
+
+/* the doctor's run report sits on its card; a card with no run yet has nothing to open */
+function driftHome(): { text: string; href?: string } | null {
+  if (!drift.line) return null
+  const card = drift.line.doctor ? (procs.cards || []).find((c: any) => c && c.slug === 'doctor-a-project') : null
+  const href = card && Number(card.runs) > 0 ? recordHref(band.local, card.key || card.id, card.url) : ''
+  return href ? { text: drift.line.text, href } : { text: drift.line.text + (drift.line.doctor ? ' (/askerdo:doctor)' : '') }
 }
 
 /* an open pane takes the new title; never with focus, and never an open of a closed pane
@@ -703,19 +736,32 @@ const needTrack = () => (mem.trackErr ? 'The board could not be read (' + mem.tr
 
 /* ---- the agent guard's opt-in and marker ------- */
 
-/* state: undefined until read; track: the track key it was read for */
-const guard: { state?: any; track?: string | null; mark?: string; profilesAt?: number } = {}
+/* state: undefined until read; track and dir: the track key and folder it was read for */
+const guard: { state?: any; track?: string | null; dir?: string; mark?: string; profilesAt?: number } = {}
+
+/* each guard read goes to the debug log with its folder and source, so a wrong read shows why */
+function guardReadLine(dir: string, trackKey: string | null | undefined, j: any, failed?: string): string {
+  const at = 'AskerDo guard read for ' + dir + (trackKey ? ' (track ' + trackKey + ')' : '') + ': '
+  if (failed !== undefined) return at + 'failed, ' + (failed || 'no reason given')
+  const s = j && j.source
+  const from = !s ? 'no profile (built-ins)' : s.profile ? s.profile + ' on ' + s.record : (s.level || 'source') + ' ' + (s.record || '')
+  return at + (j && j.on ? 'on' : 'off') + ' from ' + from + (j && j.problem ? '; ' + j.problem : '')
+}
 
 async function markerRun($: any, sid: string, trackKey: string | null | undefined, extra: string[]): Promise<void> {
   try {
-    const argv = ['node', $.plugin.root + '/scripts/depth-marker.mjs', '--cwd', await projectDir($), '--session', sid]
+    const dir = await projectDir($)
+    const argv = ['node', $.plugin.root + '/scripts/depth-marker.mjs', '--cwd', dir, '--session', sid]
     if (trackKey) argv.push('--track', trackKey)
     const r = await spawn($, [...argv, ...extra, '--json'], { timeoutMs: 15000 })
-    if (r.exitCode !== 0) return
+    if (r.exitCode !== 0) { debugLine($, guardReadLine(dir, trackKey, null, String(r.stderr || '').trim().split(/\r?\n/)[0])); return }
     const before = JSON.stringify(guardChip(guard.state))
-    guard.state = guardOf(JSON.parse(String(r.stdout || '')))
+    const j = JSON.parse(String(r.stdout || ''))
+    guard.state = guardOf(j)
     guard.track = trackKey || null
-    if (JSON.stringify(guardChip(guard.state)) !== before) { try { $.ui.invalidate('ui.render') } catch {} }
+    guard.dir = dir
+    debugLine($, guardReadLine(dir, trackKey, j))
+    if (JSON.stringify(guardChip(guard.state)) !== before) qpaneRedraw($, STATUS)
   } catch {}
 }
 
@@ -787,7 +833,7 @@ const askSchema = (n: string) => ({
     workstream: { type: 'string', description: 'WS-n; left out, the workstream of the track this session holds, else inherited from the session' },
     track: { type: 'string', description: 'TR-n: the track the question belongs to' },
     gates: { type: 'array', items: { type: 'string' }, description: 'T-n ids of the tasks this question gates' },
-    revisits: { type: 'array', items: { type: 'string' }, description: 'Q-n ids of the answered questions (rulings) this one reopens; needs reversal; stored blocking, told alone in its reply (one told beside another ask is flagged on both cards)' },
+    revisits: { type: 'array', items: { type: 'string' }, description: 'Q-n ids of the answered questions (rulings) this one reopens; needs reversal; stored blocking, and its card and telling lead with the reversal' },
     cites: { type: 'array', items: { type: 'string' }, description: 'Q-n ids of answered questions this one only mentions' },
     reversal: { type: 'string', description: 'With revisits: what changed since the ruling, short lines; the hub quotes the ruling and the costs ' + n + ' turned down' },
     stakes: { type: 'string', description: 'Short lines, one fact each, a bold lead then the fact' }, whileThisWaits: { type: 'string' }, context: { type: 'string' },
@@ -827,7 +873,7 @@ const toolsFor = (n: string) => [
       + 'as a row in the band above the prompt (b), or nowhere on screen, only in the kickoff and the Tracks tab (c)?" and '
       + '"Before the release, should the next step build just the size report at each handoff (a, my pick), all three drift checks '
       + 'from the design notes (b), or nothing until after the release (c)?" '
-      + 'A question that reopens an answered one names it in revisits with a reversal and is told alone in its reply, its ask leading with Reversal of Q-n; one that only mentions an answered question lists it in cites. '
+      + 'A question that reopens an answered one names it in revisits with a reversal, its ask leading with Reversal of Q-n, and may share a reply with other questions; one that only mentions an answered question lists it in cites. '
       + 'A subagent never calls it: its question goes to the session that dispatched it. '
       + 'In a session that has not used AskerDo, the question stays with the session under a local label (L1, answered L1a) and is filed on the board only if the session uses AskerDo.',
     inputSchema: askSchema(n),
@@ -837,8 +883,8 @@ const toolsFor = (n: string) => [
     description: 'Ask ' + n + ' to override a record already in use, the one way to change it beyond an amend: fix (text a bug or an import wrote), '
       + 'withdraw (a ruling ' + n + ' never made) or scrub (a secret or personal detail); never for wording, scope or a change of mind (amend or supersede those). '
       + 'The session decides whether its change qualifies; a subagent never calls it and reports to its session instead. '
-      + 'One record with its corrected fields, or a batch as items (records that are not rulings). '
-      + 'Answers with the block to put in the reply as written, which ' + n + ' answers with Allow or Keep on the card under it; a fix or withdraw of a ruling is a reversal, told alone.',
+      + 'One record with its corrected fields, or a batch as items. '
+      + 'Answers with the block to put in the reply as written, which ' + n + ' answers with Allow or Keep on the card under it; a fix or withdraw of a ruling is a reversal, its block and card leading with it.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['kind', 'summary', 'reason'],
       properties: {
@@ -902,7 +948,7 @@ const toolsFor = (n: string) => [
         workstreams: { type: 'array', items: { type: 'string' }, description: 'WS-n ids' },
         files: { type: 'array', items: { type: 'string' }, description: 'Globs relative to the repo (lib/builder.js, docs/**/*.md) whose edits it governs' },
         commands: { type: 'array', items: { type: 'string' }, description: 'Command fragments it governs (npm publish, or a script\'s name)' },
-        question: { type: 'string', description: 'Q-n: the question it answers' },
+        question: { type: 'string', description: 'Q-n: the question it answers; the words carrying its answer token (167a) record the answer too, else the result says it is still open' },
         supersedes: { type: 'array', items: { type: 'string' }, description: 'K-n ids of the decisions it replaces' },
         labels: { type: 'array', items: { type: 'string' } },
         global: { type: 'boolean', description: 'true: it holds in every project' },
@@ -972,18 +1018,21 @@ const toolsFor = (n: string) => [
           type: 'array',
           description: 'The steps left, in order: each becomes a task on the track (a name matching an open task there is that task), waits on its after, and is waited on by its before, '
             + 'so the next session takes the next step from the ready set. The state carries the thinking and never orders work. '
+            + 'Work that starts later names newTrack and unparkWhen: the write makes that track and parks it until the event. '
             + 'A leftover you cannot place (is it work at all, which track) goes to ' + n + ' as a question through ask, named in waitingOnUser',
           items: {
             type: 'object', additionalProperties: false, required: ['runBy'],
             properties: {
               runBy: { type: 'string', description: 'Who runs the step, which the kickoff prints: orchestrator (the session itself, for what needs its judgment), '
-                + 'fork (a fork of the session on the session model, which writes the briefs), or agent:<model> (agent:opus, agent:sonnet: mechanical work such as data-file edits and filing records goes to an agent)' },
+                + 'fork (a fork of the session on the session model, which writes the briefs), or agent:<model> (mechanical work such as data-file edits and filing records goes to an agent)' },
               name: { type: 'string', description: 'The step, one line' },
               task: { type: 'string', description: 'T-n: an existing task, moved onto the track' },
               after: { type: 'array', description: 'What it waits on: T-n ids, or the number of an earlier step here (1 first)', items: { anyOf: [{ type: 'string' }, { type: 'integer' }] } },
               before: { type: 'array', description: 'What waits on it: T-n ids alone (a later step here names this one in its own after)', items: { type: 'string' } },
               description: { type: 'string' },
               priority: { type: 'string', enum: ['high', 'medium', 'low'] },
+              newTrack: { type: 'string', description: 'Work that starts later: the name of a new track this step goes on, made and parked by the write (steps naming the same name share it); never the inbox' },
+              unparkWhen: { type: 'string', description: 'With newTrack: the event that opens it, "track-ends TR-n", "task-completes T-n" (or a leftover\'s number here) or "question-answered Q-n"' },
             },
           },
         },
@@ -1027,12 +1076,14 @@ const toolsFor = (n: string) => [
     name: 'review_covers',
     description: 'Set what a review task read: its covers list, the code tasks it covers, each through its newest commit now. '
       + 'Left out, tasks is the default: every uncovered code task on its track finished before the review started (a project-wide review: the project\'s since the last one). '
-      + 'A review that completes with no list takes the default on its own; give the list when the review read less, or other work.',
+      + 'A review that completes with no list takes the default on its own; give the list when the review read less, or other work; none: true clears the list, so the review covers nothing. '
+      + 'A given list is kept: the review reopens only for a newer commit on a task in it, and work outside it waits for the next review.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['review'],
       properties: {
         review: { type: 'string', description: 'T-n: the review task' },
         tasks: { type: 'array', items: { type: 'string' }, description: 'T-n ids of the code tasks it read' },
+        none: { type: 'boolean', description: 'true: clear the list (not with tasks)' },
       },
     },
   },
@@ -1051,7 +1102,8 @@ const toolsFor = (n: string) => [
   {
     name: 'depth',
     description: 'Read this session\'s context depth as the band\'s C ring shows it: the whole percent, the tokens and the window, '
-      + 'and ' + n + '\'s two marks (the handoff window and the wrap line), which were told this session and whether a profile set them. Reads only.',
+      + 'and ' + n + '\'s two marks (the handoff window and the wrap line), which were told this session and whether a profile set them. Reads only. '
+      + 'The mod\'s notes at the window and the wrap line arrive on their own.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
   },
 ]
@@ -1195,7 +1247,7 @@ const band: {
   /* the open questions this session does not own and their counts, for the mark */
   elsewhere?: { questions: any[]; blocking: number; waiting: number }
   /* the local board's band (its `track` the held track's numbers) and the held
-     track's workstream graph `{ workstream, view, layout }`, null where none answers;
+     track's workstream graph `{ workstream, view, picture }`, null where none answers;
      drew: the last redraw's wall time in ms, sent with the next band read for the timings */
   near?: any; graph?: any; drew?: number
   /* the answer keys already toasted, read from $.store once */
@@ -1228,12 +1280,13 @@ async function localGet($: any, path: string): Promise<any> {
 /* the session's ids before a /clear, whose inboxes the band peeks too */
 const oldIds = (sid: string) => mem.lineage.filter((x) => x !== sid)
 
-const bandPath = (sid: string, cwd: string, drew?: number) => 'band?session=' + encodeURIComponent(sid) + '&project=' + encodeURIComponent(cwd)
+const bandPath = (sid: string, cwd: string, drew?: number, ringLog = '') => 'band?session=' + encodeURIComponent(sid) + '&project=' + encodeURIComponent(cwd)
   + (oldIds(sid).length ? '&lineage=' + encodeURIComponent(oldIds(sid).join(',')) : '') + (drew ? '&redraw=' + drew : '')
+  + (ringLog ? '&rings=' + encodeURIComponent(ringLog) : '')
 
 /* the local board's band; with no local server answering, it is started once as the
    route does, and read again. null with the words the band's offline line says. */
-async function readBand($: any, sid: string, cwd: string, drew?: number): Promise<{ near: any; why: string }> {
+async function readBand($: any, sid: string, cwd: string, drew?: number, ringLog?: string): Promise<{ near: any; why: string }> {
   for (const again of [false, true]) {
     let base = await localBase($)
     if (!base) {
@@ -1242,7 +1295,7 @@ async function readBand($: any, sid: string, cwd: string, drew?: number): Promis
       if (!live.base) return { near: null, why: 'local server not running: ' + live.why }
       base = slashed(live.base)
     }
-    const r = await routeFetch($, base, bandPath(sid, cwd, drew), { method: 'GET' })
+    const r = await routeFetch($, base, bandPath(sid, cwd, drew, ringLog), { method: 'GET' })
     /* nobody listened at the address it named: started once, then read again */
     if (!r && !again) continue
     let j: any = null
@@ -1331,14 +1384,15 @@ async function loadBand($: any): Promise<void> {
   const gen = mem.gen
   const drew = band.drew
   band.drew = 0
-  const { near, why } = await readBand($, sid, cwd, drew)
+  const { near, why } = await readBand($, sid, cwd, drew, ringsOut())
   if (!near) {
     /* no local band: the band keeps what it drew and says why */
     const was = band.model && band.model.offline
     band.model = withOffline(band.model, why)
     if (band.loaded && was === why) return
     band.loaded = true
-    try { $.ui.invalidate('ui.render') } catch {}
+    void readDrift($).catch(() => {})
+    qpaneRedraw($)
     return
   }
   const { found, rows, open, edited } = await fromNear($, sid, cwd, near, gen)
@@ -1350,8 +1404,9 @@ async function loadBand($: any): Promise<void> {
   const graph = ws && near.graph && near.graph.workstream === ws ? near.graph : ws ? await localGet($, 'graph/' + encodeURIComponent(ws))
     : near.graph && near.graph.unheld ? near.graph : null
   band.near = near
-  band.graph = graph && graph.view ? (ws ? { workstream: ws, view: graph.view, layout: graph.layout || null } : graph) : null
+  band.graph = graph && graph.view ? (ws ? { workstream: ws, view: graph.view, picture: graph.picture || null } : graph) : null
   band.loaded = true
+  void readDrift($).catch(() => {})
   /* a read before the local board's first snapshot carries no shelf; keeping the seen set
      then means the next read announces only what turned waiting, not the whole shelf */
   if (near.loaded !== false && Array.isArray(near.shelf)) {
@@ -1359,9 +1414,10 @@ async function loadBand($: any): Promise<void> {
     band.seen = waitingKeys(rows)
     for (const r of fresh) announceWaiting($, r)
   }
-  /* the guard's state follows the held track */
+  /* the guard's state follows the held track; and the folder, since a desktop
+     spare reads it before the app moves the session to its project */
   const th = found ? found.key : null
-  if (guard.state === undefined || guard.track !== th || edited) await markerRun($, sid, th, th ? ['--write'] : [])
+  if (guard.state === undefined || guard.track !== th || guard.dir !== cwd || edited) await markerRun($, sid, th, th ? ['--write'] : [])
   guard.mark = band.marker
   /* the week chip's first figures; after this session.measure pushes them */
   if (!rates.read) {
@@ -1372,7 +1428,8 @@ async function loadBand($: any): Promise<void> {
   /* the cards under replies follow an answer, drop or snooze made anywhere */
   follow.open = open
   await followRun($).catch(() => false)
-  try { $.ui.invalidate('ui.render') } catch {}
+  drawCause('board')
+  qpaneRedraw($)
   band.drew = Date.now() - t0
   void deliver($).catch(() => {})
   /* a session engaged since its last load files the questions it kept */
@@ -1618,7 +1675,7 @@ async function markTold($: any, evs: any[]): Promise<void> {
   ack(evs)
   await localTold($, evs.filter((e: any) => e.local)).catch(() => {})
   band.inbox = null
-  try { $.ui.invalidate('ui.render') } catch {}
+  qpaneRedraw($)
 }
 
 /* answers the next reply owes a receipt line for; `at` counts the turn's
@@ -1668,7 +1725,7 @@ async function submitWaiting($: any): Promise<void> {
   if (inbox.busy) await inbox.busy
   const fresh = await readInboxes($, 'take')
   band.inbox = null
-  try { $.ui.invalidate('ui.render') } catch {}
+  qpaneRedraw($)
   if (!fresh || !fresh.length) return
   try {
     await learnOptions($, fresh).catch(() => {})
@@ -1717,12 +1774,13 @@ function queued<T>(job: () => Promise<T>): Promise<T> {
    A press on a question already saving or answered does nothing (null). */
 function chipsMoved($: any): void {
   qpane.answering = answeringOf(answers.chips)
-  try { $.ui.invalidate('ui.render') } catch {}
+  qpaneRedraw($)
 }
 /* say: false where the caller tells the outcome itself (Send's one toast) */
 async function pressAnswer($: any, id: string, letter: string, run: () => Promise<Recorded>, say = true): Promise<Recorded | null> {
   if (answeringOf(answers.chips)[id]) return null
   const key = id + '|' + letter
+  drawCause('answer', token(id, letter))
   answers.chips[key] = { state: 'pending' }
   chipsMoved($)
   const r: Recorded = await run().catch((err: any) => ({ ok: false, text: 'Answering ' + id + ' failed: ' + String((err && err.message) || err) }))
@@ -1797,11 +1855,11 @@ async function pressCall($: any, c: any, p: any, site: PressSite): Promise<{ ok:
 async function bandCall($: any, c: any, p: any): Promise<void> {
   if (callPresses.has(c.key)) return
   callPresses.set(c.key, 'pending')
-  try { $.ui.invalidate('ui.render') } catch {}
+  qpaneRedraw($)
   const r = await pressCall($, c, p, 'band').catch((err: any) => ({ ok: false, text: callPressText(c, p, null, String((err && err.message) || err)) }))
   if (r.ok) callPresses.set(c.key, 'done'); else callPresses.delete(c.key)
   toast($, r.text, 'press')
-  try { $.ui.invalidate('ui.render') } catch {}
+  qpaneRedraw($)
   await refresh($)
 }
 
@@ -1855,7 +1913,9 @@ async function openSet($: any): Promise<string> {
   const more = near
     ? { calls: ((withPresses(near.model) || {}).calls || []).map(linked), asks: near.handoffAsks || [] }
     : { missing: 'The local board is not answering, so the band\'s calls and the handoffs\' asks are not listed.' }
-  return staleFirst(openSetText(full.concat(list.slice(SHOW_MAX)), { limit: SHOW_MAX, url: await setLink($), ...more }), r)
+  /* the band's health row, in a line ahead of what may be a stale list */
+  const fix = healthCall(healthShown($))
+  return (fix ? 'AskerDo on this PC needs a fix: ' + fix.text + '\n' : '') + staleFirst(openSetText(full.concat(list.slice(SHOW_MAX)), { limit: SHOW_MAX, url: await setLink($), ...more }), r)
 }
 
 /* every site of the user's own hand starts one turn in an idle
@@ -2146,12 +2206,18 @@ const junctionBack = (r: any) => {
 }
 
 /* the inbox a close leaves, as the kickoff words it; its ids are checked at the turn's end */
-const inboxText = (inbox: any) => inboxLines(Array.isArray(inbox) ? inbox : []).map((l: string) => '\n' + l).join('')
-function keepInbox(track: string, inbox: any, more = false): void {
-  const ids = (Array.isArray(inbox) ? inbox : []).map((t: any) => String((t && t.id) || t || '')).filter(Boolean)
+const inboxText = (inbox: any, ws?: any) => inboxLines(Array.isArray(inbox) ? inbox : [], undefined, ws).map((l: string) => '\n' + l).join('')
+/* `ws`: the closing track's workstream; `awayIds`: the due rows of another, which the close only names */
+function keepInbox(track: string, inbox: any, more = false, dueIds?: string[], ws?: any, awayIds?: string[]): void {
+  const list = Array.isArray(inbox) ? inbox : []
+  const ids = list.map((t: any) => String((t && t.id) || t || '')).filter(Boolean)
   if (!ids.length) return
+  /* the rows due at the close, which naming alone no longer settles */
+  const due = dueIds || list.filter((t: any) => t && t.due).map((t: any) => String(t.id || '')).filter(Boolean)
+  const away = awayIds || dueAway(list, ws)
   const was = checks.inbox
-  checks.inbox = { track: track || (was && was.track) || '', ids: [...new Set([...((was && was.ids) || []), ...ids])], more: more || !!(was && was.more) }
+  checks.inbox = { track: track || (was && was.track) || '', ids: [...new Set([...((was && was.ids) || []), ...ids])],
+    due: [...new Set([...((was && was.due) || []), ...due])], away: [...new Set([...((was && was.away) || []), ...away])], more: more || !!(was && was.more) }
 }
 
 /* a person's moves on a track; each call site one line naming its CLI command */
@@ -2182,10 +2248,11 @@ async function trackCmd($: any, args: string): Promise<string> {
     const ws = band.mine && band.mine.held ? band.mine.workstream : null
     if (!p.inbox && !held) return needTrack()
     if (p.inbox && !ws) return 'Capturing into the inbox needs the workstream of a held track. ' + needTrack()
-    const r = await cli($, ['track', 'capture', ...(p.inbox ? ['--workstream', ws, '--unplaced', 'captured into the inbox by /askerdo track capture inbox'] : ['--track', held as string]), '--name', p.name, '--session', sid, '--json'])
+    /* the user's own capture wakes 14 days out, the one filing the board never refuses */
+    const r = await cli($, ['track', 'capture', ...(p.inbox ? ['--workstream', ws, '--unplaced', 'captured into the inbox by /askerdo track capture inbox', '--wake', wakeIn()] : ['--track', held as string]), '--name', p.name, '--session', sid, '--json'])
     if (!r.ok) return failed('Capturing', r)
     kick($)
-    return r.json.id + ' captured ' + (r.json.track ? 'onto ' + r.json.track : 'into the inbox of ' + ws) + '; the work in hand carries on.'
+    return r.json.id + ' captured ' + (r.json.track ? 'onto ' + r.json.track : 'into the inbox of ' + ws + (r.json.wake ? ', back on ' + r.json.wake : '')) + '; the work in hand carries on.'
   }
   const held = await boundTrack($, sid, true)
   const target = p.track || held
@@ -2203,8 +2270,8 @@ async function trackCmd($: any, args: string): Promise<string> {
     if (!r.ok) { keptHold(target); return failed('Finishing ' + target, r) }
     if (target === held) setTrack(null)
     kick($)
-    keepInbox(target, r.json.inbox)
-    return target + ' ' + (r.json.state || 'done') + '.' + junctionBack(r.json) + inboxText(r.json.inbox)
+    keepInbox(target, r.json.inbox, false, undefined, r.json.workstream)
+    return target + ' ' + (r.json.state || 'done') + '.' + junctionBack(r.json) + inboxText(r.json.inbox, r.json.workstream)
   }
   /* splinter: the side track starts from the held one, which parks behind it */
   const r = await cli($, ['track', 'splinter', target, '--name', p.name, ...(p.at ? ['--at', p.at] : []), '--session', sid, '--json'])
@@ -2328,10 +2395,47 @@ const commandFailed = () => ({ text: PLUGIN + ': /' + COMMAND + ' failed before 
 
 /* The tab shown and Home's filter, kept across redraws; chosen: an opener or a tab press set the tab;
    unfolded: the questions Home's copy shows unfolded under their row. */
-/* graph: Home's scope, the held track's lines until the user switches */
+/* pic: the level Home's picture is on, null for the held track's lines; picOf: the track it
+   was pressed on, so a new held track starts from its own lines */
 /* done: Home's fold of finished agents, shut until pressed, held for the session only */
 /* filterSeed: the text the filter field is drawn with, the filter as the field last mounted */
-const view: { tab: PaneTab; filter: string; filterSeed: string; chosen?: boolean; unfolded: Set<string>; graph: string; done: boolean; seeded?: PaneTab } = { tab: 'home', filter: '', filterSeed: '', unfolded: new Set(), graph: 'mine', done: false }
+type PicView = { level: number; ws: string; tr: string | null; sel: string | null }
+const view: { tab: PaneTab; filter: string; filterSeed: string; chosen?: boolean; unfolded: Set<string>; pic: PicView | null; picOf?: string; done: boolean; seeded?: PaneTab } = { tab: 'home', filter: '', filterSeed: '', unfolded: new Set(), pic: null, done: false }
+
+/* the moment this PC last drew a workstream (or the Overview) before this session's first
+   draw, asked once a session for each, which the since line reads */
+const picLooks: { got: Record<string, string | null>; asking: Set<string> } = { got: {}, asking: new Set() }
+async function lookRead($: any, k: string): Promise<void> {
+  if (k in picLooks.got || picLooks.asking.has(k)) return
+  picLooks.asking.add(k)
+  try {
+    const base = await localBase($)
+    if (!base) return
+    const session = await sessionId($).catch(() => mem.id)
+    const r = await routePost($, base, 'look', k === 'overview' ? { session } : { session, ws: k })
+    if (!r || r === 'dropped') return
+    /* any answer is kept, a refusal as no look, so an older server is not asked at every draw */
+    const look = r.status === 200 && r.reply && r.reply.ok === true && r.reply.result ? r.reply.result.look : null
+    picLooks.got[k] = typeof look === 'string' ? look : null
+    qpaneRedraw($, PANE_ONLY)
+  } finally {
+    picLooks.asking.delete(k)
+  }
+}
+
+/* the real assets/ favicons the picture nests for a session and its answers, read once */
+const picIcons: Record<string, string> = {}
+let iconsRead: Promise<void> | undefined
+function iconsReady($: any): Promise<void> {
+  if (!iconsRead) {
+    iconsRead = (async () => {
+      for (const [k, f] of [['fav', 'favicon'], ['quiet', 'favicon-quiet'], ['block', 'favicon-blocking']]) {
+        try { const t = await $.fs.read($.plugin.root + '/assets/' + f + '.svg'); if (t) picIcons[k] = String(t) } catch {}
+      }
+    })()
+  }
+  return iconsRead
+}
 const TAB_NAMES: Record<PaneTab, string> = { home: 'Home', questions: 'Questions', tracks: 'Tracks', settings: 'Settings', guide: 'Guide' }
 
 /* Every opener, command or press: an open pane redraws on the tab asked for. Questions
@@ -2403,7 +2507,7 @@ function feedRead($: any, which: 'own' | 'all'): FeedRead | undefined {
       /* a failed read keeps the lines last read */
       feed[which] = lines ? { mark, lines, wsNames: r.json.wsNames || {} }
         : have && have.lines ? { ...have, mark } : { mark, error: failed('Reading the activity', r) + '.' }
-      qpaneRedraw($)
+      qpaneRedraw($, PANE_ONLY)
     })().catch(() => {}).finally(() => { feed.loading[which] = undefined })
   }
   return have
@@ -2483,9 +2587,29 @@ function savedWords(key: string, r: Run, unset: boolean): { text: string; dim?: 
   const where = place && place.scope ? place.scope + ', ' : ''
   return { text: 'Saved ' + where + 'on ' + j.profile + (j.created ? ', a new profile' : '') + copy + '.', dim: row.takes }
 }
+/* the phone sign-in mints through the route; the code stays drawn until its link
+   expires, then the press comes back */
+async function phoneLink($: any): Promise<void> {
+  if (sview.phone && sview.phone.busy) return
+  sview.phone = { busy: true }
+  qpaneRedraw($, PANE_ONLY)
+  const r = await cli($, ['login', '--qr', '--json'])
+  const j = r.json || {}
+  if (!r.ok || !Array.isArray(j.qr) || typeof j.url !== 'string') {
+    sview.phone = { error: r.ok ? 'the CLI answered with no code' : refusal(r) }
+    qpaneRedraw($, PANE_ONLY)
+    return
+  }
+  const link = { url: j.url, expires: String(j.expires || ''), rows: j.qr.map(String) }
+  sview.phone = link
+  const left = Date.parse(link.expires) - Date.now()
+  try { $.clock.after(Math.max(0, Number.isFinite(left) ? left : 0) + 500, () => { if (sview.phone === link) { sview.phone = undefined; qpaneRedraw($, PANE_ONLY) } }) } catch {}
+  qpaneRedraw($, PANE_ONLY)
+}
 function settingsActions($: any): any {
   return {
-    redraw: () => qpaneRedraw($),
+    redraw: () => qpaneRedraw($, PANE_ONLY),
+    phone: () => { void phoneLink($).catch((e: any) => { sview.phone = { error: String((e && e.message) || e) }; qpaneRedraw($, PANE_ONLY) }) },
     set: (key: string, value: string, at?: SettingsPlace) => {
       void settingsWrite($, ['settings', 'set', key, value, ...atArgs(at)], key, (r) => savedWords(key, r, false)).catch(() => {})
     },
@@ -2535,16 +2659,16 @@ function guideRead($: any): GuidePage[] | undefined {
       const texts = [readme, ...await Promise.all(names.map((f) => guideFile($, f)))]
       const read = all.map((_, i) => typeof texts[i] === 'string')
       guide.pages = guideIndex(all.filter((_, i) => read[i]), texts.filter((_, i) => read[i]))
-      qpaneRedraw($)
+      qpaneRedraw($, PANE_ONLY)
     })().catch(() => {}).finally(() => { guide.loading = undefined })
   }
   return guide.pages
 }
 
-function pressed($: any, act: () => void): () => void {
+function pressed($: any, act: () => void, sites?: Site[]): () => void {
   return () => {
     act()
-    try { $.ui.invalidate('ui.render') } catch {}
+    qpaneRedraw($, sites)
   }
 }
 /* the desktop puts the focus back, after each draw, on the button with the pressed key, and
@@ -2563,6 +2687,64 @@ function handOff(e: any): void {
   if (handed.has(k)) handed.delete(k)
   else handed.add(k)
 }
+/* a desktop ring press on a key the mod no longer draws was sent before its redraw (a second click,
+   a press reported twice): its toggle would undo the first and its flip put the key out of step */
+function ringStale(e: any): boolean {
+  if (e.plugin !== PLUGIN || e.surface !== 'desktop' || typeof e.element !== 'string' || !RING_PRESS.test(e.element)) return false
+  const k = baseKey(e.element)
+  return e.element !== (handed.has(k) ? k + HAND : k)
+}
+/* The ring press log for the local timings: each desktop ring press, whether its key was the one
+   drawn, the toggles it made, and each surface's draws in the window after it (count, own ms,
+   first and last end after the press); the next band read carries the closed ones */
+const RING_WINDOW = 2000
+type RingPress = { k: string; c?: string; s: number; t: string; n: number; o: number; at: number; d: Record<string, number[]> }
+const rings: { now?: RingPress; out: RingPress[] } = { out: [] }
+/* a board change, an answer or strip press, a tab switch or a zoom opens the same window, its cause named;
+   a board change inside a press's window is that press's own (an answer's write, a read meanwhile) */
+function drawCause(c: string, k = ''): void {
+  if (c === 'board' && rings.now && Date.now() - rings.now.at <= RING_WINDOW) return
+  ringClose()
+  rings.now = { k, c, s: 0, t: '', n: 0, o: -1, at: Date.now(), d: {} }
+}
+function ringPress(e: any, stale: boolean): void {
+  if (e.plugin !== PLUGIN || e.surface !== 'desktop' || typeof e.element !== 'string' || !RING_PRESS.test(e.element)) return
+  const row = { k: e.element, s: stale ? 1 : 0, t: '', n: 0, o: -1, at: Date.now(), d: {} }
+  /* a stale press toggles and draws nothing, so the press before it keeps the window */
+  if (stale) return ringKeep(row)
+  ringClose()
+  rings.now = row
+}
+function ringClose(): void {
+  if (!rings.now) return
+  ringKeep(rings.now)
+  rings.now = undefined
+}
+function ringKeep(row: RingPress): void {
+  rings.out.push(row)
+  if (rings.out.length > 20) rings.out.shift()
+}
+function ringToggled(tok: string, open: boolean): void {
+  const p = rings.now
+  if (!p || Date.now() - p.at > RING_WINDOW) return
+  p.t = tok; p.n++; p.o = open ? 1 : 0
+}
+async function ringDraw($: any, surface: Site, draw: () => any, ids: string[] = [surface]): Promise<any> {
+  for (const id of ids) try { await $.state.get({ ...DRAWN, id }) } catch {}
+  const p = rings.now
+  if (!p || Date.now() - p.at > RING_WINDOW) return draw()
+  const t = Date.now()
+  try { return await draw() } finally {
+    const d = p.d[surface] || (p.d[surface] = [0, 0, 0, 0])
+    const end = Date.now() - p.at
+    d[0]++; d[1] += Date.now() - t; if (!d[2]) d[2] = end; d[3] = end
+  }
+}
+function ringsOut(): string {
+  if (rings.now && Date.now() - rings.now.at > RING_WINDOW) ringClose()
+  return rings.out.length ? JSON.stringify(rings.out.splice(0).map(({ at, ...r }) => r)) : ''
+}
+
 /* rings: a pane or a reply, where only the fold rings' presses hand off */
 function handedKeys(n: any, surface: string, rings = false): any {
   if (surface !== 'desktop' || !handed.size || !n || typeof n !== 'object') return n
@@ -2576,7 +2758,9 @@ function handedKeys(n: any, surface: string, rings = false): any {
    local server gone or a start refused; never while a start is in flight */
 function healthNow($: any): any {
   if (route.starting) return health.first
-  const sig = route.refused ? 'refused:' + route.refused.key + ':' + route.refused.why : route.down ? 'down:' + route.down.base : ''
+  const proto = refusedProtocol()
+  const sig = route.refused ? 'refused:' + route.refused.key + ':' + route.refused.why : route.down ? 'down:' + route.down.base
+    : proto ? 'protocol:' + proto.board : ''
   const now = Date.now()
   if (healthDue(sig, now)) {
     const args = ['status', '--json']
@@ -2584,6 +2768,15 @@ function healthNow($: any): any {
       .then((moved) => { if (moved) qpaneRedraw($) }).catch(() => {})
   }
   return health.first
+}
+
+/* the local server's word that the board refused this PC's protocol, as a problem; null when it did not */
+const refusedProtocol = (): any => (band.near && band.near.protocol && typeof band.near.protocol.says === 'string' ? band.near.protocol : null)
+
+/* The problem the band, the status row and /askerdo show: the status run's, else a protocol refusal
+   the local server heard before that run looked again */
+function healthShown($: any): any {
+  return healthNow($) || refusedProtocol()
 }
 
 const healthArgv = ($: any, args: string[]) => ['node', $.plugin.root + '/bin/askerdo.mjs', ...args]
@@ -2626,11 +2819,11 @@ async function healthFix($: any, input?: any): Promise<void> {
 }
 
 /* The band's model and presses, one set for the band over the prompt and Home's copy. */
-function bandParts($: any): { model: any; answer: (q: any, a: any) => void; open: (q?: any) => void; submit: () => void; send: () => void; press: (c: any, p: any) => void; fold: { open: boolean; toggle: () => void }; strip?: { view: QuestionsView; act: QuestionsActions } } {
+function bandParts($: any): { model: any; answer: (q: any, a: any) => void; open: (q?: any) => void; submit: () => void; send: () => void; press: (c: any, p: any) => void; fold: { open: boolean; toggle: () => void }; strip?: { view: QuestionsView; act: QuestionsActions }; still: boolean } {
   void queueRead($).catch(() => {})
   /* the questions this session keeps draw ahead of the board's; the queued count beside what waits */
   const model = withHealth(withWaiting(withPresses(withChipStates(withLocal(band.model, localOpen(), mem.id), answers.chips)), { inbox: band.inbox, closed: closedLine(closedAs(mem.id), savedHere()), saved: savedHere().length > 0,
-    queued: answerQueue.items.size }), healthNow($))
+    queued: answerQueue.items.size }), healthShown($))
   /* a strip left open on a question the band no longer draws closes */
   const drawn = new Set(((model && model.questions) || []).map((q: any) => q.id))
   for (const id of Object.keys(bandStrips)) if (!drawn.has(id)) delete bandStrips[id]
@@ -2641,12 +2834,13 @@ function bandParts($: any): { model: any; answer: (q: any, a: any) => void; open
     press: (c: any, p: any) => pressed($, () => {
       void (p && p.pane === 'tracks' ? openPane($, 'tracks', (c && c.id) || undefined, true) : c && c.kind === 'health' ? healthFix($, p && p.input) : bandCall($, c, p)).catch(() => {})
     })(),
-    fold: { open: callFold.open, toggle: pressed($, () => { callFold.open = !callFold.open }) },
-    answer: (q: any, a: any) => pressed($, () => {
-      if (!qpane.confirm) return void bandAnswer($, q, a)
-      bandStrips[q.id] = a.letter
-      noteSeed(q.id)
-    })(),
+    fold: { open: callFold.open, toggle: pressed($, () => { callFold.open = !callFold.open }, BAND_VIEW) },
+    answer: (q: any, a: any) => {
+      if (!qpane.confirm) return pressed($, () => { void bandAnswer($, q, a) })()
+      drawCause('strip', token(q.id, a.letter))
+      pressed($, () => { bandStrips[q.id] = a.letter; noteSeed(q.id) }, BAND_VIEW)()
+    },
+    still: !!refusedProtocol(),
     open: (q?: any) => pressed($, () => { void openPane($, 'questions', q && q.id).catch(() => {}) })(),
     submit: pressed($, () => { void submitWaiting($).catch(() => {}) }),
     send: pressed($, () => { void sendQueued($).catch(() => {}) }),
@@ -2691,7 +2885,7 @@ function foldRead($: any): Promise<void> {
         }
       } catch {}
       folds.read = true
-      if (moved && folds.early) qpaneRedraw($)
+      if (moved && folds.early) qpaneRedraw($, PANE_ONLY)
     })()
   }
   return folds.ready
@@ -2719,7 +2913,7 @@ function foldSet($: any, k: FoldKey, open: boolean): void {
   folds.open[k] = open
   folds.pressed.add(k)
   void foldRead($).then(() => $.store.set('folds', { ...folds.open })).catch(() => {})
-  qpaneRedraw($)
+  qpaneRedraw($, PANE_ONLY)
 }
 /* the status row's agents count opens Home with the agents unfolded */
 function agentsOpen($: any, open: boolean): void {
@@ -2763,6 +2957,8 @@ async function paneDraw($: any, e: any): Promise<any> {
     qpaneTick($)
     const pin = pinnedOf(qm, qpane).pinned
     if (pin) void fullCard($, pin.id).catch(() => {})
+    /* read on every draw of the tab: a ring pressed under a reply flips this tab's ring key too */
+    qpane.unfolded = await openRings($)
     body = questionsTree(els, qm, qpane, act, cols, { at: band.at, now }, surface)
   } else if (view.tab === 'tracks') {
     const tview: PaneView = { parked: foldOpen($, 'parked'), pickup: foldOpen($, 'pickup'), elsewhere: foldOpen($, 'elsewhere') }
@@ -2785,16 +2981,22 @@ async function paneDraw($: any, e: any): Promise<any> {
     const b = bandParts($)
     /* the copy draws no hover cards; the dock pane does not lift them, so they would draw empty.
        the arrow unfolds them under the row instead; an answered question folds away */
-    const open = new Set([...((b.model && b.model.questions) || []).map((q: any) => q.id), ...((b.model && b.model.calls) || []).map((c: any) => c.key)])
+    /* 'ws-inbox' is the picture's inbox fold, kept as the user left it */
+    const open = new Set([...((b.model && b.model.questions) || []).map((q: any) => q.id), ...((b.model && b.model.calls) || []).map((c: any) => c.key), 'ws-inbox'])
     for (const id of view.unfolded) if (!open.has(id)) view.unfolded.delete(id)
     const unfold = {
       open: (id: string) => view.unfolded.has(id),
-      toggle: (id: string) => { if (!view.unfolded.delete(id)) view.unfolded.add(id); qpaneRedraw($) },
+      toggle: (id: string) => {
+        if (!view.unfolded.delete(id)) view.unfolded.add(id)
+        /* Home's question and call folds are ring presses too, so their log row counts the toggle */
+        ringToggled(id, view.unfolded.has(id))
+        qpaneRedraw($, PANE_ONLY)
+      },
     }
     /* the copy's border and padding: a cell each on the terminal; the desktop's round border is
        1 px a side, so the padding's two cells and under one more */
     const inside = Number.isFinite(cols) ? cols - (surface === 'desktop' ? 3 : 4) : undefined
-    const ours = b.model && bandTree(els, b.model, b.answer, { columns: inside, now, surface, open: b.open, submit: b.submit, send: b.send, cards: false, unfold, press: b.press, fold: b.fold, strip: b.strip })
+    const ours = b.model && bandTree(els, b.model, b.answer, { columns: inside, now, surface, open: b.open, submit: b.submit, send: b.send, cards: false, unfold, press: b.press, fold: b.fold, strip: b.strip, still: b.still })
     const sm = statusOf($)
     /* the guard's press under its own name, so `guard` below is still the guard's state */
     const { guard: guardTap, shelf, agents: openAgents, health: fixHealth } = statusPresses($)
@@ -2809,43 +3011,60 @@ async function paneDraw($: any, e: any): Promise<any> {
     const openRow = (r: any) => (r.kind === 'question' && openQ.has(r.id) ? () => { void openPane($, 'questions', r.id).catch(() => {}) } : null)
     /* drawn for the width this draw reports, so a pane dragged wider draws more columns */
     let gm: any
+    const heldId = band.mine && band.mine.held ? band.mine.track : undefined
+    if (view.picOf !== heldId) { view.picOf = heldId; view.pic = null }
+    const desk = surface === 'desktop'
+    if (desk) await iconsReady($)
     try {
-      gm = homeGraph({ graph: band.graph, mine: band.mine, shelf: band.shelf, local: band.near ? band.local || true : false, scope: view.graph, columns: cols, draw: surface === 'desktop' })
+      gm = homeGraph({ graph: band.graph, overview: paneOverview($, foldOpen($, 'graph')), far: farGraph($), mine: band.mine, local: band.near ? band.local || true : false, view: view.pic,
+        looks: picLooks.got, icons: picIcons, boardUrl: band.views && band.views.home, columns: cols, draw: desk, pc: hereNow().pc })
     } catch {
-      gm = { scope: view.graph, lines: [], off: [], why: 'The picture could not be drawn from what the local board holds.' }
+      gm = { lines: [], why: 'The picture could not be drawn from what the local board holds.' }
     }
-    const graph = graphTree(els, gm, (s: string) => { view.graph = s; qpaneRedraw($) }, surface,
-      { open: foldOpen($, 'graph'), toggle: () => foldSet($, 'graph', !foldOpen($, 'graph')), line: standLine(heldNow(), gm), columns: cols })
+    /* a view gone stale draws where homeGraph fell back to, and stays there */
+    if (view.pic && gm.view) view.pic = gm.view
+    const graphOpen = foldOpen($, 'graph')
+    if (graphOpen && gm.lookFor) void lookRead($, gm.lookFor).catch(() => {})
+    /* a press steps the view in the pane; a question open here opens its card; anything else is a page */
+    const picPress = (a: any): (() => void) | null => {
+      if (!a) return null
+      if (a.kind === 'zoom' && a.read) return () => { void zoomFar($, a).catch(() => {}) }
+      if (a.kind === 'select' || a.kind === 'zoom') return () => { drawCause('zoom', a.kind); view.pic = a.view; qpaneRedraw($, PANE_ONLY) }
+      if ((a.kind === 'open' || a.kind === 'answer') && openQ.has(a.id)) return () => { void openPane($, 'questions', a.id).catch(() => {}) }
+      return null
+    }
+    const graph = graphTree(els, gm, picPress, surface,
+      { open: graphOpen, toggle: () => foldSet($, 'graph', !foldOpen($, 'graph')), line: standLine(heldNow(), gm), columns: cols,
+        inbox: { open: view.unfolded.has('ws-inbox'), toggle: () => { if (!view.unfolded.delete('ws-inbox')) view.unfolded.add('ws-inbox'); qpaneRedraw($, PANE_ONLY) } } })
     const am = agentsModel(flightList(), guard.state, Date.now())
     const agents = am ? agentsTree(els, am, foldOpen($, 'agents'), () => foldSet($, 'agents', !foldOpen($, 'agents')), surface, cols,
-      { open: view.done, toggle: () => { view.done = !view.done; qpaneRedraw($) } }) : null
+      { open: view.done, toggle: () => { view.done = !view.done; qpaneRedraw($, PANE_ONLY) } }) : null
     body = homeTree(els, [ours, status], { rows, filter: view.filter, seed: view.filterSeed, wide, error: read && read.error }, (v: string) => {
       view.filter = String(v || '')
-      qpaneRedraw($)
-    }, surface, cols, graph, agents, openRow, versionWords(ownVersion($), band.near && band.near.boardVersion), () => { view.tab = 'guide'; view.chosen = true; qpaneRedraw($) })
+      qpaneRedraw($, PANE_ONLY)
+    }, surface, cols, graph, agents, openRow, versionWords(ownVersion($), band.near && band.near.boardVersion), () => { view.tab = 'guide'; view.chosen = true; qpaneRedraw($, PANE_ONLY) }, driftHome())
   }
   const counts = { questions: qm.cards.length + (qm.more || 0), tracks: tm.total }
   /* the board link follows the tab: Questions this project's Needs you, Home and Tracks the board's overview */
   const link = view.tab === 'questions' ? band.url : (band.views && band.views[view.tab === 'settings' || view.tab === 'guide' ? 'home' : view.tab]) || band.url
   return handedKeys(askerdoPane(els, view.tab, counts, cardHref(link) || undefined, (t: PaneTab) => {
+    drawCause('tab', t)
     view.tab = t
     view.chosen = true
-    qpaneRedraw($)
+    qpaneRedraw($, PANE_ONLY)
   }, body, surface), surface, true)
 }
 
-/* the pane's card keeps the beside mark its telling carried. Then every open
-   question from elsewhere, answered here: the band read's row, the record whole once pinned */
+/* this session's open questions, then every open question from elsewhere,
+   answered here: the band read's row, the record whole once pinned */
 function questionCards(): any[] {
-  const beside = new Map<string, string[]>()
-  for (const q of told.values()) if (q && q.id && Array.isArray(q.beside)) beside.set(q.id, q.beside)
   const own = [...localOpen(), ...(band.questions || [])]
   const ids = new Set(own.map((q: any) => q && q.id))
   const away = awayRows().filter((q: any) => !ids.has(q.id)).map((q: any) => {
     const f = awayFull.get(q.id)
     return f && f.version === q.version ? { ...f.record, track: q.track, trackName: q.trackName, pc: q.pc, asker: f.record.session || null, session: null, away: true } : { ...q, away: true }
   })
-  return [...own, ...away].map((q: any) => beside.has(q.id) ? { ...q, beside: beside.get(q.id) } : q)
+  return [...own, ...away]
 }
 
 const awayRows = (): any[] => ((band.elsewhere && band.elsewhere.questions) || []).filter((q: any) => q && q.id)
@@ -2896,16 +3115,80 @@ function shelfGraphs($: any): any[] {
       const had = farMaps.list.length
       farMaps.list = list
       farMaps.mark = mark
-      if (list.length || had) qpaneRedraw($)
+      if (list.length || had) qpaneRedraw($, PANE_ONLY)
     })().catch(() => {}).finally(() => { farMaps.loading = false })
   }
   return farMaps.list
+}
+
+/* another workstream the Overview zooms into, read from the local board at the press,
+   again once per store change, and kept while the view stays on it or on the Overview */
+const picFar: { ws?: string; graph?: any; mark?: string; loading?: boolean } = {}
+const farOf = (ws: string, g: any) => (g && g.view ? { workstream: ws, view: g.view, picture: g.picture || null } : null)
+async function zoomFar($: any, a: any): Promise<void> {
+  const g = farOf(a.read, await localGet($, 'graph/' + encodeURIComponent(a.read)))
+  if (!g) { paneNote($, 'The local board has no picture of ' + a.read + ' yet; the board has its page.'); return }
+  Object.assign(picFar, { ws: a.read, graph: g, mark: String(band.marker) })
+  drawCause('zoom', 'far')
+  view.pic = a.view
+  qpaneRedraw($, PANE_ONLY)
+}
+function farGraph($: any): any {
+  const v = view.pic
+  if (!picFar.ws || !v || (v.level > 0 && v.ws !== picFar.ws)) { picFar.ws = undefined; picFar.graph = undefined; return null }
+  const ws = picFar.ws
+  const mark = String(band.marker)
+  if (picFar.mark !== mark && !picFar.loading) {
+    picFar.loading = true
+    void (async () => {
+      const g = farOf(ws, await localGet($, 'graph/' + encodeURIComponent(ws)))
+      picFar.mark = mark
+      /* a failed read keeps the last picture rather than dropping the view */
+      if (g && picFar.ws === ws) { picFar.graph = g; qpaneRedraw($, PANE_ONLY) }
+    })().catch(() => {}).finally(() => { picFar.loading = false })
+  }
+  return picFar.graph
+}
+
+/* the Overview rides no band; Home reads it apart while its picture is open, once per
+   store change, and again when the local board says a fresher one is due */
+const picOv: { mark?: string; got: any; loading?: boolean; timer?: any } = { got: null }
+function paneOverview($: any, open: boolean): any {
+  const mark = String(band.marker)
+  if (open && picOv.mark !== mark && !picOv.loading) {
+    picOv.loading = true
+    void (async () => {
+      const o = await localGet($, 'overview')
+      const was = picOv.got
+      picOv.got = o
+      picOv.mark = mark
+      if (picOv.timer) { try { picOv.timer.cancel() } catch {} }
+      picOv.timer = undefined
+      if (o && o.due > 0) { try { picOv.timer = $.clock.after(o.due, () => { picOv.timer = undefined; picOv.mark = undefined; qpaneRedraw($, PANE_ONLY) }) } catch {} }
+      if ((o && o.at) !== (was && was.at)) qpaneRedraw($, PANE_ONLY)
+    })().catch(() => {}).finally(() => { picOv.loading = false })
+  }
+  return picOv.got
 }
 
 /* ---- the Questions tab ----------------------------------------- */
 
 /* What the person unfolded, typed, expanded and asked about: the tab's own, kept across redraws. */
 const qpane: QuestionsView = { unfolded: new Set(), notes: {}, drawn: {}, strip: {}, queued: {}, confirm: true }
+/* The open option rings live in $.state: a toggle redraws only the draws that read them (a reply's
+   card, the Questions tab), where an invalidate draws every surface and every reply again */
+const OPEN_RINGS = { plugin: 'askerdo', key: 'unfolded' } as const
+async function openRings($: any): Promise<Set<string>> {
+  const { value } = await $.state.get(OPEN_RINGS)
+  return new Set(Array.isArray(value) ? value : [])
+}
+function ringFlip($: any, tok: string): void {
+  void update($, OPEN_RINGS, (list: any) => {
+    const open = new Set<string>(Array.isArray(list) ? list : [])
+    if (!open.delete(tok)) open.add(tok)
+    return [...open]
+  }).then((list: string[]) => ringToggled(tok, list.includes(tok))).catch(() => {})
+}
 /* the band's open strips, its own so a band press opens none on the pane's card; notes and queue are shared */
 const bandStrips: Record<string, string> = {}
 
@@ -3062,12 +3345,18 @@ function deskRing(): string | undefined {
 
 /* the pane head's "updated 5m ago" stays true while the pane is up. */
 const qtick: { timer?: any } = {}
+/* the age each reply's card last drew, by its told record, so the tick draws the cards only when one moves */
+const cardAges = new Map<string, { q: any; age: string }>()
+function agesMoved(now: number): boolean {
+  for (const a of cardAges.values()) if (((firstTellingCard(a.q, mem.id, now, band.local) || {}).age || '') !== a.age) return true
+  return false
+}
 function qpaneTick($: any): void {
   if (qtick.timer) return
   try {
     qtick.timer = $.clock.every(60000, () => {
       void Promise.resolve($.ui.panes()).then((ps: any) => {
-        if (view.tab === 'questions' && Array.isArray(ps) && ps.some((p: any) => p.id === PANE_ID || OLD_PANE_IDS.includes(p.id))) return qpaneRedraw($)
+        if (view.tab === 'questions' && Array.isArray(ps) && ps.some((p: any) => p.id === PANE_ID || OLD_PANE_IDS.includes(p.id))) return qpaneRedraw($, agesMoved(Date.now()) ? CARD_VIEW : PANE_ONLY)
         try { qtick.timer.cancel() } catch {}
         qtick.timer = undefined
       }).catch(() => {})
@@ -3075,8 +3364,25 @@ function qpaneTick($: any): void {
   } catch {}
 }
 
-function qpaneRedraw($: any): void {
-  try { $.ui.invalidate('ui.render') } catch {}
+/* Each site reads its own count as it draws, so a redraw writes the counts of the sites it changed
+   and draws those alone: an invalidate draws every surface and every reply on screen again */
+const DRAWN = { plugin: 'askerdo', key: 'drawn' } as const
+type Site = 'band' | 'hint' | 'pane' | 'card' | 'reply'
+const EVERY: Site[] = ['band', 'hint', 'pane', 'card']
+const PANE_ONLY: Site[] = ['pane']
+/* the meters, the guard and the thread: the status row, on the band, the hint and Home */
+const STATUS: Site[] = ['band', 'hint', 'pane']
+/* the band's own view (its strips, its call fold), drawn on the band and Home's copy of it */
+const BAND_VIEW: Site[] = ['band', 'pane']
+/* a card's view (strips, asking, the expanded card), shared by the cards under replies and the Questions tab */
+const CARD_VIEW: Site[] = ['card', 'pane']
+function qpaneRedraw($: any, sites: string[] = EVERY): void {
+  for (const id of sites) {
+    void update($, { ...DRAWN, id }, (n: any) => (Number(n) || 0) + 1).catch(() => {
+      /* refused while one of the mod's draws runs (a read it started came back): every site, as before */
+      try { $.ui.invalidate('ui.render') } catch {}
+    })
+  }
 }
 
 /* The band's answer path, with the card's note; the band's strip records as the band */
@@ -3140,34 +3446,33 @@ async function fullCard($: any, id: string): Promise<void> {
 type CardWhere = { site: PressSite; useId?: string; key?: string; local?: boolean; version?: number }
 function cardActions($: any, pick: QuestionsActions['pick'], end: QuestionsActions['end'], where: CardWhere = { site: 'pane' },
   strips: Record<string, string> = qpane.strip as Record<string, string>): QuestionsActions {
+  /* a strip's own presses draw where that strip is; the queue's count redraws the band through queueMoved */
+  const sites = where.site === 'band' ? BAND_VIEW : CARD_VIEW
   return {
     /* Answer now, or a press on at once: the strip closes as it records */
     pick: (id, letter, version) => { delete strips[id]; noteSeed(id); pick(id, letter, version) },
     end,
     strip: (id: string, letter?: string) => {
+      drawCause('strip', letter ? token(id, letter) : id)
       if (letter) strips[id] = letter
       else delete strips[id]
       noteSeed(id)
-      qpaneRedraw($)
+      qpaneRedraw($, sites)
     },
     queue: (id: string, letter: string, version?: number) => {
       const { version: drawn, ...at } = where
       queueSet($, { id, letter, note: (qpane.notes[id] || '').trim(), version: 'version' in where ? drawn : version, ...at })
       delete strips[id]
       noteSeed(id)
-      qpaneRedraw($)
+      qpaneRedraw($, sites)
     },
-    unqueue: (id: string) => { queueDrop($, id); delete strips[id]; noteSeed(id); qpaneRedraw($) },
+    unqueue: (id: string) => { queueDrop($, id); delete strips[id]; noteSeed(id); qpaneRedraw($, sites) },
     send: () => { void sendQueued($).catch(() => {}) },
-    ask: (id: string, tok: string) => { qpane.asking = undefined; qpaneAsk($, tok); qpaneRedraw($) },
-    asking: (id: string) => { qpane.asking = qpane.asking === id ? undefined : id; qpaneRedraw($) },
-    toggle: (tok: string) => {
-      if (qpane.unfolded.has(tok)) qpane.unfolded.delete(tok)
-      else qpane.unfolded.add(tok)
-      qpaneRedraw($)
-    },
+    ask: (id: string, tok: string) => { qpane.asking = undefined; qpaneAsk($, tok); qpaneRedraw($, sites) },
+    asking: (id: string) => { qpane.asking = qpane.asking === id ? undefined : id; qpaneRedraw($, sites) },
+    toggle: (tok: string) => ringFlip($, tok),
     note: (id: string, value: string) => { qpane.notes[id] = value },
-    expand: (id: string) => { qpane.expanded = id; qpaneRedraw($); void fullCard($, id).catch(() => {}) },
+    expand: (id: string) => { qpane.expanded = id; qpaneRedraw($, sites); void fullCard($, id).catch(() => {}) },
     noteFocus: (id: string) => { void Promise.resolve($.ui.focus({ requestId: PANE_ID, key: 'qnote-' + id })).catch(() => {}) },
     /* a press on an answered card says what stands rather than drawing nothing */
     stands: (id, s) => toast($, s.ended || answeredWords(id, s.name, s.answered || ''), 'press'),
@@ -3216,7 +3521,7 @@ function statusOf($: any): any {
     shelf: band.shelf, elsewhere: band.elsewhere, here: { pc: hereNow().pc }, now, agents: flightList(),
     /* what the track's and task's tooltips read beside them */
     graph: band.graph, handoffs: band.near && band.near.handoffs, questions: band.questions, local: band.local,
-    version: ownVersion($), health: healthNow($),
+    version: ownVersion($), health: healthShown($),
   })
   /* the AskerDo button's card names the folder and branch too */
   const facts = whereFacts(where.now)
@@ -3237,29 +3542,22 @@ async function statusDraw($: any, e: any, next: any): Promise<any> {
 
 /* ---- tools ------------------------------------------------------------- */
 
-async function askTool($: any, input: any, useId?: string, turnAsks?: string[]): Promise<any> {
+async function askTool($: any, input: any, useId?: string): Promise<any> {
   const v = validateAsk(input)
   if (v.error) return { deny: 'ask refused: ' + v.error }
-  /* a reversal beside another ask of the turn is flagged, never refused */
-  const alone: string[] = turnAsks ? aloneInTurn(v.payload, turnAsks.map((u) => told.get(u))) : []
   const sid = await sessionId($)
-  if (v.payload.edits && isLocalId(v.payload.edits)) return localReword($, sid, v.payload, alone, useId, turnAsks)
-  if (v.payload.edits) return rewordAsk($, sid, v.payload, alone, useId, turnAsks)
+  if (v.payload.edits && isLocalId(v.payload.edits)) return localReword($, sid, v.payload, useId)
+  if (v.payload.edits) return rewordAsk($, sid, v.payload, useId)
   await boundTrack($, sid)
   /* a session not engaged keeps its question; asking engages nothing. So does a spare */
-  if (!(await isEngaged($)) || isSpare(await projectDir($))) return localAsk($, sid, v.payload, alone, useId, turnAsks)
+  if (!(await isEngaged($)) || isSpare(await projectDir($))) return localAsk($, sid, v.payload, useId)
   const payload = await boardPayload($, sid, await boundTrack($, sid, true), v.payload)
   const r = await cli($, ['register', '--json'], JSON.stringify(payload))
   if (!r.ok) return { deny: failed('ask', r) }
   if (useId && r.json && r.json.id) {
     const reverses = r.json.reverses ? { reverses: r.json.reverses, blocking: true } : {}
-    const beside = [...new Set([...alone, ...(Array.isArray(r.json.beside) ? r.json.beside : [])])]
     /* the card's head reads the registered ask, its tokens numbered */
-    await keepTold($, useId, { ...payload, ...reverses, ...(beside.length ? { beside } : {}), id: r.json.id, key: r.json.key, name: r.json.name || payload.name, ask: r.json.ask || payload.ask, boardUrl: r.json.boardUrl, workstream: r.json.workstream || payload.workstream })
-    if (beside.length) {
-      await tellBeside($, r.json.id, beside, turnAsks)
-      if (!(r.json.beside || []).length) r.json.warnings = [...(r.json.warnings || []), besideSlip(r.json.id, beside).say]
-    }
+    await keepTold($, useId, { ...payload, ...reverses, id: r.json.id, key: r.json.key, name: r.json.name || payload.name, ask: r.json.ask || payload.ask, boardUrl: r.json.boardUrl, workstream: r.json.workstream || payload.workstream })
   }
   kick($)
   const letters = (payload.options || []).map((o: any) => o.type).filter((t: string) => /^[a-z]$/.test(t))
@@ -3269,7 +3567,7 @@ async function askTool($: any, input: any, useId?: string, turnAsks?: string[]):
 /* `edits` rewords an open question in place through the CLI, keeping its id.
    It names a board question, so it engages; its earlier tellings go to their changed stub at
    once, and this reply tells the new wording as a first telling does. */
-async function rewordAsk($: any, sid: string, raw: any, alone: string[], useId?: string, turnAsks?: string[]): Promise<any> {
+async function rewordAsk($: any, sid: string, raw: any, useId?: string): Promise<any> {
   const { edits, ...rest } = raw
   mem.engaged = true
   /* the question keeps its own workstream, track and gates, so none is filled in here */
@@ -3285,9 +3583,8 @@ async function rewordAsk($: any, sid: string, raw: any, alone: string[], useId?:
       if (u !== useId && same(q) && !changedStub(q) && rewordedSince(q, now)) { q.reworded = now.reworded; await keepTold($, u, q) }
     }
     const reverses = j.reverses ? { reverses: j.reverses, blocking: true } : {}
-    await keepTold($, useId, { ...payload, ...reverses, ...(alone.length ? { beside: alone } : {}), id: j.id, key: j.key, name: j.name || payload.name,
+    await keepTold($, useId, { ...payload, ...reverses, id: j.id, key: j.key, name: j.name || payload.name,
       ask: j.ask || payload.ask, boardUrl: j.boardUrl, version: j.version, reworded: now.reworded })
-    if (alone.length) await tellBeside($, j.id, alone, turnAsks)
     qpaneRedraw($)
   }
   kick($)
@@ -3311,18 +3608,9 @@ async function boardPayload($: any, sid: string, held: string | null, raw: any):
   return payload
 }
 
-/* the asks of the turn a reversal was told beside carry its id too, and the turn is flagged */
-async function tellBeside($: any, id: string, beside: string[], turnAsks?: string[]): Promise<void> {
-  for (const u of turnAsks || []) {
-    const q = told.get(u)
-    if (q && beside.includes(q.id)) await keepTold($, u, { ...q, beside: [...new Set([...(q.beside || []), id])] })
-  }
-  flagSlips($, 'this ask', [besideSlip(id, beside)])
-}
-
 /* an override request, one round trip like ask; the reply tells its block,
    which the desktop draws as the card under it */
-async function overrideTool($: any, input: any, useId?: string, turnAsks?: string[]): Promise<any> {
+async function overrideTool($: any, input: any, useId?: string): Promise<any> {
   const v = overrideArgs(input)
   if (v.error) return { deny: 'override_request refused: ' + v.error }
   mem.engaged = true
@@ -3334,12 +3622,8 @@ async function overrideTool($: any, input: any, useId?: string, turnAsks?: strin
   const page = r.json && r.json.page ? String(r.json.page).replace(/^\/+/, '') : ''
   const o = overrideTold(r.json, root && page ? root + page : '')
   if (useId) await keepTold($, useId, o)
-  /* a reversal told beside a question of the turn, either way round, is flagged as a question is */
-  const alone: string[] = turnAsks ? aloneInTurn(o, turnAsks.map((u) => told.get(u))) : []
-  if (alone.length) await tellBeside($, 'override #' + o.request, alone, turnAsks)
   kick($)
-  const result = overrideResult(o, await userName($))
-  return { result: alone.length ? result + '\nNote: ' + besideSlip('override #' + o.request, alone).say : result }
+  return { result: overrideResult(o, await userName($)) }
 }
 
 /* the card's press saving, by its telling */
@@ -3430,6 +3714,8 @@ async function decideTool($: any, input: any): Promise<any> {
   if (!r.ok) return { deny: failed('decide', r) }
   decs.stale = true
   void decisionRows($).catch(() => {})
+  // an answer it recorded moves the question off the band now, not at the next poll
+  if (r.json && r.json.answered) kick($)
   return { result: decidedText(r.json || {}) }
 }
 
@@ -3490,13 +3776,16 @@ function letGo(row: any): void {
   band.shelf = [...(band.shelf || []).filter((s: any) => s && s.track !== row.track), row]
 }
 
-/* the leftovers the board laid out, each with what it waits on */
-function laidOutNote(steps: any, track: string): string {
+/* the leftovers the board laid out, each with what it waits on; one on a new parked track names it */
+function laidOutNote(steps: any, track: string, parked?: any): string {
   if (!Array.isArray(steps) || !steps.length) return ''
+  const later = (Array.isArray(parked) ? parked : []).map((p: any) => p.id + ' ' + p.name + ' parked' + (p.unpark ? ', opens ' + p.unpark : ''))
   return 'Laid out on ' + track + ': ' + steps.map((s: any) => s.id + ' ' + s.name + (s.created ? '' : ' (already there)')
+    + (s.track ? ', on ' + s.track : '')
     + (s.runBy ? ', run by ' + s.runBy : '')
     + (s.edges && s.edges.length ? ', after ' + s.edges.map((e: any) => e.on).join(', ') : '')
     + (s.before && s.before.length ? ', before ' + s.before.map((e: any) => e.task).join(', ') : '')).join('; ') + '.'
+    + (later.length ? ' New track' + (later.length > 1 ? 's' : '') + ': ' + later.join('; ') + '.' : '')
 }
 
 async function handoffTool($: any, input: any, agentId?: string): Promise<any> {
@@ -3575,7 +3864,7 @@ async function handoffTool($: any, input: any, agentId?: string): Promise<any> {
     if (r.json.released) letGo({ track: track as string, key, name, workstream: ws || null, state: 'waiting', handoff: r.json.id, handoffStatus: 'waiting',
       focus: payload.focus, created: r.json.created || new Date().toISOString(), age: '', resume: r.json.resume || '/askerdo resume ' + track })
     await keepClosed($, sid, 'handed off')
-    try { $.ui.invalidate('ui.render') } catch {}
+    qpaneRedraw($)
   }
   toast($, 'Handoff ' + r.json.id + ' written (' + r.json.status + ') on ' + track + '.', 'press')
   const percent = payload.depthAtHandoff ? payload.depthAtHandoff.percent : undefined
@@ -3586,7 +3875,7 @@ async function handoffTool($: any, input: any, agentId?: string): Promise<any> {
   kick($)
   /* replyCheck reads this turn's reply for the resume block */
   if (agentId === undefined) checks.resume = id
-  if (agentId === undefined) keepInbox(id, r.json.inbox)
+  if (agentId === undefined) keepInbox(id, r.json.inbox, false, undefined, r.json.workstream)
   /* from here the turn's steps are checked against this handoff */
   if (agentId === undefined) await keepWrote($, { sid, id: r.json.id, track: id, status: r.json.status, turn: mem.turn, held: mem.track || null })
   const folders = folderFlag($, r.json.handoffChecks)
@@ -3594,10 +3883,10 @@ async function handoffTool($: any, input: any, agentId?: string): Promise<any> {
     result: started + 'Wrote ' + r.json.id + ' (' + r.json.status + ') on ' + id
       + (r.json.superseded && r.json.superseded.length ? ', superseding ' + r.json.superseded.join(', ') : '') + '.'
       + (r.json.released ? ' This session let ' + id + ' go with it.' : '')
-      + (laidOutNote(r.json.laidOut, id) ? '\n' + laidOutNote(r.json.laidOut, id) : '')
+      + (laidOutNote(r.json.laidOut, id) ? '\n' + laidOutNote(r.json.laidOut, id, r.json.parkedTracks) : '')
       + (r.json.leavesLine ? '\n' + r.json.leavesLine : '')
       + (r.json.reviewLine ? '\n' + r.json.reviewLine : '')
-      + inboxText(r.json.inbox)
+      + inboxText(r.json.inbox, r.json.workstream)
       + (r.json.warning ? '\nWARNING: ' + r.json.warning : '')
       + (handoffFilesNote(r.json, user) ? '\n' + handoffFilesNote(r.json, user) : '')
       + (folders ? '\n' + folders : '')
@@ -3698,7 +3987,7 @@ const rates: { list?: any[]; read?: boolean } = {}
 function setRates($: any, list: any): void {
   if (!Array.isArray(list) || JSON.stringify(list) === JSON.stringify(rates.list)) return
   rates.list = list
-  try { $.ui.invalidate('ui.render') } catch {}
+  qpaneRedraw($, STATUS)
 }
 
 /* The shield chip's press: the same path as /askerdo guard on and off. */
@@ -3753,7 +4042,7 @@ async function depthOnce($: any, r: any): Promise<void> {
   const mk = marksFor(main, await userName($), rootPath($, 'docs/'))
   /* the status line's meter redraws as its whole percent or its marks move */
   const face = JSON.stringify([wholePercent(r), main || null])
-  if (face !== marks.face) { marks.face = face; try { $.ui.invalidate('ui.render') } catch {} }
+  if (face !== marks.face) { marks.face = face; qpaneRedraw($, STATUS) }
   /* the meter draws, but its handoff notes wait for engagement; a mark passed
      meanwhile is told at the first measure after it */
   if (!(await isEngaged($))) return
@@ -3773,14 +4062,69 @@ const agents = new Map<string, { last: number; tokens: number; deny?: boolean; t
 /* this session's agents in flight by agentId: the job, model, calls, the tool
    in use and depth; a finished one stays, dimmed in Home's done fold, while another runs.
    start and end stamp its running time, in Date.now()'s ms as the draws read it */
-type Flight = { id: string; job: string; model: string; calls: number; tool?: string; tokens: number; done?: boolean; start?: number; end?: number }
+type Flight = { id: string; job: string; model: string; calls: number; tool?: string; tokens: number; done?: boolean; start?: number; end?: number
+  /* the agent that spawned it; wf, a workflow's, which $.agent.list() never names; g, the guard's stamps */
+  parent?: string; wf?: boolean; g?: { last: number; tasks?: string[]; name?: string } }
 const flight = new Map<string, Flight>()
 const flightList = (): Flight[] => [...flight.values()]
+
+/* a hot reload or a lost hooks worker empties the module, so the session's flights
+   ride the shared store and a load rebuilds from them; one key per session, so two sessions
+   saving at once each keep theirs, and a load drops the keys no save touched for FLIGHTS_AGE */
+const FLIGHTS_KEY = 'flights:'
+const FLIGHTS_AGE = 3 * 86400000
+let flightSaving: Promise<void> = Promise.resolve()
+function flightSave($: any): void {
+  flightSaving = flightSaving.then(async () => {
+    const sid = await sessionId($)
+    if (!sid) return
+    const list = flightList().map((f) => {
+      const a = agents.get(f.id)
+      return { ...f, tool: undefined, ...(a ? { g: { last: a.last, tasks: a.tasks, name: a.name } } : {}) }
+    })
+    if (list.length) await $.store.set(FLIGHTS_KEY + sid, { at: Date.now(), list })
+    else await $.store.delete(FLIGHTS_KEY + sid)
+  }).catch(() => {})
+}
+/* the other sessions' copies past FLIGHTS_AGE, and the one shared map an older mod wrote */
+async function flightTrim($: any, sid: string): Promise<void> {
+  const keys = await $.store.keys()
+  if (!Array.isArray(keys)) return
+  const cut = Date.now() - FLIGHTS_AGE
+  for (const k of keys) {
+    if (k === FLIGHTS_KEY + sid || (k !== 'flights' && !String(k).startsWith(FLIGHTS_KEY))) continue
+    const v = await $.store.get(k)
+    const at = k === 'flights' ? Math.max(0, ...Object.values(v || {}).map((x: any) => Number(x && x.at) || 0)) : Number(v && v.at) || 0
+    if (at < cut) await $.store.delete(k)
+  }
+}
+/* at each load: what the store kept, checked against the engine's own list; events since the load win */
+async function flightRebuild($: any): Promise<void> {
+  const sid = await sessionId($)
+  const [own, old, listed] = await Promise.all([
+    sid ? Promise.resolve($.store.get(FLIGHTS_KEY + sid)).catch(() => null) : null,
+    Promise.resolve($.store.get('flights')).catch(() => null), Promise.resolve($.agent.list()).catch(() => null)])
+  const mine = own && Array.isArray(own.list) ? own : sid && old && old[sid] ? old[sid] : null
+  const kept = mine && Array.isArray(mine.list) ? mine.list : []
+  if (sid) void flightTrim($, sid).catch(() => {})
+  const rebuilt: Flight[] = flightsRebuilt(kept, Array.isArray(listed) ? listed : [])
+  let added = 0
+  for (const f of rebuilt) {
+    if (flight.has(f.id)) continue
+    const { g, ...rest } = f
+    flight.set(f.id, rest)
+    if (g && !rest.done && !agents.has(f.id)) agents.set(f.id, { last: Number(g.last) || 0, tokens: Number(rest.tokens) || 0, tasks: g.tasks, name: g.name })
+    added++
+  }
+  if (added) flightRedraw($, true)
+  if (added || kept.length) flightSave($)
+}
 /* calls and depth redraw at most once a second, a start or an end at once, and while one runs,
-   as a shown running time turns over; all through the one timer */
+   as a shown running time turns over; all through the one timer. Flights show on the
+   status row alone, so no card under a reply draws again */
 const flightTick: { timer?: { cancel: () => void }; due?: number } = {}
 function flightRedraw($: any, now = false): void {
-  if (now) qpaneRedraw($)
+  if (now) qpaneRedraw($, STATUS)
   flightArm($, now ? flightNext(Date.now()) : 1000)
 }
 /* ms to the next turn of a running agent's shown time (each second under a minute, then each
@@ -3805,7 +4149,7 @@ function flightArm($: any, ms: number): void {
     flightTick.due = due
     flightTick.timer = $.clock.after(ms, () => {
       flightTick.timer = undefined
-      qpaneRedraw($)
+      qpaneRedraw($, STATUS)
       flightArm($, flightNext(Date.now()))
     })
   } catch { flightTick.timer = undefined }
@@ -3820,9 +4164,12 @@ function flightStart($: any, e: any, res: any): void {
     const id = res && res.agentId
     if (!id || (res && res.deny)) return
     const was = flight.get(id)
+    const parent = e.parentAgentId || (was && was.parent)
     flight.set(id, { id, job: String(e.description || e.subagentType || ''), model: String(res.model || e.model || e.parentModel || ''),
-      calls: was ? was.calls : 0, tokens: was ? was.tokens : 0, start: was && !was.done && Number.isFinite(was.start) ? was.start : Date.now() })
+      calls: was ? was.calls : 0, tokens: was ? was.tokens : 0, start: was && !was.done && Number.isFinite(was.start) ? was.start : Date.now(),
+      ...(parent ? { parent: String(parent) } : {}), ...(e.workflow || (was && was.wf) ? { wf: true } : {}) })
     flightRedraw($, true)
+    flightSave($)
   } catch {}
 }
 function flightEnd($: any, agentId: string): void {
@@ -3833,6 +4180,7 @@ function flightEnd($: any, agentId: string): void {
   f.tool = undefined
   if (![...flight.values()].some((x) => !x.done)) { flight.clear(); flightStop() }
   flightRedraw($, true)
+  flightSave($)
 }
 /* an agent the engine ended with no turn.complete (killed, failed) leaves at the main loop's next turn */
 async function flightSweep($: any): Promise<void> {
@@ -3842,8 +4190,10 @@ async function flightSweep($: any): Promise<void> {
   const live = new Map(list.map((a: any) => [a && a.id, a && a.status]))
   for (const f of flight.values()) {
     const st = live.get(f.id)
-    if (!f.done && st && !['pending', 'running', 'waiting'].includes(String(st))) flightEnd($, f.id)
+    if (!f.done && st && !LIVE_AGENT.includes(String(st))) flightEnd($, f.id)
   }
+  /* the calls and depth since the last start or end, for the next load */
+  flightSave($)
 }
 
 /* an Agent call's tasks by tool_use_id, until its spawn names the agent */
@@ -3870,6 +4220,7 @@ async function agentCheck($: any, agentId: string, usage: any): Promise<void> {
   const stage = agentStage(tokens, g, a.last)
   if (!stage) return
   a.last = tokens
+  flightSave($)
   /* past hard with hardDeny the refusal on each call carries it */
   if (stage === 'hard' && g.hardDeny) return
   const note = await agentStateNote($, agentId)
@@ -4009,6 +4360,34 @@ async function laneEnd($: any, agentId: string, answer: string): Promise<void> {
   }
 }
 
+/* the job names of an agent the session itself dispatched (its Agent call's name and
+   description); a helper another agent started marks nothing */
+function landingJobs(agentId: string): string[] {
+  const o = owners.get(agentId)
+  const f = flight.get(agentId)
+  if ((o && o.parent) || (f && f.parent)) return []
+  return [...new Set([...(o ? o.names : []), ...(f && f.job ? [f.job] : [])])]
+}
+/* At its stop, the tasks this session started with that job as their agent read finished, or
+   stopped with the next leg due when its answer hands on; an older board has no such verb,
+   so the call fails and the line reads as before */
+async function agentLanded($: any, jobs: string[], answer: string): Promise<void> {
+  if (!jobs.length) return
+  const sid = await sessionId($)
+  if (!sid) return
+  await localVerb($, 'agentEnded', { input: { jobs, how: handedOn(answer) === true ? 'stopped' : 'finished' }, session: sid })
+}
+/* a job the session sends again (a nudge, a resume, the next leg under its name) runs, so its
+   tasks' ended mark goes; never throws, as flightStart */
+function agentRunning($: any, res: any): void {
+  try {
+    const id = res && res.agentId
+    const jobs = id && !res.deny ? landingJobs(id) : []
+    if (!jobs.length) return
+    void sessionId($).then((sid: string) => (sid ? localVerb($, 'agentEnded', { input: { jobs, how: 'running' }, session: sid }) : null)).catch(() => {})
+  } catch {}
+}
+
 /* each task's latest lane size, read once until the store moves (as procCards) */
 const lanes: { mark?: string; byTask: Map<string, any> } = { byTask: new Map() }
 async function laneSizes($: any, tasks: string[]): Promise<any[]> {
@@ -4106,10 +4485,14 @@ async function placeTelling($: any, asks: string[], at?: string, key?: string): 
     if (key) all[key] = [...(all[key] || []), ...asks]
     return all
   }
+  /* a reply that had a card, or one a telling moves off, reads the cards' count; the reply that
+     gains its first card drew without one and reads its own */
+  const had = [at, key].some((k) => k && (tellAt.get(k) || []).length)
+  const off = [...tellAt].some(([k, v]) => k !== at && k !== key && v.some((u) => asks.includes(u)))
   const mine = move(Object.fromEntries(tellAt))
   tellAt.clear()
   for (const [k, v] of Object.entries(mine)) tellAt.set(k, v)
-  qpaneRedraw($)
+  qpaneRedraw($, [...(had || off ? ['card'] : []), ...replyIds(at, key)])
   try {
     const all = move((await $.store.get('toldAt')) || {})
     const keys = Object.keys(all)
@@ -4287,7 +4670,7 @@ async function localTold($: any, evs: any[]): Promise<void> {
   })
 }
 
-async function localAsk($: any, sid: string, payload: any, alone: string[], useId?: string, turnAsks?: string[]): Promise<any> {
+async function localAsk($: any, sid: string, payload: any, useId?: string): Promise<any> {
   const q = await localQueued(async () => {
     const e = await localRead($, sid)
     e.n += 1
@@ -4296,15 +4679,14 @@ async function localAsk($: any, sid: string, payload: any, alone: string[], useI
     await localSave($, sid, e)
     return kept
   })
-  if (useId) await keepTold($, useId, { ...localCard(q, sid), ...(alone.length ? { beside: alone } : {}) })
-  if (alone.length) await tellBeside($, q.label, alone, turnAsks)
+  if (useId) await keepTold($, useId, localCard(q, sid))
   qpaneRedraw($)
-  return { result: localResult(q.label, payload, alone.length ? [besideSlip(q.label, alone).say] : []) }
+  return { result: localResult(q.label, payload) }
 }
 
 /* a kept question rewords in this session's store, keeping its L-n, its
    earlier cards stubbed as a board question's are; one filed since rewords on the board. */
-async function localReword($: any, sid: string, raw: any, alone: string[], useId?: string, turnAsks?: string[]): Promise<any> {
+async function localReword($: any, sid: string, raw: any, useId?: string): Promise<any> {
   const { edits, ...payload } = raw
   const out: any = await localQueued(async () => {
     const e = await localRead($, sid)
@@ -4320,7 +4702,7 @@ async function localReword($: any, sid: string, raw: any, alone: string[], useId
     }
     return { q, changed }
   })
-  if (out.filed) return rewordAsk($, sid, { ...raw, edits: out.filed.id }, alone, useId, turnAsks)
+  if (out.filed) return rewordAsk($, sid, { ...raw, edits: out.filed.id }, useId)
   if (out.deny) return { deny: 'ask refused: ' + out.deny }
   const q: LocalQ = out.q
   if (useId && out.changed.length) {
@@ -4329,8 +4711,7 @@ async function localReword($: any, sid: string, raw: any, alone: string[], useId
     for (const [u, t] of [...told]) {
       if (u !== useId && t && t.id === q.label && !changedStub(t) && rewordedSince(t, now)) { t.reworded = now.reworded; await keepTold($, u, t) }
     }
-    await keepTold($, useId, { ...localCard(q, sid), ...(alone.length ? { beside: alone } : {}), version: q.version, reworded: now.reworded })
-    if (alone.length) await tellBeside($, q.label, alone, turnAsks)
+    await keepTold($, useId, { ...localCard(q, sid), version: q.version, reworded: now.reworded })
   }
   qpaneRedraw($)
   const letters = (payload.options || []).map((o: any) => o.type).filter((t: string) => /^[a-z]$/.test(t))
@@ -4477,7 +4858,7 @@ async function userName($: any): Promise<string> {
 
 /* This turn's reply text as stored, and the dispatches flagged. The main loop's
    dispatches and commits, and whether a task was in hand as they ran or taken this turn. */
-const checks: { texts: string[]; agents: any[]; resume?: string; carry?: string; inbox?: { track: string; ids: string[]; more?: boolean }; dispatched: number; commits: number; holding: boolean } = {
+const checks: { texts: string[]; agents: any[]; resume?: string; carry?: string; inbox?: { track: string; ids: string[]; due?: string[]; away?: string[]; more?: boolean }; dispatched: number; commits: number; holding: boolean } = {
   texts: [], agents: [], dispatched: 0, commits: 0, holding: false,
 }
 
@@ -4491,6 +4872,9 @@ async function onboardSeen($: any, e: any): Promise<void> {
   if (e.tool === 'Skill' && ONBOARD.test(String(toolInput(e).skill || ''))) onboarding.add(await sessionId($))
   else if (COMMAND_TOOLS.includes(e.tool) && ONBOARD_RAN.test(String(toolInput(e).command || ''))) onboarding.delete(await sessionId($))
 }
+
+/* the tasks this session started for an agent, until they close */
+const agentStarted = new Set<string>()
 
 /* a handoff empties the hand, so the hand is read as each piece of work runs too */
 function trackWork(e: any): void {
@@ -4700,16 +5084,14 @@ async function bandHere($: any): Promise<boolean> {
   try { return bandSurfaces(await $.session.surfaces()) } catch { return false }
 }
 
-/* of a close's inbox ids, those still in the inbox, read once from the board; a failed read keeps them all */
-async function stillInbox($: any, closed?: { track: string; ids: string[]; more?: boolean }): Promise<string[]> {
-  if (!closed || !closed.ids.length) return []
-  if (!closed.track) return closed.ids
+/* of a close's inbox ids, those still in the inbox, read once from the board; a failed read keeps them all.
+   split into the ones the reply names and the due ones it places or wakes again (inboxLeft) */
+async function stillInbox($: any, closed?: { track: string; ids: string[]; due?: string[]; away?: string[]; more?: boolean }): Promise<{ name: string[]; due: string[] }> {
+  if (!closed || !closed.ids.length) return { name: [], due: [] }
+  if (!closed.track) return inboxLeft(closed, null)
   const r = await cli($, ['track', 'show', closed.track, '--json']).catch(() => null)
-  if (!r || !r.ok || !Array.isArray(r.json && r.json.inbox)) return closed.ids
-  const now: string[] = r.json.inbox.map((t: any) => String((t && t.id) || '')).filter(Boolean)
-  const kept = closed.ids.filter((id) => now.includes(id))
-  /* a shell line cut at ten: the board's own list holds the rest */
-  return closed.more ? [...new Set([...kept, ...now])] : kept
+  const ws = r && r.ok && r.json && r.json.workstream ? r.json.workstream.id : undefined
+  return inboxLeft(closed, r && r.ok && Array.isArray(r.json && r.json.inbox) ? r.json.inbox : null, ws)
 }
 
 async function replyCheck($: any, e: any): Promise<void> {
@@ -4736,17 +5118,18 @@ async function replyCheck($: any, e: any): Promise<void> {
     const windowTold = pastWindow({ percent: lastReading() ? wholePercent(lastReading()) : undefined, main: guard.state && guard.state.main, told })
     const engaged = await isEngaged($)
     const held = (await boundTrack($).catch(() => null)) || ''
+    const left = await stillInbox($, closed)
     const slips = replyChecks({ answer: e.answer, all: texts.length ? texts.join('\n\n') : e.answer,
       checks: c.checks, band: await bandHere($), windowTold, handoffAsked: !!marks.asked, name: nameOf(c.name),
       /* the receipt rule rides the mod section alone */
-      receipts: engaged ? due : [], resume, carry, held, inbox: await stillInbox($, closed) })
+      receipts: engaged ? due : [], resume, carry, held, inbox: left.name, due: left.due })
     if (slips.length) {
       try { $.ui.log(flagLine('this reply', slips)) } catch {}
       items.push({ what: 'your last reply', slips })
     }
     /* counted at the turn's end, so a task taken in hand later in the turn clears it */
     const holding = work.holding || (band.hand || []).length > 0
-    const off = engaged ? offTrackSlip({ ...work, holding, track: held, onboarding: onboarding.has(await sessionId($)) }) : null
+    const off = engaged ? offTrackSlip({ ...work, holding, track: held, onboarding: onboarding.has(await sessionId($)), agentTasks: [...agentStarted] }) : null
     if (off) {
       try { $.ui.log(flagLine('this turn', [off])) } catch {}
       items.push({ what: 'this turn', slips: [off] })
@@ -4836,20 +5219,35 @@ async function decisionRows($: any): Promise<any[]> {
   return decs.rows || []
 }
 
+/* a knowledge record's file globs point too, unless the rules in force switch pointers.knowledge off;
+   the prompt's own cached rules read, and with no board the setting is its default, on */
+async function knowledgeOn($: any): Promise<boolean> {
+  const r = await readRules($).catch(() => null)
+  return !(r && r.values && r.values['pointers.knowledge'] === false)
+}
+
 async function decisionWatch($: any, e: any): Promise<void> {
   const rows = await decisionRows($)
   if (!rows.length) return
   const hits = decisionHits(rows, { tool: e.tool, input: toolInput(e), cwd: await projectDir($) })
+  let factsOn: boolean | undefined
   for (const h of hits) {
     const k = (mem.id || '') + ' ' + (e.agentId || 'main') + ' ' + h.decision.id
     if (decs.told.has(k)) continue
+    /* a row with no type comes from a board that hands out decisions alone */
+    const fact = h.decision.type !== undefined && h.decision.type !== 'decision'
+    if (fact) {
+      if (factsOn === undefined) factsOn = await knowledgeOn($)
+      if (!factsOn) continue
+    }
     decs.told.add(k)
     if (!decs.toasted.has(h.decision.id)) {
       decs.toasted.add(h.decision.id)
-      toast($, 'Decision ' + h.decision.id + ' applies: ' + h.decision.name, 'ambient', 8000)
+      toast($, (fact ? 'Knowledge ' + h.decision.id + ' is about this file: ' : 'Decision ' + h.decision.id + ' applies: ') + h.decision.name, 'ambient', 8000)
     }
-    void readOnce($, [h.decision.id], 'toast').catch(() => {})
-    const message = { type: 'user', content: [{ type: 'text', text: decisionNote(h.decision, h.why, await userName($)) }] }
+    if (!fact) void readOnce($, [h.decision.id], 'toast').catch(() => {})
+    const text = fact ? knowledgeNote(h.decision, h.why) : decisionNote(h.decision, h.why, await userName($))
+    const message = { type: 'user', content: [{ type: 'text', text }] }
     try { await $.session.append(e.agentId ? { message, agentId: e.agentId } : { message }) } catch {}
   }
 }
@@ -4884,6 +5282,13 @@ async function procCmd($: any, args: string): Promise<string> {
   const p = parseProc(args)
   if (p.error) return p.error
   const cwd = await projectDir($)
+  if (p.sub === 'scan' && p.check) {
+    const r = await cli($, ['proc', 'scan', '--check', '--project', cwd, '--json'])
+    /* exit 1 means a file has errors, and the report is still on stdout */
+    let report: any
+    if (r.code === 0 || r.code === 1) try { report = JSON.parse(r.out) } catch {}
+    return report ? checkText(report) : failed('Checking the procedure files', r)
+  }
   if (p.sub === 'scan') {
     const r = await cli($, ['proc', 'scan', '--project', cwd, '--json'])
     procs.cards = undefined
@@ -4917,6 +5322,112 @@ const subagentOverride = (n: string) => 'override refused: a subagent never asks
   + '(a message to main, or in your final result), which decides whether the change qualifies and asks.'
 const toolFailed = ($: any, e: any, next: any) => ({ deny: PLUGIN + ': the tool failed before it answered; nothing may have been written. Check with the CLI.' })
 
+async function bandSite($: any, e: any, next: any): Promise<any> {
+  drawnOn.add(e.surface)
+  /* a hot reload lost the memory: read it back; the status row draws meanwhile, the band after */
+  if (!band.loaded) {
+    startPoll($)
+    kick($)
+  }
+  /* the band is the queue; the meters, the guard and the
+     thread draw on the status line under the prompt. On the
+     desktop, which has no hint line, they are the band's last row, drawn always */
+  const els = $.ui.resolve(e)
+  const desk = e.surface === 'desktop'
+  const sm = desk ? statusOf($) : null
+  const status = sm ? handedKeys(statusTree(els, sm, null, { columns: e.props.bodyColumns, surface: e.surface, ...statusPresses($) }), e.surface) : null
+  /* the band never yields to the app's box; under it, the band
+     draws above the box, which stays nearest the prompt */
+  const short = !!e.props.hasSurvey
+  const b = band.loaded ? bandParts($) : null
+  const ours = b && b.model && handedKeys(bandTree(els, b.model, b.answer, {
+    columns: e.props.bodyColumns, rows: e.props.maxRows - (status ? 1 : 0), now: Date.now(), short, surface: e.surface,
+    open: b.open, submit: b.submit, send: b.send, press: b.press, fold: b.fold, strip: b.strip, still: b.still,
+  }), e.surface)
+  /* nothing open or waiting: no band, and the app's content still draws */
+  if (!ours && !status) return next(e)
+  if (!short && !status && !desk) return ours
+  const theirs = short || !ours ? await next(e) : null
+  /* a half line between the band and the status row on the desktop, never
+     before the app's slot (an empty block there, so its gap would draw an empty row); BAND_INSET on the left lines the mark's ink up with the composer's + (desktop-capabilities 2f) */
+  const rows = [ours, status].filter(Boolean)
+  const ownRows = desk && theirs && rows.length > 1 ? [els.Box({ key: 'band-rows', flexDirection: 'column', rowGap: 1, children: rows })] : rows
+  const gap = desk ? { ...(theirs ? {} : { rowGap: 1 }), paddingLeft: BAND_INSET } : {}
+  return els.Box({ key: 'band-and-box', flexDirection: 'column', ...gap, children: [...ownRows, theirs].filter(Boolean) })
+}
+
+/* the tellings a reply carries, by its row id or its text; null for a reply with no card */
+function usesOf(e: any): string[] | null {
+  const uses = tellAt.get(e.requestId) || tellAt.get(textKey(e.props && e.props.text) || '')
+  return uses && uses.length ? uses : null
+}
+
+/* a reply with no card reads only its own counts, by its row id and its text key, which move
+   only when a telling is placed under that reply */
+const replyIds = (...keys: (string | undefined)[]): string[] => keys.filter(Boolean).map((k) => 'reply ' + k)
+async function replyDraw($: any, e: any, next: any): Promise<any> {
+  await loadTellAt($)
+  if (usesOf(e)) return ringDraw($, 'card', () => replySite($, e, next))
+  return ringDraw($, 'reply', () => replySite($, e, next), replyIds(e.requestId, textKey(e.props && e.props.text)))
+}
+
+async function replySite($: any, e: any, next: any): Promise<any> {
+  await loadTellAt($)
+  const uses = usesOf(e)
+  if (!uses) return next(e)
+  if (uses.some((u) => !told.has(u))) await loadTold($)
+  const els = $.ui.resolve(e)
+  const vw = e.viewport && e.viewport.columns
+  /* the card is sized in its own cells, as the pane's copy is from bodyColumns */
+  const columns = !vw ? undefined : (e.surface === 'desktop' ? Math.floor(vw * DESK_CELL) : vw) - REPLY_INDENT
+  /* this session asked it, so the head names the session and the age as the pane does */
+  const sid = mem.id || await sessionId($).catch(() => undefined)
+  const now = Date.now()
+  const cards: any[] = []
+  const drawn: any[] = []
+  let fresh = false
+  qpane.unfolded = await openRings($)
+  for (const useId of uses) {
+    const q = told.get(useId)
+    /* an override request's slim card, its block hidden as a question's is */
+    if (q && q.override) {
+      drawn.push(q)
+      cards.push(overrideTellingTree(els, overrideCard(q, ovPressing.get(useId)), (d: string) => { void overridePress($, useId, q, d).catch(() => {}) }, e.surface, columns))
+      continue
+    }
+    const c = q && firstTellingCard(q, sid, now, band.local)
+    cardAges.delete(useId)
+    if (!c) continue
+    drawn.push(q)
+    /* a filed question's reply still names its local label */
+    if (q.was) drawn.push({ ...q, id: q.was })
+    /* reworded since, the card is its one changed line, which follows nothing more;
+       none where this reply also carries the current telling (asked and reworded in one turn) */
+    const stub = changedStub(q)
+    if (stub && uses.some((u) => { const o = told.get(u); return o && o !== q && (q.key ? o.key === q.key : o.id === q.id) && !changedStub(o) })) continue
+    /* a card drawn live is followed from the band's reads, never read here */
+    if (!stub && !q.answered && (!q.ended || q.snoozed) && !follow.drawn.has(useId)) { follow.drawn.add(useId); fresh = true }
+    const act = cardActions($, (id: string, letter: string) => { void tellingPick($, useId, q, letter).catch(() => {}) },
+      (verb) => { void tellingEnd($, useId, q, verb).catch(() => {}) },
+      { site: 'card', useId, key: q.key, local: !!q.local, version: q.local ? undefined : q.version || 1 })
+    act.open = (id: string) => { void openPane($, 'questions', id).catch(() => {}) }
+    if (c.age && !stub) cardAges.set(useId, { q, age: c.age })
+    cards.push(firstTellingTree(els, c, qpane, act, { columns, answered: q.answered, ended: q.ended, surface: e.surface, changed: stub ? stub.line : undefined, here: hereNow() }))
+  }
+  /* first drawn after the band loaded (a reload, an old reply scrolled to): one follow now */
+  if (fresh && band.loaded) {
+    try { $.clock.after(0, () => { void followRun($).then((m) => { if (m) qpaneRedraw($) }).catch(() => {}) }) } catch {}
+  }
+  if (!cards.length) return next(e)
+  /* the desktop, where the card is measured to draw, draws the reply without
+     the question's block; the stored message and every other screen keep it. Its
+     footer draws under the last card, so it stays the last thing on screen */
+  const text = e.props && typeof e.props.text === 'string' ? e.props.text : ''
+  const parts = e.surface === 'desktop' && text && !e.props.isSummary ? tellingParts(text, drawn) : { body: text, footer: '' }
+  const shown = parts.body
+  return underReply(els, await next(shown !== text ? { ...e, props: { ...e.props, text: shown } } : e), cards.map((c) => handedKeys(c, e.surface, true)), parts.footer)
+}
+
 export const register: Register = (on: any) => {
   /* the switch. Set before the settings hooks run (measured: this hook
      runs first), so the SessionStart summary and both inbox drains stay silent. */
@@ -4946,9 +5457,12 @@ export const register: Register = (on: any) => {
     void decisionRows($).catch(() => {})
     void pruneKept($).catch(() => {})
     where.paneRead = false
-    void readWhere($).catch(() => {})
+    drift.root = undefined
+    void readWhere($).then(() => readDrift($)).catch(() => {})
     /* the belt's first read of HEAD */
     void beltCheck($).catch(() => {})
+    /* a reload's agents come back from the store and the engine's list */
+    void flightRebuild($).catch(() => {})
     return res
   })
 
@@ -4987,11 +5501,13 @@ export const register: Register = (on: any) => {
         if (sid && closedFinished(e.answer)) { if (closedAs(sid) !== 'handed off' && was !== 'finished') await keepClosed($, sid, 'finished') }
         else if (was === 'finished') await keepClosed($, sid)
         /* the band's closed line follows; a reopened session's poll picks up at its next tick */
-        if (closedAs(sid) !== was) { try { $.ui.invalidate('ui.render') } catch {} }
+        if (closedAs(sid) !== was) qpaneRedraw($)
       }
     } else {
+      const jobs = landingJobs(e.agentId)
       try { flightEnd($, e.agentId) } catch {}
       void laneEnd($, e.agentId, String(e.answer || '')).catch(() => {})
+      void agentLanded($, jobs, String(e.answer || '')).catch(() => {})
     }
     if (e.agentId === undefined) void beltCheck($).catch(() => {})
     return next(e)
@@ -5077,7 +5593,7 @@ export const register: Register = (on: any) => {
         /* a close run from the shell lists the inbox it leaves; its ids ride the turn */
         if (hub && e.agentId === undefined && res && res.result) {
           const c = closedInbox(toolInput(e).command, res.result.stdout)
-          if (c) keepInbox(c.track, c.ids, !!c.more)
+          if (c) keepInbox(c.track, c.ids, !!c.more, c.due || [], undefined, c.away || [])
         }
         if (f && f.tool === e.tool) { f.tool = undefined; flightRedraw($) }
         /* every loop's commit; the folder is read here, the git reads and the link run behind */
@@ -5097,6 +5613,7 @@ export const register: Register = (on: any) => {
       const res = await next(e)
       flightStart($, e, res)
       ownerSpawn(e, res)
+      agentRunning($, res)
       return res
     }
     /* the rulings on the dispatch's tasks follow the rules block */
@@ -5107,6 +5624,7 @@ export const register: Register = (on: any) => {
     laneStart(e.tool_use_id, res && res.agentId)
     flightStart($, e, res)
     ownerSpawn(e, res)
+    agentRunning($, res)
     return res
   }).catch(($: any, e: any, next: any) => next(e))
 
@@ -5180,7 +5698,7 @@ export const register: Register = (on: any) => {
     /* a subagent's question is for the session that dispatched it */
     if (e.agentId !== undefined) return { deny: subagentAsk(await userName($)) }
     await settle($).catch(() => {})
-    const r = await askTool($, toolInput(e), e.tool_use_id, [...thisTurn().asks])
+    const r = await askTool($, toolInput(e), e.tool_use_id)
     /* the telling waits for the reply that carries its block, or the turn's end */
     if (e.tool_use_id && told.has(e.tool_use_id)) thisTurn().asks.push(e.tool_use_id)
     return r
@@ -5188,7 +5706,7 @@ export const register: Register = (on: any) => {
   on('tool.call', { tool: 'mcp__askerdo__override_request' }, async ($: any, e: any) => {
     if (e.agentId !== undefined) return { deny: subagentOverride(await userName($)) }
     await settle($).catch(() => {})
-    const r = await overrideTool($, toolInput(e), e.tool_use_id, [...thisTurn().asks])
+    const r = await overrideTool($, toolInput(e), e.tool_use_id)
     /* the card draws as a question's does */
     if (e.tool_use_id && told.has(e.tool_use_id)) thisTurn().asks.push(e.tool_use_id)
     return r
@@ -5214,6 +5732,13 @@ export const register: Register = (on: any) => {
     const r = await taskTool($, input)
     /* a take in hand or a start puts the turn's work on the track before the band reloads */
     if (!r.deny && (input.inHand === true || input.status === 'in_progress' || input.agent !== undefined)) checks.holding = true
+    /* closing an agent task this session started lands its work on the track */
+    const id = String(input.id || '')
+    if (!r.deny && id && input.agent !== undefined) agentStarted.add(id)
+    else if (!r.deny && agentStarted.has(id) && (input.status === 'completed' || input.status === 'dropped')) {
+      agentStarted.delete(id)
+      if (input.status === 'completed') checks.holding = true
+    }
     return r
   }).catch(toolFailed)
   on('tool.call', { tool: 'mcp__askerdo__handoff_write' }, async ($: any, e: any) => {
@@ -5234,52 +5759,23 @@ export const register: Register = (on: any) => {
   }
 
   /* the band draws on the terminal and desktop surfaces only */
-  on('ui.render', { component: 'AbovePrompt' }, async ($: any, e: any, next: any) => {
-    drawnOn.add(e.surface)
-    /* a hot reload lost the memory: read it back; the status row draws meanwhile, the band after */
-    if (!band.loaded) {
-      startPoll($)
-      kick($)
-    }
-    /* the band is the queue; the meters, the guard and the
-       thread draw on the status line under the prompt. On the
-       desktop, which has no hint line, they are the band's last row, drawn always */
-    const els = $.ui.resolve(e)
-    const desk = e.surface === 'desktop'
-    const sm = desk ? statusOf($) : null
-    const status = sm ? handedKeys(statusTree(els, sm, null, { columns: e.props.bodyColumns, surface: e.surface, ...statusPresses($) }), e.surface) : null
-    /* the band never yields to the app's box; under it, the band
-       draws above the box, which stays nearest the prompt */
-    const short = !!e.props.hasSurvey
-    const b = band.loaded ? bandParts($) : null
-    const ours = b && b.model && handedKeys(bandTree(els, b.model, b.answer, {
-      columns: e.props.bodyColumns, rows: e.props.maxRows - (status ? 1 : 0), now: Date.now(), short, surface: e.surface,
-      open: b.open, submit: b.submit, send: b.send, press: b.press, fold: b.fold, strip: b.strip,
-    }), e.surface)
-    /* nothing open or waiting: no band, and the app's content still draws */
-    if (!ours && !status) return next(e)
-    if (!short && !status && !desk) return ours
-    const theirs = short || !ours ? await next(e) : null
-    /* a half line between the band and the status row on the desktop, never
-       before the app's slot (an empty block there, so its gap would draw an empty row); BAND_INSET on the left lines the mark's ink up with the composer's + (desktop-capabilities 2f) */
-    const rows = [ours, status].filter(Boolean)
-    const ownRows = desk && theirs && rows.length > 1 ? [els.Box({ key: 'band-rows', flexDirection: 'column', rowGap: 1, children: rows })] : rows
-    const gap = desk ? { ...(theirs ? {} : { rowGap: 1 }), paddingLeft: BAND_INSET } : {}
-    return els.Box({ key: 'band-and-box', flexDirection: 'column', ...gap, children: [...ownRows, theirs].filter(Boolean) })
-  })
+  on('ui.render', { component: 'AbovePrompt' }, ($: any, e: any, next: any) => ringDraw($, 'band', () => bandSite($, e, next)))
 
-  on('ui.render', { component: 'PromptHint' }, ($: any, e: any, next: any) => statusDraw($, e, next))
+  on('ui.render', { component: 'PromptHint' }, ($: any, e: any, next: any) => ringDraw($, 'hint', () => statusDraw($, e, next)))
 
   /* a press on the band or the status line hands the focus off its button (handOff) */
   on('ui.press', ($: any, e: any, next: any) => {
+    const stale = ringStale(e)
+    ringPress(e, stale)
+    if (stale) return { element: e.element }
     handOff(e)
     return next(e)
   }).catch(($: any, e: any, next: any) => next(e))
 
   /* one AskerDo pane; a pane saved under an id from before the tabs draws it too */
-  on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($: any, e: any) => paneDraw($, e))
-  on('ui.render', { component: 'Pane', requestId: OLD_PANE_IDS[0] }, ($: any, e: any) => paneDraw($, e))
-  on('ui.render', { component: 'Pane', requestId: OLD_PANE_IDS[1] }, ($: any, e: any) => paneDraw($, e))
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($: any, e: any) => ringDraw($, 'pane', () => paneDraw($, e)))
+  on('ui.render', { component: 'Pane', requestId: OLD_PANE_IDS[0] }, ($: any, e: any) => ringDraw($, 'pane', () => paneDraw($, e)))
+  on('ui.render', { component: 'Pane', requestId: OLD_PANE_IDS[1] }, ($: any, e: any) => ringDraw($, 'pane', () => paneDraw($, e)))
 
   /* the engine's own dialog with rewritten props, so it still collects the answer */
   on('ui.render', { component: 'AskUserQuestion' }, ($: any, e: any, next: any) => {
@@ -5319,59 +5815,7 @@ export const register: Register = (on: any) => {
   /* The first telling: the question as the pane's card under the reply
      that tells it, not on the ask tool's row, which the transcript collapses; any
      other reply is the engine's. */
-  on('ui.render', { component: 'AssistantMessage' }, async ($: any, e: any, next: any) => {
-    await loadTellAt($)
-    const uses = tellAt.get(e.requestId) || tellAt.get(textKey(e.props && e.props.text) || '')
-    if (!uses || !uses.length) return next(e)
-    if (uses.some((u) => !told.has(u))) await loadTold($)
-    const els = $.ui.resolve(e)
-    const vw = e.viewport && e.viewport.columns
-    /* the card is sized in its own cells, as the pane's copy is from bodyColumns */
-    const columns = !vw ? undefined : (e.surface === 'desktop' ? Math.floor(vw * DESK_CELL) : vw) - REPLY_INDENT
-    /* this session asked it, so the head names the session and the age as the pane does */
-    const sid = mem.id || await sessionId($).catch(() => undefined)
-    const now = Date.now()
-    const cards: any[] = []
-    const drawn: any[] = []
-    let fresh = false
-    for (const useId of uses) {
-      const q = told.get(useId)
-      /* an override request's slim card, its block hidden as a question's is */
-      if (q && q.override) {
-        drawn.push(q)
-        cards.push(overrideTellingTree(els, overrideCard(q, ovPressing.get(useId)), (d: string) => { void overridePress($, useId, q, d).catch(() => {}) }, e.surface, columns))
-        continue
-      }
-      const c = q && firstTellingCard(q, sid, now, band.local)
-      if (!c) continue
-      drawn.push(q)
-      /* a filed question's reply still names its local label */
-      if (q.was) drawn.push({ ...q, id: q.was })
-      /* reworded since, the card is its one changed line, which follows nothing more;
-         none where this reply also carries the current telling (asked and reworded in one turn) */
-      const stub = changedStub(q)
-      if (stub && uses.some((u) => { const o = told.get(u); return o && o !== q && (q.key ? o.key === q.key : o.id === q.id) && !changedStub(o) })) continue
-      /* a card drawn live is followed from the band's reads, never read here */
-      if (!stub && !q.answered && (!q.ended || q.snoozed) && !follow.drawn.has(useId)) { follow.drawn.add(useId); fresh = true }
-      const act = cardActions($, (id: string, letter: string) => { void tellingPick($, useId, q, letter).catch(() => {}) },
-        (verb) => { void tellingEnd($, useId, q, verb).catch(() => {}) },
-        { site: 'card', useId, key: q.key, local: !!q.local, version: q.local ? undefined : q.version || 1 })
-      act.open = (id: string) => { void openPane($, 'questions', id).catch(() => {}) }
-      cards.push(firstTellingTree(els, c, qpane, act, { columns, answered: q.answered, ended: q.ended, surface: e.surface, changed: stub ? stub.line : undefined, here: hereNow() }))
-    }
-    /* first drawn after the band loaded (a reload, an old reply scrolled to): one follow now */
-    if (fresh && band.loaded) {
-      try { $.clock.after(0, () => { void followRun($).then((m) => { if (m) qpaneRedraw($) }).catch(() => {}) }) } catch {}
-    }
-    if (!cards.length) return next(e)
-    /* the desktop, where the card is measured to draw, draws the reply without
-       the question's block; the stored message and every other screen keep it. Its
-       footer draws under the last card, so it stays the last thing on screen */
-    const text = e.props && typeof e.props.text === 'string' ? e.props.text : ''
-    const parts = e.surface === 'desktop' && text && !e.props.isSummary ? tellingParts(text, drawn) : { body: text, footer: '' }
-    const shown = parts.body
-    return underReply(els, await next(shown !== text ? { ...e, props: { ...e.props, text: shown } } : e), cards.map((c) => handedKeys(c, e.surface, true)), parts.footer)
-  })
+  on('ui.render', { component: 'AssistantMessage' }, ($: any, e: any, next: any) => replyDraw($, e, next))
 
   /* the main loop's text rows; a telling sits under the one carrying its block */
   on('session.append', { door: 'response' }, async ($: any, e: any, next: any) => {

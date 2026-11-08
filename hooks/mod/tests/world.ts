@@ -66,6 +66,8 @@ export function world(on: any, opts: { store?: Record<string, unknown>; server?:
     guard: { on: false, source: null, guard: null } as any,
     /* what scripts/rules.mjs prints: none unless a test sets it */
     rules: null as any,
+    /* what scripts/drift.mjs answers; null draws no line */
+    drift: null as any,
     /* each session's inbox as scripts/mod-inbox.mjs takes it: { key, line, raw } */
     inbox: {} as Record<string, any[]>,
     /* sessions $.session.send reaches (running), and what was sent */
@@ -378,6 +380,7 @@ export function world(on: any, opts: { store?: Record<string, unknown>; server?:
     if (String(script).endsWith('/rules.mjs')) {
       return w.rules ? { exitCode: 0, stdout: JSON.stringify(w.rules) + '\n', stderr: '' } : { exitCode: 1, stdout: '', stderr: 'rules: none' }
     }
+    if (String(script).endsWith('/drift.mjs')) return { exitCode: 0, stdout: JSON.stringify(w.drift) + '\n', stderr: '' }
     if (String(script).endsWith('mod-alias.mjs')) return { exitCode: 0, stdout: JSON.stringify(w.alias) + '\n', stderr: '' }
     if (String(script).endsWith('mod-queue.mjs')) {
       const at = (k: string) => { const i = args.indexOf(k); return i < 0 ? '' : args[i + 1] }
@@ -469,7 +472,7 @@ export function world(on: any, opts: { store?: Record<string, unknown>; server?:
       elsewhere: { questions: away, blocking: away.filter((q: any) => q.blocking).length, waiting: away.filter((q: any) => !q.blocking).length },
       profilesAt: w.profilesAt || 0, handoffAsks: w.handoffAsks || [],
       track: held ? { ...view(held), workstream: held.workstream, url: 'http://askerdo.localhost:53265/r/' + held.key } : null, hand: w.hand || [],
-      graph: held ? { workstream: held.workstream, view: { workstream: held.workstream, inbox: 0, tracks: lines.map(view) }, layout: null } : null,
+      graph: held ? { workstream: held.workstream, view: { workstream: held.workstream, inbox: 0, tracks: lines.map(view) } } : null,
       handoffs: Object.fromEntries(lines.filter((x: any) => x.handoffs.length).map((x: any) => [x.id, x.handoffs.at(-1)])),
       inbox: { boxes, events: w.inboxRun(['peek', '--session', session, ...(boxes.length > 1 ? ['--lineage', boxes.slice(1).join(',')] : [])]).events },
       links: { overview: 'https://board.test/', needsYou: w.boardUrl, local: w.boardUrl },
@@ -554,7 +557,7 @@ export function world(on: any, opts: { store?: Record<string, unknown>; server?:
   w.posts = [] as any[]
   on('http.fetch', async ($: any, e: any) => {
     const get = ((e.init && e.init.method) || 'GET') === 'GET'
-    const call = /\/local\/(cli|mod)$/.test(String(e.url))
+    const call = /\/local\/(cli|mod|look)$/.test(String(e.url))
     ;(get ? w.reads : call ? w.posts : w.fetches).push({ url: e.url, init: e.init, body: JSON.parse((e.init && e.init.body) || '{}') })
     const hit = (by: Record<string, any>) => { const k = Object.keys(by).find((x) => String(e.url).includes(x)); return k ? by[k] : undefined }
     const v = hit(w.fetchBy) ?? hit(w.serverBy) ?? w.fetchAnswer

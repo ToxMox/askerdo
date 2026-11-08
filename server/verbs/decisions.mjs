@@ -6,6 +6,7 @@ import { readTx, tx } from '../db.mjs';
 import { actorOf, labelOf, logRow } from '../records.mjs';
 import { UsageError, loadEntry, resolveRecord, shownFront } from './labels.mjs';
 import { knowledgePayload, markSuperseded, mintKnowledge, projectName } from './work.mjs';
+import { answer, parseOptions, questionSections } from './questions.mjs';
 
 const ACTIVE = `SELECT key, fields FROM records WHERE kind = 'knowledge' AND status = 'active'
   AND json_extract(fields, '$.type') = 'decision'`;
@@ -46,6 +47,28 @@ function heldLinks(db, session) {
   return { tracks: [t.key], ...(t.front.workstream ? { workstreams: [t.front.workstream] } : {}) };
 }
 
+/* a ruling never leaves the question it answers silently open: the words' token
+   for it (such as 12a) records the answer too, else the result warns. */
+function settleQuestion(db, f, actor) {
+  const q = f.question ? db.stmt("SELECT fields, body FROM records WHERE key = ? AND kind = 'question'").get(f.question) : null;
+  const front = q ? JSON.parse(q.fields) : null;
+  if (!front || (front.status !== 'open' && front.status !== 'snoozed')) return {};
+  const num = String(front.id).replace(/^Q/, '');
+  // Only the question's own option letters count, and a space only after the Q: "the 3 a.m. build" answers nothing.
+  const letters = parseOptions(questionSections(q.body || '', '').sections['Options'])
+    .map((o) => String(o.type || '').trim()).filter((t) => /^[a-z]$/.test(t)).join('');
+  const m = letters && new RegExp('(?<![\\w])(?:Q' + num + '\\s?|' + num + ')([' + letters + '])(?=[\\s,;.:)]|$)').exec(String(f.words || ''));
+  if (m) {
+    try {
+      answer(db, { id: front.id, pick: m[1] }, actor);
+      return { answered: front.id + m[1] };
+    } catch (e) {
+      if (!(e instanceof UsageError)) throw e;
+    }
+  }
+  return { warning: front.id + ' (' + front.name + ') is still open: record the answer with answer' };
+}
+
 /* decide(db, { title, words, body, workstreams, tracks, tasks, files, commands, question,
    supersedes, projects | projectRepos | global, ... }, actor): mints the decision and
    supersedes the old ones in one transaction. */
@@ -80,7 +103,7 @@ export function decide(db, input = {}, actor) {
     const m = mintKnowledge(db, p, ctx);
     logRow(db, ctx, m.line);
     for (const e of old) logRow(db, ctx, markSuperseded(db, e, m.fields.key, ctx).line);
-    return { ...viewOf(db, m.fields), kind: 'knowledge', type: 'decision', superseded: old.map((e) => e.label) };
+    return { ...viewOf(db, m.fields), kind: 'knowledge', type: 'decision', superseded: old.map((e) => e.label), ...settleQuestion(db, m.fields, actor) };
   });
 }
 
@@ -132,18 +155,20 @@ export function decisionsSince(db, input = {}) {
   });
 }
 
-/* Every active decision with files or commands, for the mod's watcher: a project's own
-   (by its shared name) and the global ones; named no project, all of them. */
+/* For the mod's watcher: every active decision with files or commands, and every other active
+   knowledge record with files (file triggers alone); a project's own (by its
+   shared name) and the global ones, or named no project, all of them. */
 export function decisionTriggers(db, input = {}) {
   const project = input && typeof input.project === 'string' && input.project.trim() ? projectName(input.project) : null;
   return readTx(db, () => {
     const memo = new Map();
-    return db.stmt(ACTIVE).all().map((r) => JSON.parse(r.fields))
-      .filter((f) => (listOf(f, 'files').length || listOf(f, 'commands').length)
+    return db.stmt("SELECT fields FROM records WHERE kind = 'knowledge' AND status = 'active'").all().map((r) => JSON.parse(r.fields))
+      .filter((f) => (listOf(f, 'files').length || (f.type === 'decision' && listOf(f, 'commands').length))
         && (!project || f.scope === 'global' || listOf(f, 'projectRepos').some((n) => projectName(n) === project)))
       .sort((a, b) => Number(String(a.id).slice(2)) - Number(String(b.id).slice(2)))
       .map((f) => ({
-        id: f.id, key: f.key, name: f.name, ...(f.words ? { words: f.words } : {}), files: listOf(f, 'files'), commands: listOf(f, 'commands'),
+        id: f.id, key: f.key, name: f.name, type: f.type, ...(f.words ? { words: f.words } : {}), files: listOf(f, 'files'),
+        commands: f.type === 'decision' ? listOf(f, 'commands') : [],
         scope: f.scope, projectRepos: listOf(f, 'projectRepos'), tasks: listOf(shownFront(db, f, memo), 'tasks'),
       }));
   });

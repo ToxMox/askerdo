@@ -30,7 +30,7 @@ Reads keep working from this PC's cache. Writes are never queued: a refused writ
    curl -s <board address>/health
    ```
 
-   An answer like `{"ok":true,"protocol":1,"seq":4182,"version":"0.8.10"}` means the board is up and the trouble is between it and this PC: check the address, the network, or a firewall on the server.
+   An answer like `{"ok":true,"protocol":2,"seq":4182,"version":"0.8.16"}` means the board is up and the trouble is between it and this PC: check the address, the network, or a firewall on the server.
 
 2. No answer: look where the board runs. A board on this PC: see [The board on this PC does not start](#the-board-on-this-pc-does-not-start). A Docker board: on its host, look at the container.
 
@@ -48,7 +48,7 @@ Reads keep working from this PC's cache. Writes are never queued: a refused writ
 |Message|Cause|Fix|
 |-|-|-|
 |`the board does not know this token (revoked or never issued)`|This PC's token was revoked or replaced (a `token new` for the same device name revokes the old one).|Rejoin: on another PC on the board, `join-code --device <this PC's name>`, then here `node ~/.claude/askerdo/cli.mjs join http://<server>:17480 <code>`, which writes the new token over the old one. Configure offers a join only to a PC with no token saved, so it skips this one. With no other PC on the board, mint a fresh token with `token new <this PC's name>` on the box and save it here with `join http://<server>:17480 --token <token>`.|
-|`this PC speaks protocol 1, the board speaks 2: update the plugin`|The plugin and the board are on different releases.|Update the side the message names: the plugin on this PC, or the [board](board-setup.md#upgrade).|
+|`update AskerDo on this PC: the board speaks protocol 2 and this PC 1, so the board refuses it`, or `update the board server: it speaks protocol 1 and this PC 2, ...`|The plugin and the board are on releases with different protocols, so the board refuses every call from this PC. The Needs you band shows it as one row, and `askerdo status` lists it.|Update the side the message names: on this PC `claude plugin update askerdo@askerdo`, then a new session; the board by its [Upgrade](board-setup.md#upgrade) steps (a board on this PC: `askerdo board --restart`).|
 |`board not configured: join this PC with a code ...`|This PC has no board address saved.|[Add a PC](add-a-pc.md).|
 
 ## The board on this PC

@@ -2,7 +2,7 @@
  * test/server-questions.test.mjs covers the verbs themselves. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { childEnv, tempDir } from './helpers/sandbox.mjs';
 import { cliRoute, runCli } from './helpers/cli.mjs';
@@ -53,6 +53,16 @@ test('through the local route: two folders at once each see their own, a git-rea
     const read = await runCli(names, { env, cwd: dirA });
     assert.ok(read.code === 0 && read.out.includes('in folder a'), read.err);
     assert.equal(route.answered.at(-1).status, 200, 'a read through the launcher runs in the server');
+
+    /* a server started from another copy (a worktree beside the install) may run other code under the same version */
+    const local = join(root, 'board', 'local.json');
+    const saved = readFileSync(local, 'utf8');
+    writeFileSync(local, JSON.stringify({ ...JSON.parse(saved), code: 'file:///elsewhere/askerdo/' }));
+    const before = route.answered.length;
+    const other = await runCli(names, { env, cwd: dirA });
+    assert.ok(other.code === 0 && other.out.includes('in folder a'), other.err);
+    assert.equal(route.answered.length, before, 'the call ran in the caller');
+    writeFileSync(local, saved);
 
     /* local.json outlives a server that stopped: nothing answers, so the command runs here */
     await route.close();

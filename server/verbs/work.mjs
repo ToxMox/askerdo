@@ -10,13 +10,13 @@ import {
   UsageError, LABEL_KINDS, endingStamps, historyItem, loadEntry, pickLabel, refsFor, relabelIfArchived, resolveRecord, shownFront, strList,
 } from './labels.mjs';
 import { wakeLinked } from './questions.mjs';
-import { readiness, sideOf, startTask } from './graph.mjs';
+import { itemsOf, readiness, sideOf, startTask } from './graph.mjs';
 import { decisionsFor } from './decisions.mjs';
 import { addHistory, historyRef, inUseRefusal, noteRead, usedBy } from './history.mjs';
-import { closeChanges, editClose, followHand } from './upkeep.mjs';
+import { closeChanges, editClose, followHand, wakeOf, wakeWords } from './upkeep.mjs';
 import { RUN_BY_HINT, runByOf } from '../handoff-text.mjs';
 import { holderWords } from '../web/feed.mjs';
-import { openTrack, placeCreated, placeTask } from './tracks.mjs';
+import { inboxLacks, openTrack, placeCreated, placeTask } from './tracks.mjs';
 import { placeRefusal, suggestTrack } from './found.mjs';
 import { afterTask, reviewScopeOf } from './coverage.mjs';
 import { isReview } from './found.mjs';
@@ -345,7 +345,7 @@ function handoffPath(v, flag) {
 export function createRecord(db, input = {}, actor) {
   const kind = input && input.kind !== undefined ? String(input.kind) : 'task';
   if (!WORK_KINDS[kind] || kind === 'knowledge') throw new UsageError(refusal[kind] || 'unknown record kind: ' + kind);
-  const { kind: _k, track: trackRef, before, after, unplaced, ...raw } = input || {};
+  const { kind: _k, track: trackRef, before, after, unplaced, wake, ...raw } = input || {};
   if (trackRef !== undefined && (kind !== 'task' || typeof trackRef !== 'string' || !trackRef.trim())) {
     throw new UsageError('track names a TR-n id, and only a task goes on one');
   }
@@ -353,7 +353,8 @@ export function createRecord(db, input = {}, actor) {
   if (unplaced !== undefined && (kind !== 'task' || typeof unplaced !== 'string' || !unplaced.trim())) {
     throw new UsageError('unplaced is the reason a task waits on no track, a line of text');
   }
-  if (unplaced !== undefined && trackRef !== undefined) throw new UsageError('a task goes on a track or stays unplaced, not both');
+  if ((unplaced !== undefined || wake !== undefined) && trackRef !== undefined) throw new UsageError('a task goes on a track or stays unplaced with its wake, not both');
+  if (wake !== undefined && kind !== 'task') throw new UsageError('only a task in the inbox carries a wake');
   if ((before !== undefined || after !== undefined) && trackRef === undefined) throw new UsageError('before and after place a task among the steps of the track it names');
   const p = validateWorkPayload(kind, raw);
   const ctx = actorOf(actor);
@@ -367,6 +368,9 @@ export function createRecord(db, input = {}, actor) {
     p.refs = refsFor(db, p.refs, ctx.day);
     const ws = kind === 'task' ? wsOfTask(db, p.workstream) : null;
     if (kind === 'task') checkServes(p.serves, ws, '');
+    /* an inbox task carries its wake; the filing verb (fileRecord) refuses one with none */
+    const why = unplaced === undefined ? undefined : unplaced.replace(/\s+/g, ' ').trim();
+    const woke = wakeOf(db, wake, ctx.day, null, 'create');
     const key = mintKey(db);
     const id = pickLabel(db, kind, ctx.day);
     const created = p.created || ctx.at;
@@ -382,7 +386,7 @@ export function createRecord(db, input = {}, actor) {
       : {
         id, key, name: p.name, workstream: p.workstream, status: p.status, priority: p.priority,
         labels: p.labels, refs: p.refs, created, updated: ctx.at, closed: TERMINAL.task.includes(p.status) ? ctx.at : undefined,
-        origin: p.origin, serves: p.serves, reviewScope: p.reviewScope, labelHistory, unplaced: unplaced === undefined ? undefined : unplaced.replace(/\s+/g, ' ').trim(),
+        origin: p.origin, serves: p.serves, reviewScope: p.reviewScope, labelHistory, unplaced: why, wake: woke,
       };
     const fields = orderFront(WORK_KINDS[kind], front);
     putRecord(db, { key, kind, slug: kebab(p.name, kind), fields, body: workBody(kind, p) });
@@ -396,7 +400,7 @@ export function createRecord(db, input = {}, actor) {
     const warnings = ws && !p.serves.length && Object.keys(outcomeMap(ws)).length
       ? [id + ' serves none of ' + ws.id + "'s outcomes (" + outcomesText(ws) + '): name one with task edit ' + id
         + ' --serves ' + Object.keys(outcomeMap(ws))[0]] : [];
-    return { id, key, kind, name: p.name, ...(line ? { track: line.fields.id } : {}), ...(fields.unplaced ? { unplaced: fields.unplaced } : {}),
+    return { id, key, kind, name: p.name, ...(line ? { track: line.fields.id } : {}), ...(fields.unplaced ? { unplaced: fields.unplaced } : {}), ...(woke ? { wake: wakeWords(db, woke) } : {}),
       ...(warnings.length ? { warnings } : {}) };
   });
 }
@@ -411,7 +415,12 @@ export function fileRecord(db, input = {}, actor) {
   const said = (v) => typeof v === 'string' && v.trim();
   const ws = said(input.workstream) ? resolveRecord(db, input.workstream.trim(), { day: c.day }) : null;
   const hint = suggestTrack(db, { ...input, workstream: ws && ws.kind === 'workstream' ? ws.key : null }, c.session);
-  if (c.session && !said(input.track) && !said(input.unplaced)) throw new UsageError(placeRefusal(hint));
+  const at = { via: 'create', workstream: ws && ws.kind === 'workstream' ? ws.label : null };
+  if (c.session && !said(input.track) && !said(input.unplaced)) throw new UsageError(placeRefusal(hint, at));
+  /* every inbox filing names its wake, whoever files it; a task filed ended is none */
+  const ended = ['completed', 'dropped'].includes(String(input.status || ''));
+  const no = said(input.track) || ended ? null : inboxLacks(input.unplaced, input.wake, at);
+  if (no) throw new UsageError(no);
   const r = createRecord(db, input, actor);
   return hint && hint.track !== r.track ? { ...r, suggested: hint } : r;
 }
@@ -437,7 +446,8 @@ function applyEdit(k, front, c) {
   if (c.reviewScope === 'track') { if (front.reviewScope) { delete front.reviewScope; changed.push('reviewScope'); } } else if (c.reviewScope !== undefined) setScalar('reviewScope', c.reviewScope);
   /* --add-project and --remove-project edit the shared names */
   const names = (l) => l && l.map(projectName);
-  for (const [key, add, remove] of [['labels', c.addLabel, c.removeLabel], ['refs', c.addRef, c.removeRef], ['projectRepos', names(c.addProject), names(c.removeProject)]]) {
+  for (const [key, add, remove] of [['labels', c.addLabel, c.removeLabel], ['refs', c.addRef, c.removeRef], ['projectRepos', names(c.addProject), names(c.removeProject)],
+    ['files', c.addFile, c.removeFile]]) {
     if (!add?.length && !remove?.length) continue;
     if (!k.arrays.includes(key)) throw new UsageError('a ' + k.kind + ' carries no ' + key);
     let next = listOf(front, key);
@@ -596,8 +606,8 @@ const fieldNamed = (c) => ['name', 'status', 'priority', 'workstream', 'handoff'
    `input` is { id, kind?, version?, ...today's change flags }; track (with before
    and after) or unplaced moves a task to the place its filer judged. */
 export function editRecord(db, input = {}, actor) {
-  const { track, before, after, unplaced, ...rest } = input || {};
-  const place = { track, before, after, unplaced };
+  const { track, before, after, unplaced, wake, ...rest } = input || {};
+  const place = { track, before, after, unplaced, wake };
   if (Object.values(place).every((v) => v === undefined)) return editFields(db, rest, actor);
   if (rest.kind !== undefined && rest.kind !== 'task') throw new UsageError('only a task has a place on a track');
   return tx(db, () => {
@@ -605,7 +615,8 @@ export function editRecord(db, input = {}, actor) {
     const e = target(db, rest.id, ['task'], actorOf(actor).day, 'edit');
     const placed = placeTask(db, e.key, place, actor);
     const version = db.stmt('SELECT version FROM records WHERE key = ?').get(e.key).version;
-    return { ...(out || { id: e.front.id, kind: 'task', name: e.front.name }), changed: [...(out ? out.changed : []), 'place'], placed, version };
+    /* a third wake stores nothing; the user is asked instead */
+    return { ...(out || { id: e.front.id, kind: 'task', name: e.front.name }), changed: [...(out ? out.changed : []), ...(placed.asked ? [] : ['place'])], placed, version };
   });
 }
 
@@ -843,7 +854,7 @@ function normProject(v) {
 }
 
 
-/* A decision's file links are repo-relative globs, as a procedure card's are. */
+/* A knowledge record's file links are repo-relative globs, as a procedure card's are. */
 function globList(raw) {
   return strList(raw, 'files').map((g) => {
     const s = g.replace(/\\/g, '/').replace(/^(\.\/)+/, '');
@@ -1049,13 +1060,15 @@ export function amendKnowledge(db, input = {}, actor) {
 }
 
 /* knowledge edit: name and body rewritten in place only while no other session
-   has used the record; the old text goes to the history either way. */
+   has used the record; the old text goes to the history either way. Its refs, projects
+   and files change at any time: they alter no text a reader relied on. */
 export function editKnowledge(db, input = {}, actor) {
   const ctx = actorOf(actor);
   const name = input.name === undefined ? undefined : String(input.name).replace(/\s*\r?\n\s*/g, ' ').trim();
   if (name !== undefined && !name) throw new UsageError('--name needs a non-empty value');
   const text = input.body === undefined ? undefined : guardHeadings(String(input.body).replace(/\r\n/g, '\n').trim());
-  if (name === undefined && text === undefined) throw new UsageError('knowledge edit needs --name or --body');
+  const lists = ['addRef', 'removeRef', 'addProject', 'removeProject', 'addFile', 'removeFile'].filter((k) => input[k] && [].concat(input[k]).length);
+  if (name === undefined && text === undefined && !lists.length) throw new UsageError('knowledge edit needs --name, --body or a ref, project or file to add or remove');
   return tx(db, () => {
     const e = knowledgeTarget(db, input.id, ctx.day, 'edit');
     checkVersion(e, input);
@@ -1075,16 +1088,24 @@ export function editKnowledge(db, input = {}, actor) {
       moved.push({ field: 'body', old: secs.Body ?? '', next: text });
       body = withSection(body, 'Body', text);
     }
-    if (!moved.length) return { id: front.id, kind: 'knowledge', name: front.name, changed: [], version: e.version };
-    const why = usedBy(db, e);
-    if (why) throw new UsageError(inUseRefusal(front.id, why));
+    if (moved.length) {
+      const why = usedBy(db, e);
+      if (why) throw new UsageError(inUseRefusal(front.id, why));
+    }
+    const listed = lists.length ? applyEdit(WORK_KINDS.knowledge, front, {
+      addRef: input.addRef && refsFor(db, [].concat(input.addRef), ctx.day),
+      removeRef: input.removeRef && [].concat(input.removeRef).concat(refsFor(db, [].concat(input.removeRef), ctx.day)),
+      addProject: input.addProject && [].concat(input.addProject), removeProject: input.removeProject && [].concat(input.removeProject),
+      addFile: input.addFile && globList([].concat(input.addFile)), removeFile: input.removeFile && globList([].concat(input.removeFile)),
+    }) : [];
+    if (!moved.length && !listed.length) return { id: front.id, kind: 'knowledge', name: front.name, changed: [], version: e.version };
     front.updated = ctx.at;
     const fields = orderFront(WORK_KINDS.knowledge, front);
     save(db, e, fields, body);
     const ids = moved.map((m) => addHistory(db, ctx, { key: e.key, field: m.field, old: m.old, next: m.next, why: 'edited in place' }));
     const changes = { ...changesOf(before, fields), ...Object.fromEntries(moved.map((m) => [m.field, 'edited'])), history: historyRef(ids) };
     writeLine(db, ctx, { verb: 'edit', kind: 'knowledge', front: fields, changes });
-    return { id: fields.id, kind: 'knowledge', name: fields.name, changed: moved.map((m) => m.field), history: ids, version: e.version + 1 };
+    return { id: fields.id, kind: 'knowledge', name: fields.name, changed: [...moved.map((m) => m.field), ...listed], history: ids, version: e.version + 1 };
   });
 }
 
@@ -1107,7 +1128,10 @@ export function readRecord(db, input, actor) {
     ...shownFront(db, k ? normalize(k, { ...e.front }) : e.front), kind: e.kind, description: sections.Description ?? '',
     journal, sections, version: e.version,
   };
-  if (e.kind === 'task') out.intent = sections.Intent ?? '';
+  if (e.kind === 'task') {
+    out.intent = sections.Intent ?? '';
+    out.checklist = itemsOf(db, e.key);
+  }
   return out;
 }
 

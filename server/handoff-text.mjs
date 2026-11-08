@@ -74,7 +74,7 @@ export function whereProblems(where, max) {
 
 /* who runs a step, so a resumed session hands on what the writer
    meant to hand on; null when it names none of these. */
-export const RUN_BY_HINT = 'orchestrator, fork, or agent:<model> such as agent:opus or agent:sonnet';
+export const RUN_BY_HINT = 'orchestrator, fork, or agent:<model>';
 export function runByOf(v) {
   const t = typeof v === 'string' ? v.trim().toLowerCase() : '';
   return /^(?:orchestrator|fork|agent:[a-z][a-z0-9.-]{0,39})$/.test(t) ? t : null;
@@ -123,13 +123,84 @@ export function reviewLine(review, track) {
     + (review.locked ? ', and the track finishes only after one.' : '.');
 }
 
-/* The inbox and the three ways to place each item, said alike by the kickoff, track finish
-   and handoff write, the mod's results too; an empty inbox says nothing. */
-export function inboxLines(inbox, cli = CLI) {
+/* the user's own captures wake 14 days out; a task stored with no wake reads so too */
+export const WAKE_DAYS = 14;
+export const WAKE_FORMS = 'track-ends TR-n | task-completes T-n | question-answered Q-n | YYYY-MM-DD';
+const pad2 = (n) => String(n).padStart(2, '0');
+export function wakeIn(days = WAKE_DAYS, now = new Date()) {
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
+
+/* the one refusal an inbox filing meets, whatever it lacks: the cause, the inbox's rule, and both
+   ways out as commands. `via`: create, capture, edit (a task id), or finish and drop (a track id). */
+export function inboxRefusal({ cause, via = 'create', task, track, workstream, hint } = {}, cli = CLI) {
+  const ws = workstream || 'WS-n';
+  const forms = '<' + WAKE_FORMS + '>';
+  const closing = via === 'finish' || via === 'drop';
+  const close = 'track ' + via + ' ' + (track || 'TR-n');
+  const place = task ? '`' + cli + ' task edit ' + task + ' --track TR-n`' : via === 'capture' ? '`' + cli + ' track capture --track TR-n --name "<the work>"`'
+    : closing ? '`' + cli + ' task edit <T-n> --track TR-n` for each before the close, or drop them with it: `' + cli + ' ' + close + ' --leftovers drop`'
+      : '`' + cli + ' task create --track TR-n`';
+  const wake = task ? 'task edit ' + task + ' --unplaced "<why no plan reaches it>" --wake ' + forms
+    : via === 'capture' ? 'track capture --workstream ' + ws + ' --name "<the work>" --unplaced "<why no plan reaches it>" --wake ' + forms
+      : closing ? close + ' --leftovers inbox --wake ' + forms
+        : 'task create --unplaced "<why no plan reaches it>" --wake ' + forms;
+  /* task create takes its workstream in the payload, not as a flag */
+  const same = !task && via !== 'capture' && !closing ? ', with the same payload' : '';
+  return cause + '. The inbox holds only work no plan reaches yet, and each inbox task names the event that brings it back.'
+    + ' Put ' + (closing ? 'them' : 'it') + ' on a track (' + place + '); work that starts later goes on a new parked track first (`' + cli + ' track new --workstream ' + ws
+    + ' --name "<the work>" --goal "<what done is>"`, then `' + cli + ' track park TR-n --reason "<why it waits>" --unpark-when "<track-ends TR-n | task-completes T-n | question-answered Q-n>"`).'
+    + (closing ? ' Or send them to the inbox with their wake (`' : ' Or file it again with its wake (`') + cli + ' ' + wake + '`' + same + ').' + (hint ? ' ' + hint : '');
+}
+
+/* an inbox row with the user's question about its home open says so, beside its wake */
+const askedTag = (t) => (t.asked ? ', with the user as ' + t.asked : '');
+
+/* The due tasks not with the user, split into those `ws` (an id or its head) owes and
+   another workstream's, which are only named; with no `ws` every one is owed. */
+function dueSplit(inbox, ws) {
+  const due = inbox.filter((t) => t && t.due && !t.asked);
+  const own = typeof ws === 'string' ? ws : ws && ws.id;
+  const away = own ? due.filter((t) => t.workstream && t.workstream.id && t.workstream.id !== own) : [];
+  return { owed: due.filter((t) => !away.includes(t)), away };
+}
+const each = (l) => (l.length === 1 ? 'it' : 'each');
+/* lib/mod-core.mjs closedInbox reads the away ids back from this, as "T-n (WS-n)" */
+const awayWords = (away) => 'Due in another workstream: ' + listWords(away, (t) => t.id + ' (' + t.workstream.id + ')')
+  + (away.length === 1 ? '; name it in the reply, since its own workstream places it' : '; name each in the reply, since their own workstreams place them');
+
+/* The inbox and the ways to settle each item, said alike by the kickoff, track finish
+   and handoff write, the mod's results too; an empty inbox says nothing.
+   `ws`: the track's workstream (an id or its head), whose due tasks the close owes. */
+export function inboxLines(inbox, cli = CLI, ws) {
   if (!inbox || !inbox.length) return [];
-  return ['Inbox (' + inbox.length + '): ' + listWords(inbox, (t) => t.id + ' ' + flat(t.name) + ' (' + t.workstream.id + ' ' + flat(t.workstream.name) + ')') + '.',
-    'Place each: put it on a track (`' + cli + ' track capture --track <TR-n> --task <T-n>`), move it to the workstream it belongs in (`'
-      + cli + ' task edit <T-n> --workstream <WS-n>`), or ask the user.'];
+  /* each row says its wake, or that it is due, which naming no longer settles */
+  const { owed, away } = dueSplit(inbox, ws);
+  const tag = (t) => (t.due ? ', due' : t.wake ? ', wakes ' + flat(t.wake) : '') + askedTag(t);
+  return ['Inbox (' + inbox.length + '): ' + listWords(inbox, (t) => t.id + ' ' + flat(t.name) + ' (' + t.workstream.id + ' ' + flat(t.workstream.name) + tag(t) + ')') + '.',
+    'Place each: put it on a track (`' + cli + ' track capture --track <TR-n> --task <T-n>`; work that starts later goes on a parked track), move it to the workstream it belongs in (`'
+      + cli + ' task edit <T-n> --workstream <WS-n>`), give it a new wake (`' + cli + ' task edit <T-n> --wake <event or YYYY-MM-DD>`), or ask the user'
+      + (owed.length ? '. Due: ' + listWords(owed, (t) => t.id) + '; place ' + each(owed) + ' or wake ' + each(owed)
+        + ' again before this turn ends, since naming a due task does not settle it' : '')
+      + (away.length ? '. ' + awayWords(away) : '') + '.'];
+}
+
+/* the due inbox tasks lead the kickoff, with the place command; every
+   kickoff on the project (the inbox projectInbox reads), each naming its workstream and any open question.
+   `ws`: the kickoff's workstream; another's due task is only named, as the inbox line says. */
+export function dueLine(inbox, cli = CLI, ws) {
+  const due = (Array.isArray(inbox) ? inbox : []).filter((t) => t && t.due);
+  if (!due.length) return '';
+  const { owed, away } = dueSplit(due, ws);
+  const which = owed.length === due.length ? 'each' : listWords(owed, (t) => t.id);
+  return 'Due for a home (' + due.length + '): ' + listWords(due, (t) => t.id + ' ' + flat(t.name) + ' (' + (t.workstream && t.workstream.id ? t.workstream.id + ', ' : '')
+    + 'its wake: ' + flat(t.wake) + askedTag(t) + ')') + '.'
+    + (owed.length ? ' Place ' + which + ' on a track (`' + cli + ' task edit <T-n> --track <TR-n>`; work that starts later goes on a new parked track: `' + cli
+      + ' track new --workstream <WS-n> --name <name> --goal <goal>`, then `' + cli + ' track park <TR-n> --reason <why> --unpark-when <event>`), or wake ' + each(owed) + ' again (`'
+      + cli + ' task edit <T-n> --wake <event or YYYY-MM-DD>`); a third wake in one inbox stay goes to the user as a question.' : '')
+    + (away.length ? ' ' + awayWords(away) + '.' : '')
+    + (due.some((t) => t.asked) ? ' One with the user waits on its answer: act on it once it comes.' : '');
 }
 
 /* ---- the patch: a live handoff changed in place, keeping its id ---- */

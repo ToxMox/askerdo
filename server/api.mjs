@@ -585,7 +585,9 @@ export function createApi({ db, dataDir = null, archiveDir, timingsFile, backups
           }
           if (rest === 'login-link') {
             const l = newLoginLink(db, device, body.next);
-            return send(res, 200, { ok: true, result: { url: 'http://' + (req.headers.host || 'board') + l.path, expires: l.expires } });
+            /* a TLS proxy in front says so; the PCs put the link on the address they called anyway */
+            const tls = req.socket.encrypted || /^https$/i.test(String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim());
+            return send(res, 200, { ok: true, result: { url: (tls ? 'https://' : 'http://') + (req.headers.host || 'board') + l.path, expires: l.expires } });
           }
           if (rest === 'join-code') return send(res, 200, { ok: true, result: newJoinCode(db, device, body.device, nowOf(body)) });
         }

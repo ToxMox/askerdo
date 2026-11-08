@@ -32,7 +32,7 @@ A Windows PC with no AskerDo joins your board: one board for every machine and t
 ## Preconditions
 
 - The board answers on the network and another PC (the main PC below) is already on it, to mint the join code. check: `curl.exe -s <board-address>/health`
-- The board image runs the join release (0.8.5 or later): an older board has no join routes. check: `curl.exe -s -X POST -H "x-askerdo-protocol: 1" <board-address>/api/v1/join` refuses the missing device name, not "no route".
+- The board image runs the join release (0.8.5 or later): an older board has no join routes. check: `curl.exe -s <board-address>/health` names a `version` of 0.8.5 or later.
 - The main PC runs the join release too, since it mints the code: there, `node "$HOME/.claude/askerdo/cli.mjs" help join-code` prints the verb.
 - This card is on the board, so step 8's `proc ran join-a-pc` resolves: a `proc scan` in any project on a PC already on the board makes the plugin's cards for every project, this one among them. On the main PC, `node "$HOME/.claude/askerdo/cli.mjs" proc find join a pc` names it.
 - The new PC runs the Claude desktop app, signed in, with git installed (the marketplace is a git clone).
@@ -119,12 +119,12 @@ Only the user sees the app. They open a new session in one of the mapped repos: 
 
 ### 8. Record the run
 
-The run teaches the card: record it clean, or deviated with a note whose first sentence names the step that differed and how (the card's flag and draft edit carry that sentence alone). Anything in AskerDo that tripped the run becomes a task labelled field-bug on the workstream that builds AskerDo, when the board has one (what happened, the cause, a fix), and this card is corrected in the AskerDo repo for the next PC.
+The run teaches the card: record it clean, or deviated with a note whose first sentence names the step that differed and how (the card's flag and draft edit carry that sentence alone). Anything in AskerDo that tripped the run becomes a task labelled field-bug in the inbox of the workstream that builds AskerDo, when the board has one (what happened, the cause, a fix), waking 14 days out, and this card is corrected in the AskerDo repo for the next PC.
 
 ```sh
 node ~/.claude/askerdo/cli.mjs proc ran join-a-pc clean --note "<notes>"
 node ~/.claude/askerdo/cli.mjs proc ran join-a-pc deviated --note "<step-that-differed-and-how>. <notes>"
-echo '{"name":"<one-line-fault>","workstream":"<ws-n>","labels":["field-bug"],"description":"<what-happened-the-cause-a-fix>"}' | node ~/.claude/askerdo/cli.mjs task create --unplaced "found by a join-a-pc run"
+echo '{"name":"<one-line-fault>","workstream":"<ws-n>","labels":["field-bug"],"description":"<what-happened-the-cause-a-fix>"}' | node ~/.claude/askerdo/cli.mjs task create --unplaced "found by a join-a-pc run" --wake <YYYY-MM-DD-14-days-out>
 ```
 
 ## Verify

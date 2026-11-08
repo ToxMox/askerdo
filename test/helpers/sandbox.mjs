@@ -34,6 +34,7 @@
  */
 import { after } from 'node:test';
 import { cpSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -45,8 +46,12 @@ export const SANDBOX_PREFIXES = Object.freeze([
   'askerdo-commits-',
   /* test/run-tests.test.mjs: the fixture test files the script is run on */
   'askerdo-run-tests-',
+  /* test/doctor.test.mjs */
+  'doctor-',
   /* test/onboard-survey.test.mjs */
   'onboard-survey-',
+  /* test/onboard-handover.test.mjs */
+  'onboard-handover-',
   /* test/question-fixes.test.mjs */
   'askerdo-qfix-cli-',
   /* test/board-server.test.mjs */
@@ -184,6 +189,42 @@ export function dropTempDir(dir) {
   try {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   } catch { /* another process still holds a file: it stays for a hand purge */ }
+}
+
+/* A port for a server that binds later, in another process or after a close.
+   A listen(0) port is free again the moment the probe closes, and the OS hands
+   it to any socket on the machine in that gap. These come from below the
+   ephemeral range, in a block this process locks by holding its first port. */
+const QUIET_FROM = 20000;
+const QUIET_BLOCK = 100;
+const QUIET_BLOCKS = 280;
+let quiet = null;
+
+function bindsAt(port, keep) {
+  return new Promise((resolve) => {
+    const s = createNetServer();
+    s.once('error', () => resolve(false));
+    s.listen(port, '127.0.0.1', () => {
+      if (keep) { s.unref(); resolve(true); } else s.close(() => resolve(true));
+    });
+  });
+}
+
+export async function quietPort() {
+  for (;;) {
+    if (!quiet || quiet.next >= quiet.lock + QUIET_BLOCK) {
+      const first = quiet ? (quiet.lock - QUIET_FROM) / QUIET_BLOCK + 1 : process.pid % QUIET_BLOCKS;
+      quiet = null;
+      for (let i = 0; i < QUIET_BLOCKS && !quiet; i++) {
+        const lock = QUIET_FROM + ((first + i) % QUIET_BLOCKS) * QUIET_BLOCK;
+        if (await bindsAt(lock, true)) quiet = { lock, next: lock + 1 };
+      }
+      if (!quiet) throw new Error('quietPort: no free block of ports from ' + QUIET_FROM);
+    }
+    const port = quiet.next++;
+    /* another program may already listen there; nothing of ours ever will */
+    if (await bindsAt(port, false)) return port;
+  }
 }
 
 /* The store and sandbox seams a child must not inherit (and the mod's switch, which

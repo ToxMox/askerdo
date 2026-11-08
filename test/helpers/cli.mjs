@@ -106,7 +106,7 @@ export async function cliRoute(root, own) {
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const url = 'http://127.0.0.1:' + srv.address().port + '/s/local';
   mkdirSync(join(root, 'board'), { recursive: true });
-  writeFileSync(join(root, 'board', 'local.json'), JSON.stringify({ board: null, url, pid: process.pid }));
+  writeFileSync(join(root, 'board', 'local.json'), JSON.stringify({ board: null, url, pid: process.pid, code: new URL('../../', import.meta.url).href }));
   /* one call as the launcher sends it */
   const post = (body) => new Promise((ok, fail) => {
     const text = JSON.stringify({ version: pluginVersion(), ...body });

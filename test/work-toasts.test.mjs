@@ -8,7 +8,7 @@ import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { DEFAULTS, WORK_ENDINGS, createNotifier, createWorkNotifier } from '../lib/notify.mjs';
 import { pluginRoot } from '../lib/node-helpers.mjs';
-import { tempDir } from './helpers/sandbox.mjs';
+import { quietPort, tempDir } from './helpers/sandbox.mjs';
 
 function fakeLog() {
   const lines = [];
@@ -39,18 +39,6 @@ const channelOn = (root) => settings(root, DEFAULTS);
  * injected and the notifier pointed at a fake board. THE ENSURE IS A FAKE, or a
  * refused relay would start a real board per sandbox. `raise` is the local
  * server's call (hooks/board-server.mjs localAlerts). */
-async function quietPort() {
-  for (;;) {
-    const p = 20000 + Math.floor(Math.random() * 12000);
-    const free = await new Promise((resolve) => {
-      const s = createServer();
-      s.once('error', () => resolve(false));
-      s.listen(p, '127.0.0.1', () => s.close(() => resolve(true)));
-    });
-    if (free) return p;
-  }
-}
-
 async function channel(root, over = {}) {
   const log = over.log || fakeLog();
   const pending = [];

@@ -60,7 +60,7 @@ describe('typed tools', () => {
   })
 
   /* the desktop hands a spare to a project before its first prompt */
-  test('a session moved from a spare reads its rules and files its asks under the new folder at its next turn', async ($: any, on: any) => {
+  test('a session moved from a spare reads its rules and guard and files its asks under the new folder at its next turn', async ($: any, on: any) => {
     const w = world(on)
     w.rules = { text: 'Rules in force (AskerDo rev r1, for the project):\n- Few tests. [built in]' }
     w.cwd = 'C:/Users/test-home/.claude/spares/spare-x'
@@ -79,6 +79,9 @@ describe('typed tools', () => {
     await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['desktop'], tools: [], outputStyle: null, traits: [] })
     const read = w.runs.filter((r: any) => r.script.endsWith('/rules.mjs')).at(-1).args
     expect(read[read.indexOf('--cwd') + 1]).toBe('C:/src/zzz')
+    /* the guard read in the spare is read again for the project, with no press */
+    const guardRead = w.runs.filter((r: any) => r.script.endsWith('depth-marker.mjs')).at(-1).args
+    expect(guardRead[guardRead.indexOf('--cwd') + 1]).toBe('C:/src/zzz')
     await ask('filed')
     const filed = w.cliRuns().filter((r: any) => r.args[0] === 'register').map((r: any) => JSON.parse(r.stdin))
     expect(filed.map((p: any) => [p.name, p.projectDir])).toEqual([['kept', 'C:/src/zzz'], ['filed', 'C:/src/zzz']])
@@ -337,9 +340,11 @@ describe('one /askerdo command answers with no model turn', () => {
       expect(w.markers().length).toBe(before + 1)
       await run($, 'track capture a later idea')
       expect(w.last('track capture').args.slice(2, 4)).toEqual(['--track', 'TR-9'])
-      /* an inbox capture says why it waits on no track, or the board refuses it */
+      /* an inbox capture says why it waits on no track, and its wake, or the board refuses it */
       await run($, 'track capture inbox another idea')
-      expect(w.last('track capture').args).toContain('--unplaced')
+      const inbox = w.last('track capture').args
+      expect(inbox).toContain('--unplaced')
+      expect(inbox[inbox.indexOf('--wake') + 1]).toMatch(/^\d{4}-\d{2}-\d{2}$/)
       await run($, 'track park "waits on the release"')
       expect(w.last('track park').args.slice(0, 5)).toEqual(['track', 'park', 'TR-9', '--reason', 'waits on the release'])
       /* parked, the session holds nothing more */

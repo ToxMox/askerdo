@@ -2,7 +2,7 @@
    track. kickoffInput gathers it from the database; kickoffText is pure. The
    task list always comes from the tables: a handoff adds the thinking and
    never retells the list. */
-import { clockOf, stampNow } from '../records.mjs';
+import { clockOf, dayOf, stampNow } from '../records.mjs';
 import { loadRecord } from './graph.mjs';
 import { placeOf, whereWords } from './found.mjs';
 import { noteRead } from './history.mjs';
@@ -11,9 +11,9 @@ import { addedLine, growthLine, servesView } from './outcomes.mjs';
 import { decisionsSince } from './decisions.mjs';
 import { loadProfiles } from './profiles.mjs';
 import { atWords, holderWords } from '../web/feed.mjs';
-import { LEFT_WORDS } from '../web/draw.mjs';
+import { LEFT_WORDS, whoWords } from '../web/draw.mjs';
 import { namedList, shortName, viewNameOf } from '../web/graph.mjs';
-import { CLI, inboxLines, leavesLine, reviewLine, waitingOf } from '../handoff-text.mjs';
+import { CLI, dueLine, inboxLines, leavesLine, reviewLine, waitingOf } from '../handoff-text.mjs';
 
 export { CLI, inboxLines };
 
@@ -104,7 +104,7 @@ function foundGrowth(db, tasks) {
   }
   if (loose.length) {
     out.push('Unplaced: ' + loose.map((x) => x.t.fields.id + ' ' + one(x.t.fields.name) + ' (' + (x.where.reason || 'no reason given') + ')').join('; ')
-      + '. Place each: ' + CLI + ' task edit T-n --track TR-n [--before T-n], or --unplaced "<why>".');
+      + '. Place each: ' + CLI + ' task edit T-n --track TR-n [--before T-n], or --unplaced "<why>" --wake <event or YYYY-MM-DD>.');
   }
   return out;
 }
@@ -178,7 +178,7 @@ export function kickoffInput(db, trackKey, h, opts) {
   return {
     view, handoff: h, waits, answers, stalls, decisions, legBegan: leg.since, runBy, reader, now: nowMs, lastHandoff: last ? { id: last.label, status: last.status } : null,
     growth: h ? growthLines(db, h.growth) : [],
-    inbox: projectInbox(db, wsKey), leaves: openLeaves(db, trackKey, view),
+    inbox: projectInbox(db, wsKey, dayOf(new Date(nowMs))), leaves: openLeaves(db, trackKey, view),
     workstream: workstreamHead(wsRec, db),
   };
 }
@@ -236,7 +236,7 @@ function waitsWords(words, nameOf, above) {
 const dayPart = (w) => (w.lastIndexOf(' ') > 0 ? w.slice(0, w.lastIndexOf(' ')) : null);
 const clockAfter = (w, prev) => (prev && dayPart(w) && dayPart(w) === dayPart(prev) ? w.slice(w.lastIndexOf(' ') + 1) : w);
 /* an agent by name; a session as this one or a session, never its raw id */
-const tagOf = (n, reader) => (n.agent ? ' by ' + n.agent : n.session ? (n.session === reader ? ' by this session' : ' by a session') : '');
+const tagOf = (n, reader) => (n.agent ? ' by ' + whoWords(n) : n.session ? (n.session === reader ? ' by this session' : ' by a session') : '');
 
 /* The kickoff's text. `mode`: 'show' (how to resume it), 'resumed' (this session
    holds it now) or 'read only' (another session holds it). */
@@ -256,6 +256,9 @@ export function kickoffText(k, { mode = 'show', holder = null, hand = null, who 
     lines.push('Resume track ' + v.id + ' (' + name + ') with /askerdo resume ' + v.id + '; a session runs `' + CLI + ' resume ' + v.id
       + ' --session <own-id>`.');
   }
+  /* a due inbox task anywhere on the project leads every kickoff, ahead of the inbox list */
+  const due = dueLine(k.inbox, CLI, k.workstream);
+  if (due) lines.push(due);
   lines.push('Chain: ' + v.chain + '.');
   /* the chain names the parent; where it branched is said only at a task */
   if (v.junction && v.junction.track) { if (v.junction.task) lines.push('It branched from ' + v.junction.track.id + ' at ' + v.junction.task.id + '.'); }
@@ -302,7 +305,7 @@ export function kickoffText(k, { mode = 'show', holder = null, hand = null, who 
       + k.stalls.map((s) => s.id + ' ' + one(s.name) + ' (' + s.state + (s.parkReason ? ': ' + one(s.parkReason) : '') + ')').join('; '));
   }
   /* the project's inboxes, not the workstream's alone, since a task can be filed in the wrong one */
-  if (own) lines.push(...inboxLines(k.inbox));
+  if (own) lines.push(...inboxLines(k.inbox, CLI, k.workstream));
   /* a question answered since the handoff no longer waits; one still open is listed once */
   const listed = k.answers.map((a) => a.id).concat(k.waits.map((q) => q.id));
   const carried = waitingOf(h).filter((w) => !listed.some((id) => mentions(w, id)));

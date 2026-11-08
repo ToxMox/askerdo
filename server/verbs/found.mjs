@@ -3,7 +3,7 @@
    only; the place itself is written by tracks.mjs placeTask. */
 import { labelOf } from '../records.mjs';
 import { loadRecord, readTx, recordOf } from './graph.mjs';
-import { CLI } from '../handoff-text.mjs';
+import { CLI, inboxRefusal } from '../handoff-text.mjs';
 
 const ms = (s) => { const n = Date.parse(String(s || '')); return Number.isFinite(n) ? n : null; };
 const flat = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -179,10 +179,12 @@ export function suggestTrack(db, task, session) {
 
 export const hintWords = (s) => (s ? s.track + ' ' + flat(s.name) + ' (' + s.why + ')' : 'none (no open track shares its labels, files or words)');
 
-/* The refusal a session's filing with no place meets: both ways, and the hint as one input. */
-export const placeRefusal = (s) => 'a session files a task with its place, judged from what the work is and what it blocks:'
-  + ' track (TR-n: this track or another, with before or after the steps it comes before or after, the release among them)'
-  + ' or unplaced with the reason it waits on no track. The board\'s hint, one input beside that judgment: ' + hintWords(s);
+/* The refusal a session's filing with no place meets: both ways, and the hint as one input;
+   worded as every inbox refusal is (handoff-text.mjs inboxRefusal). */
+export const placeRefusal = (s, at = {}) => inboxRefusal({ ...at, cause: 'a session files a task with its place, judged from what the work is and what it blocks:'
+  + ' a track (TR-n: this track or another, with before or after the steps it comes before or after, the release among them)'
+  + ' or unplaced with the reason no plan reaches it and its wake',
+hint: 'The board\'s hint, one input beside that judgment: ' + hintWords(s) });
 
 /* The track found verb: its arc's tasks with their places and moves; since: "handoff" reads
    from its last handoff, as the handoff view does. */

@@ -26,15 +26,17 @@ The reference Claude reads for questions is [question-hub.md](../question-hub.md
 
 A workstream (`WS-16 Tidewatch`) is a named body of work with outcomes in your own words (`o1 The dock crew reads the next tides in one command`). Tracks, tasks and questions belong to one. It can span several projects.
 
-Each project also has an inbox workstream (`tidewatch: inbox`): a question asked outside any workstream lands there, so nothing is unfiled. A workstream's inbox, in turn, holds tasks not yet on a track, and the next session to take one of its tracks is asked to place them.
+Each project also has an inbox workstream (`tidewatch: inbox`): a question asked outside any workstream lands there, so nothing is unfiled.
 
-Work a session finds along the way is filed with its place: on its own track or another, before or after the step it belongs with, or unplaced with the reason it waits on no track. The handoff, the kickoff and the Tracks tab's **Found this arc** row list what an arc found and where each went, the unplaced first, so you see it at each gate.
+A workstream's own inbox holds its tasks on no track: work no plan reaches yet. Each one names its wake, the event that brings it back: a track ending, a task completing, a question answered, or a date. A session that files one without a wake is refused, with the rule and both ways out: put it on a track, or file it again with its wake. Your own `/askerdo track capture inbox <idea>` wakes 14 days out. Once its wake comes the task is due: it leads every kickoff on the project, and a session that closes a track or hands it off places its workstream's due tasks or wakes them again before its turn ends. A task woken twice in one stay in the inbox comes to you instead, as a question on the band: put it on a track, keep it in the inbox with a reason and a new wake, or drop it. Work that starts later goes on a parked track, which opens on its event.
+
+Work a session finds along the way is filed with its place: on its own track or another, before or after the step it belongs with, or unplaced with the reason it waits on no track and its wake. The handoff, the kickoff and the Tracks tab's **Found this arc** row list what an arc found and where each went, the unplaced first, so you see it at each gate.
 
 Use a workstream when work has a goal bigger than one sitting. Small one-off work never needs one.
 
-On the board, a workstream's page draws each track as a line of its tasks, with what needs you beside it:
+On the board, a workstream's page draws each track as a pill, joined by lines for the waits between them, and under the picture what needs you and the inbox:
 
-![The board's page for WS-16 Tidewatch: TR-29 drawn as a line of tasks, T-579 waiting on Q617, and a Needs you panel with two open questions](../img/readme/board-workstream.png)
+![The board's page for WS-16 Tidewatch: TR-29, TR-31 and TR-30 as pills with their open, ready and done counts, a line marked 1 wait from TR-29 to TR-30, TR-32 parked below them, the legend, and panels for Needs you with Q617, Q618 and Q619, the parked TR-32, and the inbox with 1 due: T-593 due now that T-592 is done, T-594 waking Nov 14, and T-595 waking when TR-32 ends](../img/readme/board-workstream.png)
 
 ## Tracks and the ready set
 
@@ -48,9 +50,9 @@ A track (`TR-29 Units and the table`) is one line of work inside a workstream: i
 
 Use tracks so the next session never has to work out what comes next from prose: the order lives in the edges, and the ready set follows from them.
 
-On screen: the track name on the status line, the held track's card and graph on the pane's Home and Tracks tabs, and the track's page on the board:
+On screen: the track name on the status line, the held track's card on the Tracks tab and its picture on Home, and the track's page on the board:
 
-![The board's page for TR-29: 8 open, 1 running, 3 ready, the critical path T-577 to T-580, the track's graph with amber beads for finished work no review has read, T-585 as a grey diamond with 1 covered and the line naming what it covered, T-586 as an outlined diamond still to do, the legend, and the session running T-577 beside its handoff TR-29.1](img/board-track.png)
+![The board's page for TR-29: 8 open, 1 running, 3 ready, the critical path T-577 to T-580 drawn as a white spine left to right, 4 done folded into a bead at its start, T-577 running with the session's train, T-581 and T-578 ready on lines that join the spine, T-579 above it, T-586 the review still to do as an outlined diamond on its own, the legend, and the line saying review T-585 covered T-575](img/board-track.png)
 
 ## Handoffs and kickoffs
 
@@ -80,11 +82,11 @@ The board keeps which code each task finished with and which reviews read it, so
 
 - **Commits link to tasks.** Every commit a session or its agents make is linked to its task: a task id in the commit message first, else the task the committing agent was dispatched for, else the task the session has in hand (the newest, marked as a guess, when it holds several). A commit no task owns counts as the project's own work. A handoff, a resume and `askerdo coverage --scan` also link commits made outside a session whose messages name a task; `askerdo commit move` relinks one by hand.
 - **Code tasks.** A task is a code task once a linked commit changed counted source: tracked code and tests, never lockfiles, generated files, Markdown, plain text, anything under `docs/` or fixtures, or binaries. The `review.ignore` setting adds a project's own files.
-- **Review tasks.** A task labelled `review`, or named "Review ...", is a review station. When it completes it covers every unreviewed code task on its track that finished before it started; `askerdo review covers` narrows the list. One made with `--review-scope project` reads every code task in the project since the last project-wide review, and the commits no task owns. A code task that gains a commit after its review is unreviewed again.
+- **Review tasks.** A task labelled `review`, or named "Review ...", is a review station. When it completes it covers every unreviewed code task on its track that finished before it started; `askerdo review covers` narrows the list. A list set by hand is all the review read: it reopens only when a task on that list gains a commit, and work outside the list waits for the next review. One made with `--review-scope project` reads every code task in the project since the last project-wide review, and the commits no task owns. A code task that gains a commit after its review is unreviewed again.
 - **Due.** Once a track's unreviewed code tasks reach the review size (`review.tasks`, 5), a review is due. Where reviews go is the session's judgment; a built-in rule line asks for one after each wave of parallel work, where work touched code another lane also touched, and before anything that ships.
 - **Depth.** `review.depth` is `light` by default: the due nudge, and nothing held. At `full`, a completed review reopens when work it read changes or a task before it finishes after it, so what waits on it waits again, and a track finishes only once a review has read its finished code (`track finish --waive "<reason>"` goes ahead and records why). At `off`, nothing is counted or shown.
 
-On screen: a **review due** row on the band, whose press opens the Tracks tab at the track; a line in the kickoff and the handoff; on the Tracks tab, amber cells for unreviewed work in the track's progress bar, "N to review" beside the count, and a padlock on a finish that waits for a review; on Home's station map, unreviewed work as amber beads between the stations and each review still to do as an outlined diamond, amber with "N to review" when it reopened; a finished review leaves Home's map, and the track's board page keeps the last one as a grey diamond with what it covered. `askerdo coverage TR-n` prints the same as text. The settings are in [Settings and rules](settings-and-rules.md#reviews).
+On screen: a line in the kickoff and the handoff; on the Tracks tab, amber cells for unreviewed work in the track's progress bar, "N to review" beside the count, a padlock on a finish that waits for a review, and the card's state reads **review due** when one is due; in the picture on Home and on the board, each review station as a diamond, and a pressed track's strip says "Review due" with how many finished code tasks wait for one; a finished review leaves the picture, and the track's board page lists under it what the last one covered. `askerdo coverage TR-n` prints the same as text. The settings are in [Settings and rules](settings-and-rules.md#reviews).
 
 ## The depth meter
 
@@ -116,12 +118,14 @@ On screen: the Settings tab, where each row's chip names the layer that sets it.
 
 A knowledge record (`K-n`) is a fact rather than work, kept so the next session does not relearn it:
 
-- **A gotcha**: something that trips you up, and how to avoid it.
+- **A gotcha**: something that trips you up, and how to avoid it. It may name the files it is about, as globs relative to the repo (`knowledge new --file 'src/db/**'`).
 - **A decision**: a ruling you made, in your words, recorded the same turn you made it. It names what it governs: tasks, tracks, files, commands.
 
 A record once used is never rewritten in place: it gets a dated amendment, or a new record supersedes it. Only an override, your **Allow** on its request, fixes a bug's text, withdraws a ruling you never made, or scrubs a secret.
 
 Decisions act where they apply. When a session edits a file or runs a command a decision governs, a toast says "Decision K-12 applies" and the session is handed the ruling; nothing is blocked. A command counts by what it runs, the same way as a procedure's pointer (below). Each kickoff lists the decisions in force for its track.
+
+Facts act where they apply too. When a session edits a file a knowledge record's globs take, a toast says "Knowledge K-41 is about this file" and the session is pointed at the record by its title, once per record in a session; nothing is blocked. This is how a project's notes for one area of the code reach the session working there. The `pointers.knowledge` setting turns it off ([Settings and rules](settings-and-rules.md)).
 
 On screen: the toast, the board's record pages, and override requests on the band with **Allow** and **Keep**.
 
@@ -133,13 +137,13 @@ A procedure is a recurring operation written down once as exact steps: a release
 - **Staleness.** When a file the procedure references changes after its verified commit, the card is marked stale, and the pointer tells the session to check each step against the code.
 - **Runs.** Record one with `/askerdo proc ran release clean` (the verified commit moves to now) or `/askerdo proc ran release deviated "what differed"` (the card is flagged).
 
-Find one with `/askerdo proc <words>`; `/askerdo proc scan` reads the files again. The file shape is in [the procedures README](../procedures/README.md), the reference Claude reads.
+Find one with `/askerdo proc <words>`; `/askerdo proc scan` reads the files again. The cards come from the main checkout, so a scan from a worktree says it read main. To prove cards written on a branch before the merge, `/askerdo proc scan --check` parses, judges and lints the files of the checkout it runs in, prints each file with its errors and warnings, writes nothing to the board and exits 1 when a file has errors. Lint skips paths git ignores, such as a build's output. The file shape is in [the procedures README](../procedures/README.md), the reference Claude reads.
 
 ## Related
 
 - [Daily use](daily-use.md): the band, the status line, the pane and `/askerdo`.
 - [Settings and rules](settings-and-rules.md): every setting and rule line by layer.
-- [Onboarding](onboarding.md): bringing an existing project's notes and decisions onto the board.
+- [Onboarding](onboarding.md): converting a project's old workflow onto the board (rules, work in flight, rulings, facts, routines); its old folders leave the tree on your go.
 - [CLI reference](cli.md): the verbs behind every part on this page.
 - [Architecture](architecture.md): the board, the local server and the mod.
 - The references Claude reads: [work-system.md](../work-system.md) for workstreams, tracks and handoffs, and [askerdo-quick.md](../askerdo-quick.md) for the short version.

@@ -10,3 +10,6 @@
 
 # the committed prebuilt tray executable, built by scripts/build-tray.mjs
 *.exe binary
+
+# written by scripts/build.mjs, so a commit's line counts skip it
+server/version.json linguist-generated

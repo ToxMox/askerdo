@@ -1,35 +1,43 @@
 #!/usr/bin/env node
-/* the onboarding survey. Reads one project (never writes it), the Claude memory
-   files for it and what the board already holds, and writes rows.json: every old thing
-   found, where it is, its date from the old system and a proposed home on the board.
+/* the onboarding survey gathers facts and judges nothing. It reads one project and never writes it: the entry points, git history
+   and status in one pass each, every folder with its cites and readers, Claude's memory files, the CLAUDE.md clauses
+   and the board. It writes facts.json; the session reads it and writes proposal.json.
    node survey.mjs <project dir> [--work <dir>] [--cli <path>] [--no-board] [--manifest <file>] */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataDir } from '../../lib/node-helpers.mjs';
 import { sharedName } from '../../lib/project-id.mjs';
+import { blobsOf, clauseId, earlierImport, folderSig, isFolder, markMap, parseTree, seedsOf } from './map.mjs';
+import { instructionFiles, instructionSetting, managedDir, ruleFiles } from './instructions.mjs';
 
 export const DEFAULT_CLI = join(homedir(), '.claude', 'askerdo', 'cli.mjs');
 const slashed = (p) => String(p).replace(/\\/g, '/');
 
 /* ---- small readers ---- */
 
-function git(dir, args, opts = {}) {
-  const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8', windowsHide: true, maxBuffer: 256 << 20, ...opts });
-  return r.status === 0 ? r.stdout : null;
+function git(ctx, args, ok = [0]) {
+  ctx.spawns++;
+  const r = spawnSync('git', args, { cwd: ctx.root, encoding: 'utf8', windowsHide: true, maxBuffer: 1 << 30 });
+  return ok.includes(r.status) ? r.stdout : null;
 }
 const readText = (p) => { try { return readFileSync(p, 'utf8').replace(/\r\n/g, '\n'); } catch { return null; } };
 const readJson = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
+/* a project file read whole, counted */
+function open(ctx, f) {
+  if (ctx.texts.has(f)) return ctx.texts.get(f);
+  const t = readText(join(ctx.root, f));
+  ctx.texts.set(f, t);
+  if (t !== null) ctx.opened.push(f);
+  return t;
+}
 const dayOf = (d) => { const x = new Date(d); return Number.isFinite(x.getTime()) ? x.toISOString().slice(0, 10) : null; };
 const mtimeDay = (p) => { try { return dayOf(statSync(p).mtime); } catch { return null; } };
 const oneLine = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 const clip = (s, n) => { const t = oneLine(s); return t.length > n ? t.slice(0, n - 3) + '...' : t; };
 const kebab = (s, n = 40) => oneLine(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, n).replace(/-+$/, '') || 'item';
-const hash = (s) => { let h = 2166136261; for (const c of String(s)) { h ^= c.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; } return h.toString(36).slice(0, 6); };
-const plainMd = (s) => oneLine(String(s).replace(/\*\*|__|`/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1'));
-const DATE_IN = /\b(20\d\d-[01]\d-[0-3]\d)\b/;
 
 export function frontmatter(text) {
   const m = /^---\n([\s\S]*?)\n---\n?/.exec(text || '');
@@ -46,788 +54,387 @@ export function frontmatter(text) {
   }
   return { front, body: text.slice(m[0].length) };
 }
-const str = (v) => (typeof v === 'string' ? v : '');
 
-/* ---- the project's files ---- */
+/* ---- the project's files: one listing, one status pass ---- */
 
 const SKIP_DIR = /(^|\/)(\.git|node_modules|\.claude\/worktrees|Library|Temp|obj|bin|dist|build|out|target|\.venv|venv|__pycache__|vendor)(\/|$)/;
 const TEXT_EXT = /\.(md|markdown|txt)$/i;
+const PROSE_EXT = /\.(md|markdown|txt|rst|adoc|org)$/i;
+const CODE_EXT = /\.(m?[jt]sx?|cjs|cs|py|rs|go|java|c|cpp|h|hpp|ps1|psm1|sh|bash|rb|kt|swift|lua|cmd|bat)$/i;
+/* the files a cite or a code reader can sit in: prose, code, config and Claude's settings; JSON elsewhere is data
+   (on Tidewatch a 6 MB inventory took 70 of the grep's 78 s) */
+const CITE_SPECS = [...['md', 'markdown', 'txt', 'rst', 'adoc', 'org', 'yml', 'yaml', 'toml', 'ini', 'cfg', 'mjs', 'js', 'cjs', 'jsx', 'ts', 'tsx', 'mts',
+  'cs', 'py', 'rs', 'go', 'java', 'c', 'cpp', 'h', 'hpp', 'ps1', 'psm1', 'sh', 'bash', 'rb', 'kt', 'swift', 'lua', 'cmd', 'bat'].map((e) => '*.' + e), '.claude/*.json', 'package.json'];
 
-function listFiles(root, isGit) {
-  if (isGit) {
-    const out = git(root, ['ls-files', '-co', '--exclude-standard', '-z']);
-    if (out !== null) return out.split('\0').filter(Boolean).map(slashed).filter((f) => !SKIP_DIR.test(f));
+/* Tracked files from ls-files, untracked and modified ones from one status, and the root handoff files git ignores
+   (Tidewatch's handoff-*.md). Outside git every file counts as untracked: there is no copy to delete from. */
+function listing(ctx) {
+  const out = { files: [], untracked: new Set(), dirty: new Set(), ignored: new Set(), mtime: new Map(), mtimeMs: new Map() };
+  if (!ctx.isGit) {
+    const walk = (rel) => {
+      let ents = [];
+      try { ents = readdirSync(join(ctx.root, rel), { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        const p = rel ? rel + '/' + e.name : e.name;
+        if (SKIP_DIR.test(p)) continue;
+        if (e.isDirectory()) walk(p); else { out.files.push(p); out.untracked.add(p); }
+      }
+    };
+    walk('');
+  } else {
+    const tracked = (git(ctx, ['ls-files', '-z']) || '').split('\0').filter(Boolean).map(slashed);
+    const gone = new Set();
+    const st = (git(ctx, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '-uall']) || '').split('\0');
+    for (let k = 0; k < st.length; k++) {
+      const e = st[k];
+      if (e.length < 4) continue;
+      const xy = e.slice(0, 2);
+      const p = slashed(e.slice(3));
+      if (/[RC]/.test(xy)) k++;
+      if (xy === '??') out.untracked.add(p);
+      else if (xy.includes('D')) gone.add(p);
+      else out.dirty.add(p);
+    }
+    for (const f of (git(ctx, ['ls-files', '-o', '-i', '--exclude-standard', '-z', '--', 'handoff*']) || '').split('\0')) if (f && !f.includes('/') && TEXT_EXT.test(f)) out.ignored.add(f);
+    out.files = [...tracked.filter((f) => !gone.has(f)), ...out.untracked, ...out.ignored];
   }
-  const files = [];
-  const walk = (rel) => {
-    let ents = [];
-    try { ents = readdirSync(join(root, rel), { withFileTypes: true }); } catch { return; }
-    for (const e of ents) {
-      const p = rel ? rel + '/' + e.name : e.name;
-      if (SKIP_DIR.test(p)) continue;
-      if (e.isDirectory()) walk(p); else files.push(p);
+  for (const f of [...out.untracked, ...out.dirty, ...out.ignored]) {
+    try { const st = statSync(join(ctx.root, f)); out.mtime.set(f, dayOf(st.mtime)); out.mtimeMs.set(f, st.mtimeMs); } catch { /* gone since the status */ }
+  }
+  return out;
+}
+const noCopy = (ctx, f) => ctx.list.untracked.has(f) || ctx.list.ignored.has(f);
+
+/* ---- the history pass: one git log, paths and subjects only ---- */
+
+const SUBJECTS_NEW = 10;
+const SUBJECTS_OLD = 2;
+const SUBJECT_MAX = 120;
+
+/* Per file and per folder (every ancestor, '' the root): commits, first and last touch; per folder a sample of its
+   commit subjects, the newest ten and the oldest two. A rename shows as a delete and an add, so the folder it left
+   counts it too. */
+function historyPass(ctx) {
+  const per = new Map();
+  /* each commit's day and subject line, and per path the commits on it (idx), for the rule files' since */
+  const h = { commits: 0, first: null, latest: null, head: null, per, days: [], lines: [] };
+  if (!ctx.isGit) return h;
+  const out = git(ctx, ['-c', 'core.quotepath=false', 'log', '--name-only', '--no-renames', '--format=%x1e%H%x09%aI%x09%s']) || '';
+  const bump = (key, i, day, line) => {
+    let s = per.get(key);
+    if (!s) per.set(key, (s = { commits: 0, first: day, last: day, seen: -1, idx: [], ...(line ? { newest: [], oldest: [] } : {}) }));
+    if (s.seen === i) return false;
+    s.seen = i;
+    s.idx.push(i);
+    s.commits++;
+    if (day < s.first) s.first = day;
+    if (day > s.last) s.last = day;
+    /* the log runs newest first: the first ten seen are the newest, the last two the oldest */
+    if (line) { if (s.newest.length < SUBJECTS_NEW) s.newest.push(line); else { s.oldest.push(line); if (s.oldest.length > SUBJECTS_OLD) s.oldest.shift(); } }
+    return true;
+  };
+  for (const rec of out.split('\x1e')) {
+    if (!rec) continue;
+    const lines = rec.split('\n');
+    const [hash = '', at = '', ...subject] = lines[0].split('\t');
+    const day = at.slice(0, 10);
+    const line = day + ' ' + clip(subject.join('\t'), SUBJECT_MAX);
+    const i = h.commits++;
+    h.days.push(day);
+    h.lines.push(line);
+    if (!h.head) h.head = hash;
+    if (!h.latest || day > h.latest) h.latest = day;
+    if (!h.first || day < h.first) h.first = day;
+    bump('', i, day, line);
+    for (let k = 1; k < lines.length; k++) {
+      const p = slashed(lines[k].trim());
+      if (!p) continue;
+      bump(p, i, day, null);
+      for (let d = p, j = d.lastIndexOf('/'); j > 0; j = d.lastIndexOf('/')) { d = d.slice(0, j); if (!bump(d, i, day, line)) break; }
+    }
+  }
+  for (const s of per.values()) delete s.seen;
+  return h;
+}
+const subjectsOf = (s, k = SUBJECTS_NEW + SUBJECTS_OLD) => {
+  const all = s ? [...(s.newest || []), ...(s.oldest || [])] : [];
+  if (all.length <= k) return all;
+  const old = k >= 4 ? SUBJECTS_OLD : 1;
+  return [...all.slice(0, k - old), ...all.slice(-old)];
+};
+
+/* A file's last touch: its newest commit, or its mtime when it is untracked or changed since (a fresh clone stamps
+   every file with the day it was made, so the mtime of a clean file says nothing). */
+function touchOf(ctx, f) {
+  const m = ctx.list.mtime.get(f);
+  const c = ctx.history.per.get(f);
+  if (m && (!c || m > c.last)) return { day: m, how: 'mtime' };
+  return c ? { day: c.last, how: 'commit' } : { day: m || null, how: 'mtime' };
+}
+
+/* ---- the folders ---- */
+
+const dirOf = (f) => (f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '');
+/* the doctor's recent-activity window back from the latest commit */
+export const DORMANT_DAYS = 60;
+/* folders listed to this depth, and one level deeper under a folder at it holding more than BIG_FOLDER files */
+const FOLDER_DEPTH = 3;
+const BIG_FOLDER = 200;
+
+function folderTree(ctx) {
+  const nodes = new Map();
+  const nodeOf = (d) => {
+    let n = nodes.get(d);
+    if (!n) { n = { path: d, files: [], dirs: [] }; nodes.set(d, n); if (d) nodeOf(dirOf(d)).dirs.push(n); }
+    return n;
+  };
+  nodeOf('');
+  for (const f of ctx.list.files) nodeOf(dirOf(f)).files.push(f);
+  const sum = (n) => {
+    const s = { count: 0, untracked: 0, modified: 0, prose: 0, code: 0, touched: null, touchedMs: 0 };
+    for (const f of n.files) {
+      s.count++;
+      if (PROSE_EXT.test(f)) s.prose++;
+      if (CODE_EXT.test(f)) s.code++;
+      if (noCopy(ctx, f)) s.untracked++;
+      else if (ctx.list.dirty.has(f)) s.modified++;
+      const m = ctx.list.mtime.get(f);
+      if (m && (!s.touched || m > s.touched)) s.touched = m;
+      s.touchedMs = Math.max(s.touchedMs, ctx.list.mtimeMs.get(f) || 0);
+    }
+    for (const c of n.dirs) {
+      sum(c);
+      for (const k of ['count', 'untracked', 'modified', 'prose', 'code']) s[k] += c[k];
+      if (c.touched && (!s.touched || c.touched > s.touched)) s.touched = c.touched;
+      s.touchedMs = Math.max(s.touchedMs, c.touchedMs);
+    }
+    const hi = ctx.history.per.get(n.path) || { commits: 0, first: null, last: null };
+    Object.assign(n, s, { commits: hi.commits, first: hi.first, lastCommit: hi.last, last: [s.touched, hi.last].filter(Boolean).sort().pop() || null, history: hi });
+  };
+  sum(nodes.get(''));
+  return nodes;
+}
+
+function listedFolders(nodes) {
+  const out = [];
+  const walk = (n, depth) => {
+    for (const c of [...n.dirs].sort((a, b) => (a.path < b.path ? -1 : 1))) {
+      out.push(c);
+      if (depth + 1 < FOLDER_DEPTH || (depth + 1 === FOLDER_DEPTH && c.count > BIG_FOLDER)) walk(c, depth + 1);
     }
   };
-  walk('');
-  return files;
+  walk(nodes.get(''), 0);
+  for (const n of out) Object.assign(n, { hits: 0, citing: new Set(), codeReaders: new Set(), direct: new Map(), outsideReaders: [] });
+  return out;
 }
 
-/* Each line's last-change day and commit, from git blame; uncommitted lines read as the file's mtime. */
-function blameOf(root, file, isGit) {
-  const out = isGit ? git(root, ['blame', '--line-porcelain', '--', file]) : null;
-  const lines = [];
-  if (out) {
-    let cur = {};
-    for (const l of out.split('\n')) {
-      const h = /^([0-9a-f]{40}) \d+ (\d+)/.exec(l);
-      if (h) { cur = { commit: h[1], line: Number(h[2]) }; continue; }
-      if (l.startsWith('author-time ')) cur.time = Number(l.slice(12));
-      else if (l.startsWith('author-tz ')) cur.tz = l.slice(10);
-      else if (l.startsWith('\t')) {
-        const committed = !/^0+$/.test(cur.commit || '');
-        const off = /^([+-])(\d\d)(\d\d)$/.exec(cur.tz || '');
-        const ms = (cur.time || 0) * 1000 + (off ? (off[1] === '-' ? -1 : 1) * (Number(off[2]) * 60 + Number(off[3])) * 60000 : 0);
-        lines[cur.line] = committed ? { day: new Date(ms).toISOString().slice(0, 10), commit: cur.commit.slice(0, 10) } : null;
+/* One git grep over the prose, code and config for the listed folders' first segments, each folder's path then
+   matched per hit line: a hit from a file outside the folder is a cite into it, and from code a code reader too.
+   Every folder a line names counts it; only the deepest keeps the citing file, so parents do not repeat it. */
+function citesOf(ctx, folders, workDir) {
+  if (!ctx.isGit || !folders.length) return;
+  /* a one-segment folder needs its slash, or "notes" matches every line saying notes */
+  const pat = (n) => (n.path.includes('/') ? n.path : n.path + '/');
+  const bySeg = new Map();
+  for (const n of folders) {
+    const seg = n.path.split('/')[0] + '/';
+    if (!bySeg.has(seg)) bySeg.set(seg, []);
+    bySeg.get(seg).push({ n, p: pat(n), inside: n.path + '/' });
+  }
+  /* git grep tries every pattern on every line: grep the few first segments, never every folder (on Tidewatch
+     400 folder patterns ran past ten minutes) */
+  const file = join(workDir, 'cite-patterns.txt');
+  mkdirSync(workDir, { recursive: true });
+  writeFileSync(file, [...bySeg.keys()].join('\n') + '\n');
+  const out = git(ctx, ['-c', 'core.quotepath=false', 'grep', '--untracked', '-I', '-n', '-z', '-F', '-f', file, '--', ...CITE_SPECS], [0, 1]) || '';
+  rmSync(file, { force: true });
+  for (const l of out.split('\n')) {
+    const [f, line, text] = l.split('\0');
+    if (!text) continue;
+    const hit = [];
+    for (const [seg, pats] of bySeg) {
+      if (!text.includes(seg)) continue;
+      for (const { n, p, inside } of pats) {
+        if (f.startsWith(inside)) continue;
+        const i = text.indexOf(p);
+        if (i < 0) continue;
+        const before = text[i - 1] || '';
+        const after = text[i + p.length] || '';
+        if (/[\w.-]/.test(before) || (!p.endsWith('/') && (/[\w-]/.test(after) || (after === '.' && /\w/.test(text[i + p.length + 1] || ''))))) continue;
+        hit.push({ n, inside });
+        n.hits++;
+        n.citing.add(f);
+        if (CODE_EXT.test(f)) n.codeReaders.add(f);
       }
     }
+    for (const { n, inside } of hit) {
+      if (!hit.some((x) => x.inside !== inside && x.inside.startsWith(inside)) && !n.direct.has(f)) n.direct.set(f, Number(line));
+    }
   }
-  const fallback = mtimeDay(join(root, file));
-  return (n) => lines[n] || { day: fallback, commit: null };
 }
 
-/* Every committed version of a file, oldest first, with the path it had then. */
-function versionsOf(root, file, isGit) {
-  const out = isGit ? git(root, ['log', '--follow', '--name-only', '--format=%x1e%H%x09%aI%x09%s', '--', file]) : null;
-  const list = [];
-  for (const rec of (out || '').split('\x1e').slice(1)) {
-    const [head, ...names] = rec.split('\n');
-    const [commit, at, subject] = head.split('\t');
-    const path = names.map((s) => s.trim()).filter(Boolean).pop() || file;
-    list.push({ commit: commit.slice(0, 12), at: at.replace(/Z$/, '+00:00'), subject: clip(subject, 120), path: slashed(path) });
-  }
-  list.reverse();
-  const dirty = isGit && git(root, ['status', '--porcelain', '--', file]);
-  if (!list.length || (dirty && dirty.trim())) {
-    try { list.push({ commit: null, at: localStamp(statSync(join(root, file)).mtime), subject: list.length ? 'uncommitted edits' : 'never committed', path: file }); } catch { /* gone */ }
-  }
-  return list;
+/* the lines of prose, code and config holding any of the names, for the rule files' citers */
+function grepLines(ctx, patterns, workDir) {
+  if (!ctx.isGit || !patterns.length) return [];
+  const file = join(workDir, 'rule-patterns.txt');
+  mkdirSync(workDir, { recursive: true });
+  writeFileSync(file, patterns.join('\n') + '\n');
+  const out = git(ctx, ['-c', 'core.quotepath=false', 'grep', '--untracked', '-I', '-n', '-z', '-F', '-f', file, '--', ...CITE_SPECS], [0, 1]) || '';
+  rmSync(file, { force: true });
+  return out.split('\n').map((l) => l.split('\0')).filter((x) => x.length >= 3).map(([f, line, text]) => ({ file: slashed(f), line: Number(line), text }));
 }
 
-export function localStamp(d) {
-  const off = -d.getTimezoneOffset();
-  const pad = (n) => String(Math.floor(Math.abs(n))).padStart(2, '0');
-  const local = new Date(d.getTime() + off * 60000).toISOString().slice(0, 19);
-  return local + (off >= 0 ? '+' : '-') + pad(off / 60) + ':' + pad(off % 60);
-}
+/* ---- the entry points and the files they name ---- */
 
-/* ---- the detectors: each returns rows ---- */
-
-const HANDOFF_NAME = /(hand[-_ ]?off|kick[-_ ]?off|working[-_ ]?state|(^|[-_.])state([-_.]|$)|status|progress|session[-_ ]?notes|next[-_ ]?steps|resume|recap|wip)/i;
-const LIST_NAME = /(^|[^a-z])(todo|backlog|roadmap|plans?|planning)([^a-z]|$)/i;
-const DECISION_NAME = /(decision|^adr|rulings?)/i;
-const ARCHIVED = /(^|\/)(archive|archived|old|done|history)(\/|$)/i;
-const STEPS_HEAD = /(how to|steps|procedure|runbook|release|deploy|setup|install|checklist|recipe)/i;
-const CHECK = /^(\s*)[-*+] \[([ xX])\]\s+(.+)$/;
-
-const seriesKey = (f) => {
-  const d = dirname(f) === '.' ? '' : dirname(f) + '/';
-  const stem = basename(f).replace(/\.[^.]+$/, '').replace(/(19|20)\d\d-?[01]\d-?[0-3]\d/g, '').replace(/^[-_ .]+|[-_ .]+$/g, '').replace(/[-_ .]{2,}/g, '-');
-  return d + (stem || 'notes');
-};
-const humanName = (key) => {
-  const parts = key.split('/');
-  const stem = parts.pop().replace(/[-_]+/g, ' ');
-  return parts.length ? parts[parts.length - 1] + ': ' + stem : stem;
-};
-
-/* The file a project's own guides (AGENTS.md, CLAUDE.md, READMEs at the root and under docs/) tell a
-   reader to read first or keep current: its state file, whatever it is called. Reference docs are not. */
-const GUIDE = /^(AGENTS|CLAUDE|README)(\.local)?\.md$/i;
-const POINT_CUE = /\bread\b.{0,120}?\bfirst\b|\bfirst,? read\b|\b(start|begin) (here|with|by reading)\b|\bkeep\b.{0,120}?\b(current|up[- ]to[- ]date|updated)\b|\bupdate\b.{0,120}?\b(at the end|before (you )?(stop|end|leave)|after each|after every|each session|every session)\b/i;
-const NOT_STATE = /(^|[^a-z])(architecture|design|overview|contributing|conventions|style|guide|glossary|setup|install|license|conduct|specs?|readme|agents|claude|changelog)([^a-z]|$)/i;
 const PATH_IN = /`([^`\s]+)`|\]\(([^)\s]+)\)|((?:[\w.-]+\/)*[\w.-]+\.(?:md|markdown|txt))\b/gi;
-function pointedFiles(ctx, files) {
-  const have = new Set(files);
-  const out = new Map();
-  const guides = files.filter((f) => GUIDE.test(basename(f)) && /^(\.|\.claude|docs(\/[^/]+){0,2})$/i.test(posix.dirname(f))).slice(0, 20);
-  for (const g of guides) {
-    const lines = (readText(join(ctx.root, g)) || '').split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      if (!POINT_CUE.test(lines[i])) continue;
-      /* "Read these first:" names its files on the lines below */
-      let text = lines[i];
-      for (let k = i + 1; /:\s*$/.test(lines[i]) && k < lines.length && k <= i + 3 && lines[k].trim(); k++) text += '\n' + lines[k];
-      for (const m of text.matchAll(PATH_IN)) {
-        const p = (m[1] || m[2] || m[3]).replace(/[#?].*$/, '').replace(/^\.\//, '');
-        const hit = [posix.normalize(posix.join(posix.dirname(g), p)), posix.normalize(p)].find((x) => have.has(x));
-        if (!hit || !TEXT_EXT.test(hit) || NOT_STATE.test(basename(hit)) || DECISION_NAME.test(basename(hit)) || LIST_NAME.test(basename(hit))) continue;
-        const forced = ctx.include.get(hit);
-        if (forced && forced !== 'handoff') continue;
-        if (!out.has(hit)) out.set(hit, []);
-        if (!out.get(hit).includes(g)) out.get(hit).push(g);
-      }
-    }
+const GUIDE_FILE = /(^|\/)(CLAUDE|AGENTS)(\.local)?\.md$/;
+const ENTRY_MAX = 20000;
+
+/* Files a text names by path, resolved from its own folder or the root, that exist and are text. */
+function pathsIn(text, from, have) {
+  const out = new Set();
+  for (const m of String(text || '').matchAll(PATH_IN)) {
+    const p = (m[1] || m[2] || m[3]).replace(/[#?].*$/, '').replace(/^\.\//, '');
+    const hit = [posix.normalize(posix.join(posix.dirname(from), p)), posix.normalize(p)].find((x) => have.has(x));
+    if (hit && TEXT_EXT.test(hit)) out.add(hit);
   }
   return out;
 }
 
-function handoffRows(ctx, files) {
-  const pointed = pointedFiles(ctx, files);
-  const groups = new Map();
-  for (const f of files) {
-    if (!TEXT_EXT.test(f) || /changelog/i.test(f)) continue;
-    const forced = ctx.include.get(f);
-    if (forced ? forced !== 'handoff' : !HANDOFF_NAME.test(basename(f)) && !pointed.has(f)) continue;
-    const k = seriesKey(f);
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(f);
+/* The guides Claude Code loads (CLAUDE.md and AGENTS.md anywhere, .claude/rules), the root README, and the files
+   each names. */
+function entryPoints(ctx) {
+  const have = new Set(ctx.list.files);
+  const entries = new Map();
+  for (const f of ['CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md', 'README.md']) if (have.has(f)) entries.set(f, 'root');
+  for (const f of ctx.list.files) {
+    if (entries.has(f) || SKIP_DIR.test(f)) continue;
+    if (/^\.claude\/rules\/.+\.md$/.test(f)) entries.set(f, '.claude/rules');
+    else if (GUIDE_FILE.test(f)) entries.set(f, 'nested');
   }
-  const rows = [];
-  for (const [key, list] of groups) {
-    const history = list.flatMap((f) => versionsOf(ctx.root, f, ctx.isGit).map((v) => ({ ...v, file: f })))
-      .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-    if (!history.length) continue;
-    const last = history[history.length - 1];
-    const archived = list.every((f) => ARCHIVED.test(f));
-    const latest = readText(join(ctx.root, last.file)) || '';
-    const by = [...new Set(list.flatMap((f) => pointed.get(f) || []))];
-    rows.push({
-      id: 'track:' + key, find: 'handoff', home: 'track', def: 'keep', group: 'tracks',
-      title: humanName(key), where: { file: list.join(', ') }, date: last.at.slice(0, 10), dateHow: 'commit',
-      excerpt: clip(latest, 600),
-      fields: {
-        name: humanName(key), workstream: 'main', state: archived ? 'finished' : 'parked', files: list,
-        history: history.map((v) => ({ commit: v.commit, at: v.at, subject: v.subject, path: v.path, file: v.file })),
-      },
-      pointedBy: by.length ? by : undefined,
-      why: history.length + ' old version' + (history.length === 1 ? '' : 's') + ' from ' + history[0].at.slice(0, 10) + ' to ' + last.at.slice(0, 10)
-        + ' become the track\'s handoffs, oldest first' + (archived ? '; it sits in an archive folder, so the track is finished' : '')
-        + (by.length ? '; ' + by.join(' and ') + ' tell' + (by.length === 1 ? 's' : '') + ' a reader to read it first or keep it current' : ''),
-    });
-  }
-  ctx.trackOfFile = new Map(rows.flatMap((r) => r.fields.files.map((f) => [f, r.id])));
-  return rows;
+  const named = new Map();
+  for (const e of entries.keys()) named.set(e, [...pathsIn(open(ctx, e), e, have)].filter((f) => f !== e));
+  return { entries, named };
 }
 
-function taskRows(ctx, files) {
-  const rows = [];
-  for (const f of files) {
-    if (!TEXT_EXT.test(f)) continue;
-    const text = readText(join(ctx.root, f));
-    if (!text || !/\[[ xX]\]|^\s*(TODO|FIXME)\b/m.test(text)) continue;
-    const lines = text.split('\n');
-    const found = [];
-    lines.forEach((l, i) => {
-      const m = CHECK.exec(l);
-      if (m && m[1].length <= 2) {
-        let text = m[3];
-        for (let j = i + 1; j < lines.length && /^\s{2,}\S/.test(lines[j]) && !CHECK.test(lines[j]) && !/^\s*[-*+]\s/.test(lines[j]); j++) text += ' ' + lines[j].trim();
-        found.push({ n: i + 1, done: m[2] !== ' ', text });
-      }
-      const t = /^\s*(?:[-*+]\s+)?(?:TODO|FIXME)[:\s]+(.+)$/.exec(l);
-      if (!m && t) found.push({ n: i + 1, done: false, text: t[1] });
-    });
-    if (!found.length) continue;
-    const blame = blameOf(ctx.root, f, ctx.isGit);
-    let track = ctx.trackOfFile.get(f) || null;
-    if (!track && found.length >= 3) {
-      track = 'track:' + seriesKey(f);
-      rows.push({
-        id: track, find: 'list', home: 'track', def: 'keep', group: 'tracks', title: humanName(seriesKey(f)), where: { file: f },
-        date: blame(found[0].n).day, dateHow: 'blame', excerpt: clip(text, 600),
-        fields: { name: humanName(seriesKey(f)), workstream: 'main', state: found.every((x) => x.done) ? 'finished' : 'parked', files: [f], history: [],
-          parkReason: 'imported: a list from the old system, ' + f },
-        why: 'a list of ' + found.length + ' items is a line of work: its items become the track\'s tasks',
-      });
+/* ---- outside readers, Claude's memory, the CLAUDE.md clauses ---- */
+
+/* Files outside the repo that name a folder (this PC's Claude settings and hooks, the guides of the projects beside
+   it). A worktree of the project itself is the project. */
+export function readersOf(ctx, folders, projects = []) {
+  if (!folders.length) return;
+  const low = (s) => slashed(s).toLowerCase();
+  const home = ctx.claudeHome;
+  const files = [join(home, 'settings.json'), join(home, 'settings.local.json'), join(home, 'CLAUDE.md')];
+  const walk = (d, depth) => {
+    let ents = [];
+    try { ents = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (files.length > 400) return;
+      if (e.isDirectory() && depth < 3 && e.name !== 'node_modules') walk(join(d, e.name), depth + 1);
+      else if (e.isFile()) files.push(join(d, e.name));
     }
-    for (const x of found) {
-      const b = blame(x.n);
-      const title = clip(plainMd(x.text), 120);
-      if (!title) continue;
-      rows.push({
-        id: 'task:' + f + '#' + hash(plainMd(x.text)), find: 'task', home: 'task', def: 'keep', group: 'tasks:' + (track || f),
-        title, where: { file: f, line: x.n, commit: b.commit }, date: b.day, dateHow: b.commit ? 'blame' : 'mtime',
-        closed: x.done ? b.day : undefined, excerpt: clip(x.text, 600),
-        fields: { name: title, status: x.done ? 'completed' : 'open', track, workstream: 'main', text: oneLine(x.text) },
-        why: x.done ? 'checked off in the old list, so it comes in done' : 'an open item in the old list',
-      });
+  };
+  walk(join(home, 'hooks'), 0);
+  const me = low(ctx.root);
+  const up = dirname(ctx.root);
+  let sibs = [];
+  try { sibs = readdirSync(up, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => join(up, e.name)); } catch { /* none */ }
+  const common = (d) => { ctx.spawns++; const r = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: d, encoding: 'utf8', windowsHide: true }); return r.status === 0 ? low(r.stdout.trim()) : null; };
+  const mine = ctx.isGit ? common(ctx.root) : null;
+  const worktrees = [];
+  for (const d of new Set([...projects.map((p) => p.dir).filter(Boolean), ...sibs].map(slashed))) {
+    if (low(d) === me) continue;
+    if (mine && existsSync(join(d, '.git')) && common(d) === mine) { worktrees.push(d); continue; }
+    files.push(join(d, 'CLAUDE.md'), join(d, 'AGENTS.md'));
+  }
+  ctx.readers = { scanned: files.length, worktrees };
+  const name = low(basename(ctx.root));
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const needles = folders.map((n) => { const p = low(n.path); return { n, abs: me + '/' + p, rel: new RegExp('(?<![\\w.-])' + esc(name + '/' + p) + '(?![\\w.-])') }; });
+  for (const file of files) {
+    let text;
+    try { if (statSync(file).size > 512 << 10) continue; text = readFileSync(file, 'utf8'); } catch { continue; }
+    /* both slash forms, and a JSON string's doubled backslash */
+    const lines = text.replace(/\\+/g, '/').toLowerCase().split('\n');
+    if (!lines.some((l) => l.includes(name))) continue;
+    for (const n of needles) {
+      const i = lines.findIndex((l) => l.includes(n.abs) || n.rel.test(l));
+      if (i >= 0) n.n.outsideReaders.push(slashed(file) + ':' + (i + 1));
     }
   }
-  return rows;
 }
 
-function sections(text, level) {
-  const lines = text.split('\n');
-  const out = [];
-  const re = new RegExp('^#{' + level + '}\\s+(.+)$');
-  lines.forEach((l, i) => { const m = re.exec(l); if (m) out.push({ head: m[1].trim(), n: i + 1 }); });
-  return out.map((s, j) => ({ ...s, body: lines.slice(s.n, j + 1 < out.length ? out[j + 1].n - 1 : lines.length).join('\n').trim() }));
-}
-
-/* A log written one entry per top-level bullet ("- D12. ...", "- **R1:** ..."), each with its wrapped lines. */
-const ENTRY_BULLET = /^[-*+]\s+(?:\*\*)?([A-Z]{1,4}-?\d+)(?:\*\*)?[.:)]/;
-function bulletEntries(text) {
-  const lines = text.split('\n');
-  const out = [];
-  for (let i = 0; i < lines.length; i++) {
-    const m = ENTRY_BULLET.exec(lines[i]);
-    if (!m) continue;
-    let j = i + 1;
-    while (j < lines.length && !/^([-*+]\s|#{1,6}\s)/.test(lines[j]) && !(lines[j].trim() === '' && !/^\s+\S/.test(lines[j + 1] || ''))) j++;
-    const body = lines.slice(i, j).map((l) => l.trim()).join('\n').replace(/^[-*+]\s+/, '').trim();
-    out.push({ head: lines[i].replace(/^[-*+]\s+/, ''), n: i + 1, body, key: m[1], bullet: true });
-    i = j - 1;
-  }
-  return out;
-}
-
-/* A log of plain top-level bullets under section headings, no entry ids: one entry per bullet,
-   its wrapped lines and nested bullets kept, named by the heading above it. */
-function plainBullets(text) {
-  const lines = text.split('\n');
-  const out = [];
-  let section = '';
-  for (let i = 0; i < lines.length; i++) {
-    const h = /^#{2,6}\s+(.+)$/.exec(lines[i]);
-    if (h) { section = h[1].trim(); continue; }
-    if (!/^[-*+]\s+\S/.test(lines[i])) continue;
-    let j = i + 1;
-    while (j < lines.length && !/^([-*+]\s|#{1,6}\s)/.test(lines[j]) && !(lines[j].trim() === '' && !/^\s+\S/.test(lines[j + 1] || ''))) j++;
-    const body = lines.slice(i, j).map((l) => l.trimEnd()).join('\n').replace(/^[-*+]\s+/, '').trim();
-    out.push({ head: lines[i].replace(/^[-*+]\s+/, ''), n: i + 1, body, bullet: true, section });
-    i = j - 1;
-  }
-  /* a single record with a few reasons in bullets stays one record: the bullets must carry the file */
-  const prose = lines.filter((l) => l.trim() && !/^#{1,6}\s/.test(l)).join('').length;
-  return out.length >= 3 && out.reduce((n, s) => n + s.body.length, 0) * 2 >= prose ? out : [];
-}
-
-/* A log kept as markdown tables: one entry per body row, titled by its first cell, the other cells
-   labelled by their header, named by the heading above it. Header and separator rows are never entries. */
-const TABLE_RULE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
-const cellsOf = (l) => l.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
-function tableEntries(text) {
-  const lines = text.split('\n');
-  const out = [];
-  let section = '';
-  for (let i = 0; i < lines.length; i++) {
-    const h = /^#{2,6}\s+(.+)$/.exec(lines[i]);
-    if (h) { section = h[1].trim(); continue; }
-    /* the outer pipes of a markdown table are optional */
-    if (!/\|/.test(lines[i]) || !/\|/.test(lines[i + 1] || '') || !TABLE_RULE.test(lines[i + 1] || '')) continue;
-    const header = cellsOf(lines[i]);
-    let j = i + 2;
-    for (; j < lines.length && lines[j].trim() && /\|/.test(lines[j]); j++) {
-      const cells = cellsOf(lines[j]);
-      if (!cells[0] || TABLE_RULE.test(lines[j])) continue;
-      /* a first column of entry ids ("D12"), row numbers or dates is not the title: the next cell is */
-      const first = plainMd(cells[0]);
-      const id = /^[A-Z]{1,4}-?\d+$/.test(first);
-      const dated = /^20\d\d-[01]\d-[0-3]\d$/.test(first);
-      const at = (id || dated || /^\d+\.?$/.test(first)) && cells[1] ? 1 : 0;
-      const body = cells.map((c, k) => (!c || k === at || (at && k === 0 && !dated) ? '' : header[k] ? header[k] + ': ' + c : c)).filter(Boolean).join('\n');
-      out.push({ head: cells[at], n: j + 1, body, table: true, section, key: id && at ? first : undefined });
-    }
-    i = j - 1;
-  }
-  return out;
-}
-
-function decisionRows(ctx, files) {
-  const rows = [];
-  for (const f of files) {
-    if (!TEXT_EXT.test(f)) continue;
-    const forced = ctx.include.get(f);
-    if (forced ? forced !== 'decisions' : !(DECISION_NAME.test(basename(f)) || /(^|\/)(adr|decisions)\//i.test(f))) continue;
-    const text = readText(join(ctx.root, f)) || '';
-    /* a log has entries (D-001, ADR-2, a date, "Decision"); any other decision file is one record */
-    const strong = (s) => /^(?:[A-Z]{1,4}-?\d+\b|\d+[.:)]\s)|20\d\d-\d\d-\d\d/i.test(s.head);
-    const entry = (s) => strong(s) || /decision/i.test(s.head);
-    let secs = sections(text, 2).filter(entry);
-    if (secs.length < 2) secs = sections(text, 3).filter(entry);
-    /* sections that are entries only by the word ("## Workspace decisions") split by row when tables carry the file */
-    const tabled = tableEntries(text);
-    const prose = text.split('\n').filter((l) => l.trim() && !/^#{1,6}\s/.test(l));
-    const carried = prose.filter((l) => l.includes('|')).join('').length * 2 >= prose.join('').length;
-    if (secs.length && tabled.length > secs.length && !secs.some(strong) && carried) secs = tabled;
-    if (secs.length < 2) secs = bulletEntries(text);
-    if (secs.length < 2) secs = tabled;
-    /* an ADR is one record even when it is written in bullets */
-    if (secs.length < 2 && !/(^|\/)adr/i.test(f)) secs = plainBullets(text);
-    if (secs.length < 2) secs = [{ head: (/^#\s+(.+)$/m.exec(text) || [])[1] || basename(f, '.md'), n: 1, body: text }];
-    const blame = blameOf(ctx.root, f, ctx.isGit);
-    for (const s of secs) {
-      const dated = DATE_IN.exec(s.head) || DATE_IN.exec(s.bullet || s.table ? s.body : s.body.split('\n').slice(0, 4).join(' '));
-      const b = blame(s.n);
-      const title = clip(plainMd(s.bullet ? s.body : s.head), 160);
-      const sec = s.section ? ': ' + plainMd(s.section) : '';
-      rows.push({
-        id: 'decision:' + f + '#' + (s.section === undefined ? kebab(s.head, 60) : kebab(s.section || 'top', 30) + '-' + hash(s.table ? s.head + '\n' + s.body : s.body)),
-        find: 'decision', home: 'decision', def: 'keep', group: 'decisions:' + f + sec,
-        title, where: { file: f, line: s.n, commit: b.commit }, date: dated ? dated[1] : b.day,
-        dateHow: dated ? 'text' : 'blame', excerpt: clip((sec ? plainMd(s.section) + ': ' : '') + (s.table ? plainMd(s.head) + ': ' : '') + s.body, 600), entry: s.key,
-        fields: { title, body: s.body.slice(0, 6000), ...(s.section ? { section: plainMd(s.section) } : {}) },
-        why: 'an entry of the old decision log becomes a decision record',
-      });
-    }
-  }
-  return rows;
-}
-
-function ruleRows(ctx, files) {
-  const rows = [];
-  const slugs = new Set();
-  for (const f of files.filter((x) => /(^|\/)(CLAUDE|AGENTS)\.md$/.test(x))) {
-    const lines = (readText(join(ctx.root, f)) || '').split('\n');
-    const blame = blameOf(ctx.root, f, ctx.isGit);
-    let head = '';
-    for (let i = 0; i < lines.length; i++) {
-      const h = /^#{1,4}\s+(.+)$/.exec(lines[i]);
-      if (h) { head = h[1].trim(); continue; }
-      if (!/^[-*]\s+\S/.test(lines[i])) continue;
-      let text = lines[i].replace(/^[-*]\s+/, '');
-      let j = i + 1;
-      while (j < lines.length && /^\s+\S/.test(lines[j]) && !/^\s*[-*]\s/.test(lines[j])) { text += ' ' + lines[j].trim(); j++; }
-      text = oneLine(text);
-      const b = blame(i + 1);
-      let slug = kebab(text.split(/\s+/).slice(0, 5).join(' '), 40);
-      for (let k = 2; slugs.has(slug); k++) slug = kebab(slug, 36) + '-' + k;
-      slugs.add(slug);
-      const ruling = /\((?:[A-Z][a-z]+), 20\d\d-\d\d-\d\d/.test(text);
-      rows.push({
-        id: 'rule:' + f + '#' + hash(text), find: 'rule', home: 'rule', def: 'leave', group: 'rules:' + f,
-        title: clip(plainMd(text), 120), where: { file: f, line: i + 1, commit: b.commit }, date: b.day, dateHow: 'blame',
-        excerpt: (head ? head + ': ' : '') + clip(text, 600),
-        fields: { profile: ctx.slug, slug, text: text.length <= 400 ? text : undefined, for: 'both', ruling },
-        why: text.length > 400 ? 'over 400 characters, so a rule line needs shorter words: choose convert and say how'
-          : 'already in ' + f + ', which every session in this project reads; keep copies it to the ' + ctx.slug + ' profile so agent briefs carry it too',
-        needsWords: text.length > 400 || undefined,
-      });
-      i = j - 1;
-    }
-  }
-  return rows;
-}
-
-/* ~/.claude/projects/<slug>/memory for the project and its subfolders, never a worktree's. */
-function memoryRows(ctx) {
+/* ~/.claude/projects/<slug>/memory for the project and its subfolders, never a worktree's: path and frontmatter. */
+function memoryFiles(ctx) {
   const base = join(ctx.claudeHome, 'projects');
   const slug = slashed(ctx.root).replace(/[^A-Za-z0-9]/g, '-');
   let dirs = [];
   try { dirs = readdirSync(base).filter((d) => (d === slug || d.startsWith(slug + '-')) && !/-claude-worktrees-/.test(d)); } catch { return []; }
-  const rows = [];
+  const out = [];
   for (const d of dirs) {
     const mem = join(base, d, 'memory');
     let names = [];
-    try { names = readdirSync(mem).filter((n) => n.endsWith('.md') && n !== 'MEMORY.md'); } catch { continue; }
+    try { names = readdirSync(mem).filter((n) => n.endsWith('.md')); } catch { continue; }
     for (const n of names) {
       const p = join(mem, n);
-      const { front, body } = frontmatter(readText(p));
-      const type = (str(front.type) || str((front.metadata || {}).type)).toLowerCase();
-      const title = clip(str(front.description) || str(front.name) || n.replace(/\.md$/, ''), 160);
-      const home = type === 'feedback' ? 'rule' : type === 'user' ? '?' : 'knowledge';
-      const text = oneLine(body);
-      rows.push({
-        id: 'memory:' + d + '/' + n, find: 'memory', home, def: home === '?' ? 'leave' : 'keep', group: 'memory',
-        title, where: { file: slashed(p) }, date: DATE_IN.exec(body)?.[1] || mtimeDay(p), dateHow: DATE_IN.test(body) ? 'text' : 'mtime',
-        excerpt: clip(body, 600),
-        fields: home === 'rule' ? { profile: ctx.slug, slug: kebab(str(front.name) || n.replace(/\.md$/, ''), 40), text: text.length <= 400 ? text : undefined, for: 'both' }
-          : { type: 'gotcha', title, body: body.trim().slice(0, 6000) },
-        why: home === 'rule' ? 'a feedback memory is a working rule' : home === '?' ? 'a memory about the person: whose profile it belongs on is the user\'s call'
-          : 'a project or reference memory is a fact: a knowledge record',
-        needsWords: home === 'rule' && text.length > 400 ? true : undefined,
-      });
+      /* read whole, so counted as opened like the project's own files */
+      const text = readText(p);
+      if (text !== null) ctx.opened.push(slashed(p));
+      out.push({ path: slashed(p), front: frontmatter(text).front, last: mtimeDay(p) });
     }
   }
-  return rows;
+  return out;
 }
 
-function procedureRows(ctx, files) {
-  const rows = [];
-  for (const f of files) {
-    if (!TEXT_EXT.test(f)) continue;
-    if (/^docs\/procedures\/[^/]+\.md$/.test(f)) {
-      rows.push({ id: 'proc:' + f, find: 'procedure', home: 'procedure', def: 'keep', group: 'procedures', title: basename(f, '.md'), where: { file: f },
-        date: mtimeDay(join(ctx.root, f)), dateHow: 'mtime', excerpt: clip(readText(join(ctx.root, f)), 400), fields: { scan: true },
-        why: 'a procedure file: proc scan makes its card' });
-      continue;
-    }
-    if (ctx.trackOfFile.has(f)) continue;
-    const text = readText(join(ctx.root, f)) || '';
-    for (const s of [...sections(text, 2), ...sections(text, 3)]) {
-      if (!STEPS_HEAD.test(s.head)) continue;
-      const steps = s.body.split('\n').filter((l) => /^\s{0,3}\d{1,2}[.)]\s+\S/.test(l)).length;
-      if (steps < 4) continue;
-      rows.push({ id: 'steps:' + f + '#' + kebab(s.head, 50), find: 'steps', home: 'procedure', def: 'leave', group: 'procedures',
-        title: clip(basename(f, '.md') + ': ' + plainMd(s.head), 140), where: { file: f, line: s.n }, date: mtimeDay(join(ctx.root, f)), dateHow: 'mtime',
-        excerpt: clip(s.body, 600), fields: { scan: false, target: 'docs/procedures/' + kebab(s.head, 40) + '.md' },
-        why: steps + ' numbered steps: a procedure card needs them in docs/procedures/, a repo edit the session makes after the write' });
-    }
+/* The bullet or paragraph starting at line index i: where it ends (exclusive) and its clauses, a bullet whole and a
+   paragraph by sentence; the ledger cuts by it and the rewrite puts a clause back by it. A table is one clause, so a
+   menu of rule folders gets a fate like any other block (a skipped table outlived its rules). */
+export function blockAt(lines, i) {
+  const bullet = /^(\s*)(?:[-*+]|\d+[.)])\s+\S/.exec(lines[i]);
+  let j = i + 1;
+  if (/^\s*\|/.test(lines[i])) {
+    while (j < lines.length && /^\s*\|/.test(lines[j])) j++;
+    return { end: j, clauses: [oneLine(lines.slice(i, j).join(' '))] };
   }
-  return rows;
+  if (bullet) {
+    while (j < lines.length && /^\s+\S/.test(lines[j]) && !/^\s*(?:[-*+]|\d+[.)])\s/.test(lines[j]) && lines[j].search(/\S/) > bullet[1].length) j++;
+    return { end: j, clauses: [oneLine(lines.slice(i, j).join(' ')).replace(/^(?:[-*+]|\d+[.)])\s+/, '')] };
+  }
+  while (j < lines.length && lines[j].trim() && !/^(#{1,6}\s|\s*(?:[-*+]|\d+[.)])\s|\s*```|\s*~~~|\s*\|)/.test(lines[j])) j++;
+  return { end: j, clauses: oneLine(lines.slice(i, j).join(' ')).split(/(?<=[.!?])\s+(?=[A-Z`*(\[])/) };
 }
 
-/* The old file question queue (.claude/questions/<session>/Qn-*.md): open ones stay questions, answered ones are rulings.
-   A row names an old question by its name and folder, never its per-session label, which reads as a board id. */
-function questionRows(ctx) {
-  const base = join(ctx.root, '.claude', 'questions');
-  let sessions = [];
-  try { sessions = readdirSync(base, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch { return []; }
-  const rows = [];
-  for (const s of sessions) {
-    let names = [];
-    try { names = readdirSync(join(base, s)).filter((n) => /^Q\d+.*\.md$/.test(n)); } catch { continue; }
-    const read = names.map((n) => ({ n, rel: '.claude/questions/' + s + '/' + n, ...frontmatter(readText(join(base, s, n))) }));
-    const nameOf = (x) => oneLine(str(x.front.name) || x.n.replace(/^Q\d+-?/, '').replace(/\.md$/, '').replace(/-/g, ' ')) || 'untitled';
-    const byLabel = new Map(read.map((x) => [/^Q(\d+)/.exec(x.n)[1], nameOf(x)]));
-    const deQ = (t) => String(t || '').replace(/\bQ(\d+)\b/g, (_, d) => (byLabel.has(d) ? 'the old question "' + byLabel.get(d) + '"' : 'old question ' + d));
-    for (const { n, rel, front, body } of read) {
-      const status = (str(front.status) || 'open').toLowerCase();
-      const paras = body.replace(/^\[.*\]\(.*\)\s*$/m, '').split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p && !p.startsWith('#') && !p.startsWith('|'));
-      const ask = str(front.ask) || paras.find((p) => p.includes('?')) || paras[0] || nameOf({ front, n });
-      const answer = (/^## Answer\s*\n([\s\S]*)$/m.exec(body) || [])[1] || '';
-      const options = body.split('\n').map((l) => /^\|\s*(\d+[a-z])\s*\*?\s*\|\s*([^|]+)\|\s*([^|]*)\|/.exec(l)).filter(Boolean)
-        .map((m) => ({ type: m[1].replace(/^\d+/, ''), option: deQ(m[2].trim()), getsYou: deQ(m[3].trim()) }));
-      const name = nameOf({ front, n });
-      const date = DATE_IN.exec(str(front.created))?.[1] || mtimeDay(join(ctx.root, rel));
-      const live = status === 'open' || status === 'snoozed';
-      const id = 'question:' + rel;
-      ctx.oldQuestions.set(id, { label: /^Q(\d+)/.exec(n)[1], dates: [date, mtimeDay(join(ctx.root, rel))].filter(Boolean), text: name + ' ' + answer, answer });
-      rows.push({
-        id, find: 'question', home: live ? 'question' : status === 'answered' ? 'decision' : 'none', def: status === 'dropped' ? 'leave' : 'keep',
-        group: 'questions', title: clip(name, 140), where: { file: rel }, date, dateHow: 'text', excerpt: clip(deQ(body), 600),
-        fields: live ? { name: clip(name, 80), ask: clip(deQ(ask).replace(/\n/g, ' '), 600), gist: '**From the old queue:** "' + clip(name, 80) + '" in .claude/questions/' + s + '/, asked ' + date,
-          blocking: str(front.blocking) === 'true', options, pick: str(front.pick).replace(/^\d+/, '') || undefined }
-          : { title: clip('Ruling: ' + name, 160), words: clip(answer, 400), body: (body.trim()).slice(0, 6000) },
-        why: live ? 'an open question in the old queue goes on the board unanswered' : status === 'answered' ? 'an answered question is a ruling: a decision record with the answer in its words' : 'dropped in the old queue',
-      });
-    }
-  }
-  return rows;
-}
-
-/* Folders of another homemade system the survey cannot read: one row each, for the session to place or ask about. */
-function otherRows(ctx, files) {
-  const dirs = new Map();
-  for (const f of files) {
-    const m = /^(\.[A-Za-z][\w-]*)\//.exec(f);
-    if (!m || /^\.(git|github|vscode|idea|claude|gitea|husky)$/.test(m[1])) continue;
-    dirs.set(m[1], (dirs.get(m[1]) || 0) + 1);
-  }
-  for (const d of ['.claude']) {
-    let ents = [];
-    try { ents = readdirSync(join(ctx.root, d), { withFileTypes: true }); } catch { continue; }
-    for (const e of ents) if (e.isDirectory() && !/^(questions|worktrees|commands|agents|skills|hooks)$/.test(e.name)) dirs.set(d + '/' + e.name, 0);
-  }
-  return [...dirs].map(([d, n]) => ({
-    id: 'other:' + d, find: 'other', home: '?', def: 'leave', group: 'unplaced', title: d + '/', where: { file: d + '/' },
-    date: mtimeDay(join(ctx.root, d)), dateHow: 'mtime', excerpt: n ? n + ' files' : 'a folder', fields: {},
-    why: 'a folder of another tool or homemade system: read it and place what it holds, or ask',
-  }));
-}
-
-/* ---- staleness, against the project's own pace ---- */
-
-const ACTIVE_DAYS = 7;
-const DONE = '(?:done|complete|completed|finished|closed|superseded|obsolete)';
-const STATUS_DONE = new RegExp('^\\W*(?:status|state)\\W*:?\\W*' + DONE + '\\b', 'i');
-const WHOLE_DONE = new RegExp('\\bthis (?:handoff|file) (?:is|was) (?:now )?' + DONE + '\\b', 'i');
-const HEAD_DONE = new RegExp('\\bthe handoff (?:is|was) (?:now )?' + DONE + '\\b', 'i');
-
-/* Finished only from a statement about the whole handoff: its frontmatter status, a status line,
-   "superseded by" or "the handoff is done" before its first section, or "this handoff is done"
-   anywhere. A section's status (a step done, "Parked work: None") says nothing about the file. */
-function saysDone(text) {
-  const { front, body } = frontmatter(text || '');
-  if (new RegExp('^' + DONE + '\\b', 'i').test(str(front.status) || str(front.state))) return true;
-  const lines = body.split('\n');
-  const first = lines.findIndex((l) => /^#{2,6}\s/.test(l));
-  const head = lines.slice(0, first < 0 ? lines.length : first);
-  if (head.some((l) => STATUS_DONE.test(l) || HEAD_DONE.test(l) || /\bsuperseded by\b/i.test(l))) return true;
-  return lines.some((l) => WHOLE_DONE.test(l));
-}
-
-/* Recent means on or after the project's seventh newest day with a commit (file times outside git),
-   so a quiet project's window reaches back to its own last work and a young one judges nothing stale. */
-function activityOf(ctx, files) {
-  let days = ctx.isGit ? (git(ctx.root, ['log', '-n', '20000', '--format=%aI']) || '').split('\n').filter(Boolean).map((s) => s.slice(0, 10)) : [];
-  if (!days.length) days = files.map((f) => mtimeDay(join(ctx.root, f))).filter(Boolean);
-  const distinct = [...new Set(days)].sort().reverse();
-  return { days, since: distinct.length >= ACTIVE_DAYS ? distinct[ACTIVE_DAYS - 1] : null, unit: ctx.isGit ? 'commit' : 'file change' };
-}
-
-/* Sets each live-work row's proposal (tracks, tasks, open questions) from its last change and the current
-   state file (picked below); a row it cannot settle gets call: true. Rulings and facts do not age. */
-function judgeStaleness(ctx, rows, files) {
-  const act = activityOf(ctx, files);
-  const recent = (day) => !act.since || (day && day >= act.since);
-  const quiet = (day) => { const n = act.days.filter((d) => d > day).length; return 'last changed ' + day + ', with ' + n + ' ' + act.unit + (n === 1 ? '' : 's') + ' in the project since'; };
-  const lastOf = (r) => r.fields.history[r.fields.history.length - 1];
-  /* the state file: one the project's guides point at, else a file kept over many recent versions
-     before a one-version note, else the newest */
-  const kept = (r) => r.fields.history.filter((v) => v.commit).length > 1 && recent(lastOf(r).at.slice(0, 10));
-  const rank = (r) => (r.pointedBy ? 2 : 0) + (kept(r) ? 1 : 0);
-  const hand = rows.filter((r) => r.find === 'handoff').sort((a, b) => rank(b) - rank(a) || Date.parse(lastOf(b).at) - Date.parse(lastOf(a).at));
-  const current = hand.find((r) => r.fields.state !== 'finished');
-  const stateFile = current ? lastOf(current).file : null;
-  const stateText = ((stateFile && readText(join(ctx.root, stateFile))) || '').toLowerCase();
-  const names = (r) => r !== current && Boolean(stateText) && [...(r.fields.files || [r.where.file]).map((f) => basename(f).toLowerCase()),
-    r.title.length >= 12 ? r.title.toLowerCase() : null].filter(Boolean).some((s) => stateText.includes(s));
-  const unnamed = stateFile ? stateFile + ' (the state file) does not name it' : 'no live handoff names it';
-
-  for (const r of hand) {
-    if (r.fields.state === 'finished') continue;
-    const h = r.fields.history;
-    const day = lastOf(r).at.slice(0, 10);
-    const set = (state, def, why, call) => {
-      Object.assign(r.fields, { state, parkReason: state === 'parked' ? 'imported: the old handoff was last changed ' + day : undefined });
-      r.def = def; r.why += '; ' + why;
-      if (call) r.call = true;
-    };
-    const done = saysDone(readText(join(ctx.root, lastOf(r).file)));
-    /* the state file's own word is not enough to close the live line: the user judges it */
-    if (done && r === current) set(recent(day) ? 'waiting' : 'parked', 'keep', 'its own text says it is done, yet it is the state file: finished, or still the live line?', true);
-    else if (done) set('finished', 'keep', 'its own text says it is done or superseded, so the track comes in finished');
-    else if (r === current && recent(day)) set('waiting', 'keep', 'the state file, changed within the project\'s recent activity, so it waits to be resumed');
-    else if (r === current) set('parked', 'keep', 'the state file, but ' + quiet(day) + ': is it still the live line?', true);
-    else if (names(r)) set('parked', 'keep', stateFile + ', the state file, still names it, so the track is parked');
-    /* the project named its state file, so a one-version note that file never names is a checkpoint, not a live line */
-    else if (recent(day) && current && current.pointedBy && h.filter((v) => v.commit).length <= 1) {
-      set('parked', 'leave', 'one version, and ' + stateFile + ', which ' + current.pointedBy.join(' and ') + ' name' + (current.pointedBy.length === 1 ? 's' : '') + ' as the state file, does not name it: a parked lane checkpoint, left in its file; Keep brings it in as a parked track');
-    } else if (recent(day)) set('parked', 'keep', 'changed within the project\'s recent activity but not the state file: a second live line, or done?', true);
-    else if (h.every((v) => v.at.slice(0, 10) === h[0].at.slice(0, 10))) set('finished', 'leave', quiet(day) + ', all on one day, and ' + unnamed + ': a one-off brief long past');
-    else set('finished', 'keep', quiet(day) + ' and ' + unnamed + ', so the track comes in finished, as history');
-  }
-
-  const byId = new Map(rows.map((r) => [r.id, r]));
-  const tasks = rows.filter((r) => r.find === 'task');
-  for (const r of rows.filter((x) => x.find === 'list')) {
-    const day = tasks.filter((t) => t.fields.track === r.id).map((t) => t.date).filter(Boolean).sort().pop() || r.date;
-    if (r.fields.state === 'finished' || recent(day) || names(r)) continue;
-    r.def = 'leave';
-    r.why += '; but ' + quiet(day) + ' and ' + unnamed + ', so it stays in the old file';
-  }
-  for (const t of tasks) {
-    const tr = t.fields.track && byId.get(t.fields.track);
-    if (tr && tr.def === 'leave') { t.def = 'leave'; t.why += '; its list stays in the old file'; }
-    else if (tr && tr.fields.state === 'finished' && t.fields.status === 'open') { t.def = 'leave'; t.why += '; its track comes in finished, so an item still open there stays in the old file'; }
-    else if (!tr && !recent(t.date) && !names(t)) { t.def = 'leave'; t.why += '; but ' + quiet(t.date) + ' and ' + unnamed; }
-  }
-  for (const q of rows.filter((x) => x.find === 'question' && x.home === 'question')) {
-    if (recent(q.date) || names(q)) continue;
-    q.def = 'leave'; q.call = true;
-    q.why += '; but it was asked ' + q.date + ', before the project\'s recent activity, and ' + unnamed + ': it may be settled or moot';
-  }
-  return { since: act.since, stateFile, stateNamedBy: current && current.pointedBy || undefined };
-}
-
-/* ---- old answers that repeat a decision log entry ---- */
-
-const STOP = new Set('that this with from have will when what which they them then than into only also each more must should would could does about there their where while after before answer chosen question because these those were been being your over just like some such'.split(' '));
-const words = (s) => String(s || '').toLowerCase().match(/[a-z0-9]+/g) || [];
-const tokens = (s) => new Set(words(s).filter((w) => w.length >= 4 && !STOP.has(w)));
-const grams = (ws, n = 6) => { const g = new Set(); for (let i = 0; i + n <= ws.length; i++) g.add(ws.slice(i, i + n).join(' ')); return g; };
-
-/* A sure match (a quoted run of the answer, or the label or date with shared words) leaves the question's copy;
-   a weaker one becomes a call shown beside its entry. */
-function matchRulings(ctx, rows) {
-  const entries = rows.filter((r) => r.find === 'decision').map((r) => {
-    const text = r.title + '\n' + (r.fields.body || '');
-    return { r, text, tok: tokens(text), grams: grams(words(text)) };
-  });
-  if (!entries.length) return;
-  for (const q of rows.filter((x) => x.find === 'question' && x.home === 'decision')) {
-    const m = ctx.oldQuestions.get(q.id);
-    if (!m) continue;
-    const qt = tokens(m.text);
-    const qg = grams(words(m.answer));
-    const cites = new RegExp('\\bQ' + m.label + '\\b|\\b' + m.label + '[a-z]\\b');
-    let best = null;
-    for (const e of entries) {
-      const label = cites.test(e.text);
-      const date = m.dates.some((d) => e.text.includes(d));
-      let shared = 0;
-      for (const w of qt) if (e.tok.has(w)) shared++;
-      const ov = shared >= 3 ? shared / Math.min(qt.size, e.tok.size) : 0;
-      let quote = false;
-      for (const g of qg) if (e.grams.has(g)) { quote = true; break; }
-      const sure = quote || (label && (date || ov >= 0.3)) || (date && ov >= 0.5);
-      if (!(sure || label || (date && ov >= 0.25) || ov >= 0.5)) continue;
-      const score = (quote ? 3 : 0) + (label ? 2 : 0) + (date ? 1 : 0) + ov * 2;
-      if (!best || score > best.score) best = { e: e.r, sure, score };
-    }
-    if (!best) continue;
-    const entry = (best.e.entry ? best.e.entry + ' ' : '') + 'in ' + best.e.where.file + ' line ' + best.e.where.line;
-    if (best.sure) Object.assign(q, { def: 'leave', repeats: best.e.id, why: 'the decision log entry ' + entry + ' holds this ruling and comes in as the ruling in force, so this copy stays out' });
-    else Object.assign(q, { call: true, pair: best.e.id, why: 'it may hold the same ruling as the decision log entry ' + entry + ', shown beside it: if it does, leave this copy' });
-  }
-}
-
-/* ---- git history: subjects and file paths only, never diffs, over the newest HISTORY_CAP commits ---- */
-
-export const HISTORY_CAP = 3000;
-/* modest on purpose: a commit message is a claim, so each hit is a call or evidence, never a ruling */
-const RULING_WORD = /\b(?:chose|decided|settled on|going with|superseded by|revert(?:ed|ing)? to)\b/i;
-const RULING_NAME = /\b[A-Z][a-z]{2,} (?:asked for|wants|wanted|chose|approved|ruled|decided|picked)\b|\b[A-Z][a-z]{2,}'s (?:call|pick|ruling|choice)\b/;
-/* a commit that writes a note, brief or mock about a ruling is not where the ruling lives */
-const ABOUT_A_NOTE = /\b(?:(?:state|wave|lane)(?:'s)? note|briefs?|mocks?|sheet)\b/i;
-/* read on the branch name alone: a subject's words say what a commit did, not what the branch was */
-const TRIED = /\b(?:wip|spike|experiment|trial|poc|prototype|scratch|abandon(?:ed)?)\b/i;
-const areaOf = (p) => (p.includes('/') ? p.split('/')[0] + '/' : '(top level)');
-const planningKind = (ctx, p) => {
-  if (!TEXT_EXT.test(p) || /changelog/i.test(p)) return null;
-  const forced = ctx.include.get(p);
-  if (forced) return forced;
-  const b = basename(p);
-  return HANDOFF_NAME.test(b) ? 'handoff' : DECISION_NAME.test(b) || /(^|\/)(adr|decisions)\//i.test(p) ? 'decisions' : LIST_NAME.test(b) ? 'list' : null;
-};
-
-function readHistory(root) {
-  const out = git(root, ['-c', 'core.quotepath=false', 'log', '-n', String(HISTORY_CAP), '-M', '--name-status', '--format=%x1e%H%x09%aI%x09%s']);
-  const commits = [];
-  for (const rec of (out || '').split('\x1e').slice(1)) {
-    const [head, ...rest] = rec.split('\n');
-    const [commit, at, subject = ''] = head.split('\t');
-    const files = rest.filter(Boolean).map((l) => { const p = l.split('\t'); return { status: p[0][0], path: slashed(p[p.length - 1]), from: p.length > 2 ? slashed(p[1]) : null }; });
-    commits.push({ commit, short: commit.slice(0, 10), day: at.slice(0, 10), subject: oneLine(subject), files });
-  }
-  const total = Number((git(root, ['rev-list', '--count', 'HEAD']) || '').trim()) || commits.length;
-  return { commits, total };
-}
-
-/* Rows from the history: rulings told only in commit messages, deleted planning files, the project arc,
-   reverts and branches left unmerged. Newest commit first throughout. */
-function historyRows(ctx, rows, files, since) {
-  const { commits, total } = readHistory(ctx.root);
-  if (!commits.length) return null;
+/* Every clause of an instruction file (each bullet, each sentence of a paragraph) with its line, past AskerDo's own
+   section; every instruction file gets its own, the root CLAUDE.md by default. */
+export function claudeLedger(ctx, file = 'CLAUDE.md') {
+  const text = open(ctx, file);
+  if (text === null) return [];
+  const lines = text.split('\n');
   const out = [];
-  const present = new Set(files);
-  const quoted = (s) => '"' + clip(s, 100) + '"';
-
-  /* 1. rulings: evidence on a log entry that says the same, else the user's call */
-  const known = rows.filter((r) => r.home === 'decision').map((r) => ({ r, tok: tokens(r.title + '\n' + ((r.fields && r.fields.body) || '')) }));
-  let rulings = 0;
-  for (const c of commits) {
-    /* a merge's subject retells its branch's commits */
-    if (/^(?:[\w-]+(?:, [\w-]+)*: )?(?:merge|revert ")/i.test(c.subject)) continue;
-    if (!(RULING_WORD.test(c.subject) || RULING_NAME.test(c.subject)) || ABOUT_A_NOTE.test(c.subject)) continue;
-    const tok = tokens(c.subject);
-    let best = null;
-    for (const e of known) {
-      let n = 0;
-      for (const w of tok) if (e.tok.has(w)) n++;
-      const ov = n >= 3 ? n / Math.min(tok.size, e.tok.size) : 0;
-      if (ov >= 0.6 && (!best || ov > best.ov)) best = { r: e.r, ov };
-    }
-    rulings++;
-    const row = {
-      id: 'history:ruling:' + c.short, find: 'history', home: 'decision', def: 'leave', group: 'history: rulings in commit messages',
-      title: clip(c.subject, 160), where: { file: 'commit message', commit: c.short }, date: c.day, dateHow: 'commit',
-      excerpt: clip(c.subject + ' (' + c.files.length + ' files, ' + [...new Set(c.files.map((f) => areaOf(f.path)))].slice(0, 5).join(', ') + ')', 600),
-      fields: { title: clip(c.subject, 160), body: c.subject + '\n\nRecorded only in the subject of commit ' + c.short + ', ' + c.day + '.' },
-    };
-    if (best) {
-      Object.assign(row, { evidence: best.r.id, why: 'a commit message that tells the same ruling as ' + best.r.title + ' (' + best.r.where.file + '): evidence for that row, so this copy stays out' });
-      /* a field, not the why: the discovery pass rewrites a row's why */
-      (best.r.evidenceFrom = best.r.evidenceFrom || []).push({ commit: c.short, day: c.day, subject: clip(c.subject, 160) });
-    } else {
-      Object.assign(row, { call: true, why: 'a ruling told only in a commit message: a commit message is a claim, so whether it is a ruling in force is the user\'s call' });
-    }
-    out.push(row);
+  let fence = false;
+  let ours = false;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^#{1,2}\s/.test(l)) ours = /^##\s+AskerDo\s*$/.test(l);
+    if (ours) continue;
+    if (/^\s*(```|~~~)/.test(l)) { fence = !fence; continue; }
+    if (fence || !l.trim() || /^#{1,6}\s/.test(l) || /^\s*<!--/.test(l)) continue;
+    const b = blockAt(lines, i);
+    for (const s of b.clauses) out.push({ file, line: i + 1, clause: s });
+    i = b.end - 1;
   }
-
-  /* 2. planning files deleted from the repo, one row per series: the newest deletion of each path */
-  const gone = new Map();
-  commits.forEach((c, i) => {
-    for (const f of c.files) {
-      if (f.status !== 'D' || gone.has(f.path) || present.has(f.path) || ctx.exclude.some((re) => re.test(f.path))) continue;
-      const kind = planningKind(ctx, f.path);
-      if (!kind) continue;
-      const prev = commits.slice(i + 1).find((o) => o.files.some((x) => x.path === f.path && x.status !== 'D'));
-      gone.set(f.path, { path: f.path, kind, deletedIn: c.short, day: c.day, subject: c.subject, lastVersion: prev ? prev.short : c.short + '^' });
-    }
-  });
-  const series = new Map();
-  for (const g of gone.values()) { const k = seriesKey(g.path); if (!series.has(k)) series.set(k, []); series.get(k).push(g); }
-  for (const [key, list] of series) {
-    const g = list[0];
-    out.push({
-      id: 'history:deleted:' + key, find: 'history', home: '?', def: 'leave', call: true, group: 'history: deleted planning files',
-      title: list.length === 1 ? g.path : humanName(key) + ' (' + list.length + ' files)', where: { file: g.path, commit: g.deletedIn }, date: g.day, dateHow: 'commit',
-      excerpt: clip(list.map((x) => x.path + ' deleted in ' + x.deletedIn + ' (' + x.day + '), last version at ' + x.lastVersion).join('; '), 600),
-      fields: { kind: g.kind, files: list.map((x) => ({ path: x.path, deletedIn: x.deletedIn, day: x.day, subject: x.subject, lastVersion: x.lastVersion, read: 'git show ' + x.lastVersion + ':' + x.path })) },
-      why: 'a ' + g.kind + ' file deleted from the repo: read its last version and say whether anything in it still holds (a ruling, a step, a fact), else leave it',
-    });
-  }
-
-  /* 3. the project arc: commits per top-level area and month */
-  const months = new Map();
-  const totals = new Map();
-  for (const c of commits) {
-    const m = c.day.slice(0, 7);
-    if (!months.has(m)) months.set(m, { n: 0, areas: new Map() });
-    const mo = months.get(m);
-    mo.n++;
-    for (const a of new Set(c.files.map((f) => areaOf(f.path)))) { mo.areas.set(a, (mo.areas.get(a) || 0) + 1); totals.set(a, (totals.get(a) || 0) + 1); }
-  }
-  const top = (map, n) => [...map].sort((a, b) => b[1] - a[1]).slice(0, n).map(([a, k]) => a + ' ' + k).join(', ');
-  const first = commits[commits.length - 1].day;
-  const last = commits[0].day;
-  const arcBody = ['Commits per top-level area (a commit counts once per area it touches), from ' + first + ' to ' + last + ', ' + commits.length + ' commits'
-    + (total > commits.length ? ' (the newest ' + commits.length + ' of ' + total + ')' : '') + '.', '', 'Whole span: ' + top(totals, 10) + '.', '',
-  ...[...months].map(([m, mo]) => m + ': ' + mo.n + ' commits; ' + top(mo.areas, 6) + '.')].join('\n');
-  out.push({
-    id: 'history:arc', find: 'history', home: 'knowledge', def: 'keep', group: 'history: project arc', title: 'Project arc: where the commits went, by area and month',
-    where: { file: 'git history', commit: commits[0].short }, date: last, dateHow: 'commit', excerpt: clip(arcBody, 600),
-    fields: { type: 'gotcha', title: 'Project arc: where the commits went, by area and month', body: arcBody.slice(0, 6000) },
-    why: 'where the work actually went, from the commits: a fact for staleness verdicts and for later sessions',
-  });
-
-  /* 4. tried and dropped: reverts, and branches with commits not on HEAD and none recent */
-  let reverts = 0;
-  commits.forEach((c, i) => {
-    const m = /^Revert "(.*?)"?$/.exec(c.subject);
-    if (!m) return;
-    reverts++;
-    const was = m[1];
-    const again = /^Revert "/.test(was) || commits.slice(0, i).some((o) => o.subject === was);
-    const title = clip('Tried and reverted: ' + was, 160);
-    out.push({
-      id: 'history:revert:' + c.short, find: 'history', home: 'knowledge', def: again ? 'leave' : 'keep', ...(again ? { call: true } : {}), group: 'history: tried and dropped',
-      title, where: { file: 'commit message', commit: c.short }, date: c.day, dateHow: 'commit', excerpt: clip(c.subject, 600),
-      fields: { type: 'gotcha', title, body: quoted(was) + ' was reverted in commit ' + c.short + ' on ' + c.day + '.' },
-      why: again ? 'a revert of a revert, or the change landed again later: whether it stays dropped is the user\'s call' : 'a change tried and taken back: a note so no session tries it again blind',
-    });
-  });
-  const head = (git(ctx.root, ['rev-parse', '--abbrev-ref', 'HEAD']) || '').trim();
-  const refsOf = (extra) => (git(ctx.root, ['for-each-ref', '--sort=-committerdate', ...extra, '--format=%(refname)%09%(refname:short)%09%(committerdate:iso-strict)%09%(subject)', 'refs/heads', 'refs/remotes']) || '').split('\n').filter(Boolean)
-    .map((l) => { const [ref, name, at, subject = ''] = l.split('\t'); return { ref, name, day: (at || '').slice(0, 10), subject }; });
-  const locals = new Set(refsOf([]).filter((r) => r.ref.startsWith('refs/heads/')).map((r) => r.name));
-  let branches = 0;
-  /* only refs with commits HEAD lacks, so merged branches never use up the cap */
-  for (const b of refsOf(['--no-merged=HEAD']).filter((r) => since && r.day && r.day < since && r.name !== head && !/\/HEAD$/.test(r.ref)
-    && !(r.ref.startsWith('refs/remotes/') && locals.has(r.name.replace(/^[^/]+\//, '')))).slice(0, 50)) {
-    const ahead = Number((git(ctx.root, ['rev-list', '--count', 'HEAD..' + b.ref]) || '0').trim());
-    if (!ahead) continue;
-    branches++;
-    const tried = TRIED.test(b.name);
-    const title = clip('Branch never merged: ' + b.name, 160);
-    out.push({
-      id: 'history:branch:' + b.name, find: 'history', home: 'knowledge', def: tried ? 'keep' : 'leave', ...(tried ? {} : { call: true }), group: 'history: tried and dropped',
-      title, where: { file: 'branch ' + b.name }, date: b.day, dateHow: 'commit', excerpt: clip(ahead + ' commits not on ' + head + ', the last on ' + b.day + ': ' + b.subject, 600),
-      fields: { type: 'gotcha', title, body: 'Branch ' + b.name + ' holds ' + ahead + ' commits not on ' + head + '; its last, on ' + b.day + ': ' + quoted(b.subject) + '.' },
-      why: tried ? 'an experiment left unmerged with nothing since the project\'s recent activity: a tried-and-dropped note'
-        : 'left unmerged with nothing since the project\'s recent activity: dropped, or parked work to resume, is the user\'s call',
-    });
-  }
-  return { rows: out, cap: HISTORY_CAP, read: commits.length, total, rulings, deleted: series.size, reverts, branches, months: months.size };
+  return out;
 }
 
-/* ---- what the board already holds (reads only) ---- */
+/* ---- the board read ---- */
 
-function cliJson(cli, args, env) {
-  const r = spawnSync(process.execPath, [cli, ...args, '--json'], { encoding: 'utf8', windowsHide: true, env, maxBuffer: 64 << 20 });
-  if (r.status !== 0) return { error: oneLine(r.stderr || r.stdout || 'exit ' + r.status) };
+/* A read with no session in its env, so a bulk show marks nothing read; okExit names a non-zero exit that still
+   carries the report (proc scan --check exits 1 on a card's errors). */
+export function cliJson(cli, args, env, { okExit = [] } = {}) {
+  const { CLAUDE_CODE_SESSION_ID, ...bare } = env || process.env;
+  const r = spawnSync(process.execPath, [cli, ...args, '--json'], { encoding: 'utf8', windowsHide: true, env: bare, maxBuffer: 64 << 20 });
+  if (r.status !== 0 && !(okExit.includes(r.status) && String(r.stdout || '').trim())) return { error: oneLine(r.stderr || r.stdout || 'exit ' + r.status) };
   try { return { value: JSON.parse(r.stdout) }; } catch { return { error: 'not JSON: ' + clip(r.stdout, 120) }; }
 }
 
@@ -840,9 +447,13 @@ export function boardState(cli, { shared, slug, dir, env = process.env }) {
     .map((w) => ({ id: w.id, name: w.name, status: w.status, labels: w.labels || [] }));
   const imported = [];
   for (const kind of ['workstream', 'task', 'knowledge']) {
-    for (const r of get(['list', '--kind', kind, '--all', '--label', label]) || []) imported.push({ id: r.id, kind, name: r.name, refs: r.refs || [] });
+    for (const r of get(['list', '--kind', kind, '--all', '--label', label]) || []) imported.push({ id: r.id, kind, name: r.name, status: r.status || null, refs: r.refs || [] });
   }
-  out.knowledge = (get(['list', '--kind', 'knowledge', '--all']) || []).filter(mine).map((k) => ({ id: k.id, name: k.name, type: k.type, status: k.status }));
+  /* the onboard refs a reconcile added and the file globs, which the plan reads so a rerun never amends a record
+     twice or adds a glob it holds */
+  out.knowledge = (get(['list', '--kind', 'knowledge', '--all']) || []).filter(mine).map((k) => ({ id: k.id, name: k.name, type: k.type, status: k.status,
+    ...((k.files || []).length ? { files: k.files } : {}),
+    ...((k.refs || []).some((x) => String(x).startsWith('onboard:')) ? { refs: k.refs.filter((x) => String(x).startsWith('onboard:')) } : {}) }));
   /* a profile is this project's when every record holding it is the project or one of its workstreams */
   const ws = new Set(out.workstreams.map((w) => w.id));
   const low = (s) => slashed(s).toLowerCase();
@@ -850,108 +461,375 @@ export function boardState(cli, { shared, slug, dir, env = process.env }) {
   const profiles = get(['profile', 'list']);
   out.profiles = profiles ? profiles.profiles.map((p) => ({
     profile: p.profile, builtIn: p.builtIn === true, records: p.records || [], rules: ((p.settings || {})['rules.add'] || []).map((x) => x.slug),
+    /* the doctor's read: a line from a ruling (from) changes only with a newer one */
+    lines: ((p.settings || {})['rules.add'] || []).map((x) => ({ slug: x.slug, text: x.text, for: x.for || null, from: x.from || null })),
     here: (p.held || []).some(here), elsewhere: (p.held || []).some((h) => !here(h)),
   })) : [];
   out.tracks = out.workstreams.flatMap((w) => ((get(['track', 'list', '--workstream', w.id, '--all']) || {}).tracks || [])
-    .map((t) => ({ id: t.id, name: t.name, state: t.state, workstream: w.id, labels: t.labels || [], refs: t.refs || [] })));
-  for (const t of out.tracks) if (t.labels.includes(label)) imported.push({ id: t.id, kind: 'track', name: t.name, refs: t.refs });
-  for (const q of (get(['list', '--all', '--project', dir]) || {}).questions || []) {
-    if ((q.labels || []).includes(label)) imported.push({ id: q.id, kind: 'question', name: q.name, refs: q.refs || [] });
+    .map((t) => ({ id: t.id, name: t.name, state: t.state, workstream: w.id, labels: t.labels || [], refs: t.refs || [], parkReason: t.parkReason || null, handoff: t.handoff || null, ...(t.unpark ? { unpark: t.unpark } : {}) })));
+  for (const t of out.tracks) if (t.labels.includes(label)) imported.push({ id: t.id, kind: 'track', name: t.name, status: t.state || null, refs: t.refs });
+  const listed = (get(['list', '--all', '--project', dir]) || {}).questions || [];
+  for (const q of listed) {
+    if ((q.labels || []).includes(label)) imported.push({ id: q.id, kind: 'question', name: q.name, status: q.status || null, refs: q.refs || [] });
   }
+  for (const t of out.tracks) if (!t.labels.includes(label) && earlierImport(t, label)) imported.push({ id: t.id, kind: 'track', name: t.name, status: t.state || null, refs: t.refs, earlier: true });
   out.imported = imported;
+  /* the project's answered questions with their answers, shown by key in batches */
+  const keys = listed.filter((q) => q.status === 'answered').map((q) => q.key || q.id);
+  out.questions = [];
+  for (let i = 0; i < keys.length; i += 500) {
+    const shown = get(['show', ...keys.slice(i, i + 500)]);
+    for (const q of shown ? [].concat(shown) : []) out.questions.push({ id: q.id, key: q.key, name: q.name, status: q.status, answer: q.answer || null, gist: q.gist || null });
+  }
+  /* every rule in force on the project with its source, and the decisions of its workstreams */
+  const eff = get(['profile', 'show-effective', dir, '--rules']);
+  out.rules = ((eff && eff.rows) || []).map((r) => ({ rule: r.rule, text: r.text, source: r.source, ...(r.for ? { for: r.for } : {}) }));
+  const decided = new Map();
+  for (const w of out.workstreams) {
+    for (const d of get(['decisions', '--workstream', w.id]) || []) if (!decided.has(d.id)) decided.set(d.id, { id: d.id, key: d.key || null, name: d.name, words: d.words, created: d.created, workstream: w.id, question: d.question || null });
+  }
+  out.decisions = [...decided.values()];
+  out.tasks = out.workstreams.flatMap((w) => (get(['list', '--kind', 'task', '--all', '--workstream', w.id]) || []).map((t) => ({ id: t.id, name: t.name, status: t.status, workstream: w.id, updated: t.updated || null, inHand: t.inHand || null, refs: t.refs || [], unplaced: t.unplaced || null })));
+  /* what readersOf reads beside this PC's Claude folder: the project folders this PC maps */
+  out.projects = ((get(['projects']) || {}).projects || []).map((x) => ({ name: x.name, dir: x.dir }));
+  /* the conversion map; a board without the verb yet reads as no map, never as a failed read */
+  const map = cliJson(cli, ['conversion', '--project', dir], env);
+  out.map = map.value || null;
+  if (map.error) out.mapError = map.error;
   return out;
 }
 
-/* ---- the survey ---- */
+/* ---- rules against the board (the doctor's check) ---- */
 
-export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFile, env = process.env } = {}) {
-  const top = git(dir, ['rev-parse', '--show-toplevel']);
-  const root = slashed(top ? top.trim() : resolve(dir));
-  const isGit = Boolean(top);
+const STOP = new Set('that this with from have will when what which they them then than into only also each more must should would could does about there their where while after before answer chosen question because these those were been being your over just like some such'.split(' '));
+export const words = (s) => String(s || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+export const tokens = (s) => new Set(words(s).filter((w) => w.length >= 4 && !STOP.has(w)));
+/* two titles on one subject: the words they share (at least three, most of the shorter one's), else 0 */
+export function sameSubject(a, b) {
+  const ta = tokens(a);
+  const tb = tokens(b);
+  let n = 0;
+  for (const w of ta) if (tb.has(w)) n++;
+  return n >= 3 && n / Math.min(ta.size, tb.size) >= 0.6 ? n : 0;
+}
+export const grams = (ws, n = 6) => { const g = new Set(); for (let i = 0; i + n <= ws.length; i++) g.add(ws.slice(i, i + n).join(' ')); return g; };
+
+/* numbers with their units and flags: what a rule that says the same in other numbers differs in */
+const NUM_UNIT = /(?<![\w.-])\d+(?:\.\d+)?\s?(?:k|kb|mb|gb|ms|s|secs?|seconds?|mins?|minutes?|h|hours?|days?|%|khz|hz|tokens?|characters?|chars|words?|lines?|tool calls|calls?|files?|times)?(?![\w])/gi;
+const marksOf = (s) => {
+  const t = String(s || '').replace(/20\d\d-\d\d-\d\d/g, ' ');
+  return new Set([...t.matchAll(NUM_UNIT), ...t.matchAll(/(?<![\w-])--[a-z][\w-]*/gi)].map((m) => m[0].toLowerCase().replace(/\s+/g, ' ').trim()));
+};
+
+/* Each rule row against the board's rules in force and its decisions, by tokens and 6-grams (the doctor's probe): a sure
+   match the same in its numbers and flags sets fields.coveredBy, one that differs in them fields.conflict. */
+export function matchRules(rows, board) {
+  const entries = [
+    ...((board && board.rules) || []).map((r) => ({ key: r.rule, text: r.text })),
+    /* the board's shape (name, words) or the facts' (title, ruling) */
+    ...((board && board.decisions) || []).map((d) => ({ key: d.id, text: [d.title || d.name, d.ruling || d.words].filter(Boolean).join('\n') })),
+  ].filter((e) => e.key && e.text).map((e) => ({ ...e, tok: tokens(e.text), grams: grams(words(e.text)), marks: marksOf(e.text) }));
+  if (!entries.length) return rows;
+  for (const r of rows.filter((x) => x.home === 'rule')) {
+    const f = r.fields || (r.fields = {});
+    const src = f.sourceText || f.text || r.title || '';
+    const tok = tokens(src);
+    const g = grams(words(src));
+    let best = null;
+    for (const e of entries) {
+      let shared = 0;
+      for (const w of tok) if (e.tok.has(w)) shared++;
+      const ov = shared >= 3 ? shared / Math.min(tok.size, e.tok.size) : 0;
+      let quote = false;
+      for (const x of g) if (e.grams.has(x)) { quote = true; break; }
+      if (!quote && ov < 0.5) continue;
+      const score = (quote ? 3 : 0) + ov * 2;
+      /* a cover holds both ways: a short line sharing three words with a long rule only names the same subject */
+      const sure = quote || (shared >= 3 && shared / Math.max(tok.size, e.tok.size) >= 0.5);
+      if (!best || score > best.score) best = { e, score, sure };
+    }
+    if (!best) continue;
+    const { e, sure } = best;
+    const ours = marksOf(src);
+    const differs = [...[...ours].filter((m) => !e.marks.has(m)), ...[...e.marks].filter((m) => !ours.has(m))];
+    if (!sure && !differs.length) continue;
+    if (!differs.length) f.coveredBy = e.key;
+    else f.conflict = { with: e.key, theirs: e.text, ours: src, differs };
+  }
+  return rows;
+}
+
+/* ---- the facts ---- */
+
+/* the size a session reads whole; past it the board's rulings and knowledge titles, then the folders' samples, move
+   to files beside it */
+const FACTS_TARGET = 150 << 10;
+const RULING_MAX = 200;
+/* the samples each folder shows inline (subjects, then citing files and code readers each), one step down at a time
+   past the target; the whole samples then sit in facts-folders.json */
+const SAMPLE_STEPS = [[12, 5], [6, 3], [2, 2], [0, 0]];
+const SAMPLES_WHOLE = 10;
+const ROOT_FILES_SHOWN = 100;
+
+/* one line per record in each list, so the file stays small and greps by line */
+function render(facts) {
+  const val = (v, pad) => {
+    if (Array.isArray(v)) return v.length ? '[\n' + v.map((x) => pad + '  ' + JSON.stringify(x)).join(',\n') + '\n' + pad + ']' : '[]';
+    if (v && typeof v === 'object' && pad.length < 4) return '{\n' + Object.entries(v).map(([k, x]) => pad + '  ' + JSON.stringify(k) + ': ' + val(x, pad + '  ')).join(',\n') + '\n' + pad + '}';
+    return JSON.stringify(v);
+  };
+  return val(facts, '') + '\n';
+}
+
+/* the files citing this folder and no deeper listed one, newest touched first, as file:line */
+function directOf(ctx, n, k) {
+  const direct = [...n.direct].map(([f, line]) => ({ f, line, day: touchOf(ctx, f).day || '' }))
+    .sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : a.f < b.f ? -1 : 1));
+  const shown = (xs) => xs.slice(0, k).map((c) => c.f + ':' + c.line);
+  return { prose: shown(direct.filter((c) => !CODE_EXT.test(c.f))), code: shown(direct.filter((c) => CODE_EXT.test(c.f))) };
+}
+
+function folderFacts(ctx, n, [subjectsShown, citesShown] = SAMPLE_STEPS[0]) {
+  const { prose, code } = directOf(ctx, n, citesShown);
+  const subjects = subjectsShown ? subjectsOf(n.history, subjectsShown) : [];
+  const some = (k, v) => (v ? { [k]: v } : {});
+  return {
+    path: n.path, ...(ctx.markOf && ctx.markOf(n.path + '/') ? { since: ctx.markOf(n.path + '/') } : {}), tracked: n.count - n.untracked, ...some('untracked', n.untracked), ...some('modified', n.modified), ...some('prose', n.prose), ...some('code', n.code),
+    commits: n.commits, first: n.first, last: n.last, ...(n.lastCommit && n.lastCommit !== n.last ? { lastCommit: n.lastCommit } : {}),
+    ...(subjects.length ? { subjects } : {}),
+    ...(n.hits ? { cites: { hits: n.hits, files: n.citing.size, ...(prose.length ? { from: prose } : {}) } } : {}),
+    ...(n.codeReaders.size ? { codeReaders: { files: n.codeReaders.size, ...(code.length ? { from: code } : {}) } } : {}),
+    ...(n.outsideReaders.length ? { outsideReaders: n.outsideReaders } : {}),
+  };
+}
+
+function boardFacts(bs) {
+  if (!bs) return null;
+  const done = new Set(['completed', 'dropped']);
+  return {
+    read: bs.read, errors: bs.errors,
+    workstreams: bs.workstreams,
+    /* the doctor reads its board from these: a park's condition, refs and placing are what its checks judge */
+    tracks: bs.tracks.map((t) => ({ id: t.id, name: t.name, state: t.state, workstream: t.workstream, ...(t.handoff ? { handoff: t.handoff } : {}), ...(t.parkReason ? { parkReason: t.parkReason } : {}), ...(t.unpark ? { unpark: t.unpark } : {}),
+      ...(t.labels.length ? { labels: t.labels } : {}), ...(t.refs.length ? { refs: t.refs } : {}) })),
+    openTasks: bs.tasks.filter((t) => !done.has(t.status)).map((t) => ({ id: t.id, name: t.name, status: t.status, workstream: t.workstream, ...(t.updated ? { updated: t.updated } : {}), ...(t.inHand ? { inHand: t.inHand } : {}),
+      ...(t.unplaced ? { unplaced: t.unplaced } : {}), ...(t.refs.length ? { refs: t.refs } : {}) })),
+    questions: bs.questions.map((q) => ({ id: q.id, title: q.name, answer: clip(q.answer, RULING_MAX) })),
+    decisions: bs.decisions.map((d) => ({ id: d.id, ...(d.key ? { key: d.key } : {}), title: d.name, ruling: clip(d.words, RULING_MAX), ...(d.question ? { question: d.question } : {}), ...(d.created ? { created: String(d.created).slice(0, 10) } : {}) })),
+    knowledge: bs.knowledge,
+    profiles: bs.profiles.map((p) => ({ profile: p.profile, builtIn: p.builtIn, here: p.here, elsewhere: p.elsewhere, records: p.records,
+      /* each line's text is under rules; from marks a line a ruling made */
+      lines: p.lines.map((l) => ({ slug: l.slug, ...(l.for ? { for: l.for } : {}), ...(l.from ? { from: l.from } : {}) })) })),
+    rules: bs.rules,
+    /* an earlier import's records, whole with their onboard: refs, so a rerun sees what it already did */
+    imported: bs.imported,
+  };
+}
+
+const sizeOf = (s) => Buffer.byteLength(s, 'utf8');
+
+export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFile, env = process.env, managed } = {}) {
+  const t0 = Date.now();
+  const timings = {};
+  let t = t0;
+  const lap = (k) => { const now = Date.now(); timings[k] = now - t; t = now; };
+  const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8', windowsHide: true });
+  const root = slashed(top.status === 0 ? top.stdout.trim() : resolve(dir));
+  const isGit = top.status === 0;
   const slug = kebab(basename(root), 30);
   const shared = (isGit && sharedName(root)) || root.toLowerCase();
-  const workDir = work || join(dataDir(env) || join(homedir(), '.claude', 'askerdo-onboard'), 'onboard', slug);
-  const over = readJson(join(workDir, 'overrides.json')) || {};
-  const ctx = {
-    root, isGit, slug,
-    /* the user's own Claude memory, wherever the AskerDo data dir is */
-    claudeHome: env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
-    include: new Map((over.include || []).map((x) => [slashed(x.path), x.as])), trackOfFile: new Map(), oldQuestions: new Map(),
-  };
-  const exclude = ctx.exclude = (over.exclude || []).map((g) => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\0').replace(/\*/g, '[^/]*').replace(/\0/g, '.*') + '$'));
-  const files = listFiles(root, isGit).filter((f) => !exclude.some((re) => re.test(f)));
+  const workDir = slashed(work || join(dataDir(env) || join(homedir(), '.claude', 'askerdo-onboard'), 'onboard', slug));
+  const ctx = { root, isGit, slug, claudeHome: env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), spawns: 1, opened: [], texts: new Map() };
 
-  let rows = [
-    ...handoffRows(ctx, files), ...decisionRows(ctx, files), ...questionRows(ctx), ...ruleRows(ctx, files),
-    ...memoryRows(ctx), ...procedureRows(ctx, files), ...otherRows(ctx, files),
-  ];
-  const decisionFiles = new Set(rows.filter((r) => r.find === 'decision').map((r) => r.where.file));
-  rows.push(...taskRows(ctx, files.filter((f) => !decisionFiles.has(f))));
-  const activity = judgeStaleness(ctx, rows, files);
-  matchRulings(ctx, rows);
-  /* after the log rows, so a commit that repeats an entry lands as evidence on it */
-  const history = isGit ? historyRows(ctx, rows, files, activity.since) : null;
-  if (history) rows.push(...history.rows);
-  const codeTodos = files.filter((f) => /\.(m?[jt]sx?|cs|py|rs|go|java|c|cpp|h)$/.test(f))
-    .reduce((n, f) => n + ((readText(join(root, f)) || '').match(/\b(TODO|FIXME)\b/g) || []).length, 0);
-
+  ctx.list = listing(ctx);
+  lap('listing');
+  ctx.history = historyPass(ctx);
+  lap('history');
+  const nodes = folderTree(ctx);
+  const folders = listedFolders(nodes);
+  citesOf(ctx, folders, workDir);
+  lap('cites');
+  const ep = entryPoints(ctx);
+  const fileSet = new Set(ctx.list.files);
+  /* the instruction files Claude reads here, each with its own ledger (AGENTS.md's working rules
+     convert like CLAUDE.md's), and the rule files around them */
+  const setting = instructionSetting({ home: ctx.claudeHome, ...(managed ? { managed } : {}) });
+  const instr = instructionFiles(root, [...nodes.keys()], fileSet, setting, { ignored: ctx.list.ignored, memory: [join(ctx.claudeHome, 'CLAUDE.md'), join(managed || managedDir(), 'CLAUDE.md')] });
+  const claude = instr.files.filter((x) => !x.file.endsWith('AGENTS.override.md')).flatMap((x) => claudeLedger(ctx, x.file));
+  const rules = ruleFiles({ root, files: ctx.list.files, history: ctx.history.per, days: ctx.history.days, lines: ctx.history.lines,
+    touch: (f) => touchOf(ctx, f), open: (f) => open(ctx, f), grep: (pats) => grepLines(ctx, pats, workDir) }, instr);
+  const memory = memoryFiles(ctx);
+  lap('entries');
   const bs = board ? boardState(cli, { shared, slug, dir: root, env }) : null;
-  const ws = bs && bs.workstreams.find((w) => w.status === 'open' && !/inbox$/i.test(w.name));
-  const readme = (readText(join(root, 'README.md')) || '').split(/\n\s*\n/).map((p) => p.trim()).find((p) => p && !p.startsWith('#') && !p.startsWith('!['));
-  rows.unshift(ws
-    ? { id: 'ws:main', find: 'board', home: 'workstream', def: 'keep', group: 'workstreams', title: ws.name, where: { file: 'the board' }, date: null,
-      excerpt: ws.id + ' already holds this project', fields: { use: ws.id, key: 'main' }, why: 'the board already has a workstream for this project: the import goes into it' }
-    : { id: 'ws:main', find: 'project', home: 'workstream', def: 'keep', group: 'workstreams', title: basename(root), where: { file: 'README.md' },
-      date: isGit ? (git(root, ['log', '--reverse', '--format=%aI']) || '').split('\n')[0].slice(0, 10) || null : null, dateHow: 'commit',
-      excerpt: clip(readme || '', 600), fields: { key: 'main', name: basename(root), description: clip(readme || 'The ' + basename(root) + ' project.', 1000) },
-      why: 'no workstream on the board holds this project yet: one for the project, dated by its first commit' });
-
-  /* the session's own layer: rows it adds, then patches by row id (reaching added rows too), workstreams it names */
-  rows.push(...(over.add || []));
-  const warnings = [];
-  for (const [id, p] of Object.entries(over.rows || {})) {
-    const hit = rows.filter((r) => r.id === id);
-    if (!hit.length) warnings.push('overrides.json rows names ' + id + ', and no row has that id');
-    for (const r of hit) Object.assign(r, { ...p, fields: { ...r.fields, ...(p.fields || {}) } });
-  }
-  const seen = new Map();
-  for (const r of rows) { const n = (seen.get(r.id) || 0) + 1; seen.set(r.id, n); if (n > 1) r.id += '~' + n; }
-  for (const w of over.workstreams || []) {
-    const i = rows.findIndex((r) => r.id === 'ws:' + w.key);
-    const row = { id: 'ws:' + w.key, find: 'session', home: 'workstream', def: 'keep', group: 'workstreams', title: w.name || w.use, where: { file: 'the session' },
-      date: w.created || null, excerpt: w.description || '', fields: { ...w }, why: w.why || 'named by the session' };
-    if (i >= 0) rows[i] = { ...rows[i], ...row, fields: { ...rows[i].fields, ...w } }; else rows.push(row);
-  }
-
-  /* a rerun proposes only what is new: rows the manifest or the board's refs already hold drop out */
-  const manifest = readJson(manifestFile || join(workDir, 'manifest.json'));
-  const done = new Set([...(manifest ? manifest.imports.flatMap((i) => i.steps.map((s) => s.row)) : []), ...(manifest ? manifest.left || [] : [])]);
-  for (const r of bs ? bs.imported : []) for (const ref of r.refs) if (ref.startsWith('onboard:')) done.add(ref.slice(8));
-  /* with no manifest on this PC: a track with no row ref (made by hand, or before tracks carried one) matches by
-     name, and a rule line by its slug on a profile only this project holds, or on its own profile when nothing holds it */
-  const named = (name) => String(name || '').trim().toLowerCase();
-  const refless = bs ? bs.tracks.filter((t) => !(t.refs || []).some((x) => String(x).startsWith('onboard:'))) : [];
-  for (const r of rows) {
-    if (r.home === 'track' && refless.some((t) => named(t.name) === named(r.fields.name))) done.add(r.id);
-    if (r.home === 'rule' && bs && bs.profiles.some((p) => !p.elsewhere && !p.builtIn && (p.here || p.profile === r.fields.profile) && p.rules.includes(r.fields.slug))) done.add(r.id);
-  }
-  const already = rows.filter((r) => done.has(r.id) && r.id !== 'ws:main');
-  const wsDone = manifest && manifest.imports.flatMap((i) => i.steps).find((s) => s.row === 'ws:main' && s.kind === 'workstream');
-  if (wsDone) Object.assign(rows[0], { fields: { use: wsDone.id, key: 'main' }, excerpt: wsDone.id + ' was made by the last import', why: 'the last import made it' });
-  rows = rows.filter((r) => !already.includes(r));
-
-  const finds = {};
-  for (const r of rows) finds[r.find] = (finds[r.find] || 0) + 1;
-  const homes = {};
-  for (const r of rows) homes[r.home] = (homes[r.home] || 0) + 1;
-  const doc = {
-    made: new Date().toISOString(), project: { dir: root, slug, shared, name: basename(root), git: isGit },
-    work: slashed(workDir), board: bs, finds, homes, already: already.length, codeTodos, activity, history: history && { ...history, rows: undefined }, warnings,
-    unplaced: rows.filter((r) => r.home === '?').map((r) => r.id), rows,
+  lap('board');
+  readersOf(ctx, folders, bs ? bs.projects : []);
+  lap('readers');
+  /* blob and tree hashes in one ls-tree pass, no file opened; the map marked against them */
+  const tree = ctx.isGit ? parseTree(git(ctx, ['-c', 'core.quotepath=false', 'ls-tree', '-r', '-t', '-z', '--full-tree', 'HEAD'])) : new Map();
+  const loose = (f) => noCopy(ctx, f) || ctx.list.dirty.has(f) || !tree.has(f);
+  /* a private instruction file git ignores (CLAUDE.local.md) is on disk though no listing holds it, and the write
+     stamped its text's hash, so the map reads it as there */
+  const privates = new Set(instr.files.filter((x) => x.private && !fileSet.has(x.file)).map((x) => x.file));
+  const present = (f) => fileSet.has(f) || privates.has(f);
+  const mapped = ((bs && bs.map && bs.map.rows) || []).flatMap((r) => (r.kind === 'file' ? [r.source] : r.kind === 'call' ? Object.keys((r.detail && r.detail.subjects) || {})
+    : r.kind === 'run' ? [...((r.detail && r.detail.left) || []).map((l) => l.source), ...((r.detail && r.detail.judged) || []).filter((j) => j.hash).map((j) => j.subject)].filter(Boolean) : []));
+  const need = mapped.filter((f) => !isFolder(f) && present(f) && loose(f));
+  const texts = blobsOf(root, need);
+  if (need.length) ctx.spawns++;
+  const hashOf = (f) => (loose(f) ? texts.get(f) || null : tree.get(f) || null);
+  const sigOf = (folder) => { const n = nodes.get(folder.replace(/\/+$/, '')); return n ? folderSig(tree.get(n.path), n.untracked + n.modified, n.touchedMs) : null; };
+  const has = (p) => (p.endsWith('/') ? nodes.has(p.slice(0, -1)) : present(p));
+  const seeds = bs ? seedsOf(bs.imported.filter((r) => r.earlier), root, has) : [];
+  /* a judgment's evidence re-checked: its readers still there and naming it, its clause still in its file, its event */
+  const reads = (r, p) => {
+    const abs = /^[A-Za-z]:\/|^\//.test(r);
+    const text = abs ? readText(r) : present(r) ? open(ctx, r) : null;
+    return text === null ? 'gone' : text.replace(/\\+/g, '/').includes(p);
   };
+  const clauses = new Map();
+  const clauseHere = (key) => {
+    const file = key.slice('clause:'.length, key.lastIndexOf('#'));
+    if (!clauses.has(file)) clauses.set(file, new Set((instr.files.some((x) => x.file === file) ? claude.filter((c) => c.file === file) : claudeLedger(ctx, file)).map((c) => clauseId(file, c.clause))));
+    return clauses.get(file).has(key);
+  };
+  const events = bs ? { tasks: new Map(bs.tasks.map((x) => [x.id, x.status])), tracks: new Map(bs.tracks.map((x) => [x.id, x])), answered: new Set(bs.questions.map((q) => q.id)) } : {};
+  const marked = bs ? markMap(bs.map, { hashOf, sigOf, exists: present, seeds, reads, clauseHere, board: events }) : null;
+  ctx.markOf = marked && marked.markOf;
+  lap('map');
+
+  const manifestPath = slashed(manifestFile || join(workDir, 'manifest.json'));
+  const manifest = readJson(manifestPath);
+  const h = ctx.history;
+  const rootNode = nodes.get('');
+  const stateOf = (f) => (ctx.list.ignored.has(f) ? 'ignored' : ctx.list.untracked.has(f) ? 'untracked' : ctx.list.dirty.has(f) ? 'modified' : null);
+  const rootFiles = rootNode.files.map((f) => ({ file: f, last: touchOf(ctx, f).day, ...(stateOf(f) ? { state: stateOf(f) } : {}) }));
+  const facts = {
+    version: 1,
+    made: new Date().toISOString(),
+    project: {
+      dir: root, name: basename(root), slug, shared, remote: isGit ? sharedName(root) || null : null, git: isGit, head: h.head,
+      commits: h.commits, first: h.first, latest: h.latest, files: ctx.list.files.length, untracked: ctx.list.untracked.size, modified: ctx.list.dirty.size,
+      ignoredHandoffs: [...ctx.list.ignored], recent: subjectsOf(rootNode.history),
+      rootFiles: rootFiles.slice(0, ROOT_FILES_SHOWN), ...(rootFiles.length > ROOT_FILES_SHOWN ? { rootFilesMore: rootFiles.length - ROOT_FILES_SHOWN } : {}),
+    },
+    survey: { folders: 'to depth ' + FOLDER_DEPTH + ', one deeper under a folder there holding over ' + BIG_FOLDER + ' files', samples: { subjects: SAMPLE_STEPS[0][0], cites: SAMPLE_STEPS[0][1] } },
+    entryPoints: [...ep.entries].map(([file, from]) => {
+      const text = ctx.texts.get(file) || '';
+      return { file, from, last: touchOf(ctx, file).day, names: ep.named.get(file).map((f) => ({ file: f, last: touchOf(ctx, f).day, ...(stateOf(f) ? { state: stateOf(f) } : {}) })),
+        text: text.slice(0, ENTRY_MAX), ...(text.length > ENTRY_MAX ? { cut: text.length } : {}) };
+    }),
+    instructions: instr,
+    claude,
+    ruleFiles: rules,
+    memory,
+    folders: folders.map((n) => folderFacts(ctx, n)),
+    readers: ctx.readers || null,
+    manifest: manifest ? { file: manifestPath, imports: (manifest.imports || []).length } : null,
+    board: boardFacts(bs),
+    conversion: marked ? { last: marked.last, counts: marked.counts, sources: marked.sources, folders: marked.folders, calls: marked.calls, left: marked.left,
+      judgments: marked.judgments, ...(marked.instructions ? { instructions: marked.instructions } : {}), ...(bs.mapError ? { error: bs.mapError } : {}) } : null,
+  };
+
+  /* sized for a session to read: the rulings, then the knowledge titles, go to facts-board.json; then the folders'
+     inline samples shrink, the whole samples kept in facts-folders.json */
   mkdirSync(workDir, { recursive: true });
-  writeFileSync(join(workDir, 'rows.json'), JSON.stringify(doc, null, 2) + '\n');
-  return doc;
+  const factsFile = slashed(join(workDir, 'facts.json'));
+  let boardFile = null;
+  let samplesFile = null;
+  let text = render(facts);
+  if (sizeOf(text) > FACTS_TARGET && facts.board && (facts.board.questions.length || facts.board.decisions.length)) {
+    boardFile = slashed(join(workDir, 'facts-board.json'));
+    writeFileSync(boardFile, render({ questions: facts.board.questions, decisions: facts.board.decisions }));
+    facts.board.rulings = { file: boardFile, questions: facts.board.questions.length, decisions: facts.board.decisions.length, search: 'by id or words; one record per line' };
+    delete facts.board.questions;
+    delete facts.board.decisions;
+    text = render(facts);
+  }
+  if (sizeOf(text) > FACTS_TARGET && facts.board && facts.board.knowledge.length) {
+    const ruled = boardFile ? JSON.parse(readFileSync(boardFile, 'utf8')) : {};
+    boardFile = slashed(join(workDir, 'facts-board.json'));
+    writeFileSync(boardFile, render({ ...ruled, knowledge: facts.board.knowledge }));
+    facts.board.rulings = { file: boardFile, search: 'by id or words; one record per line', ...facts.board.rulings, knowledge: facts.board.knowledge.length };
+    delete facts.board.knowledge;
+    text = render(facts);
+  }
+  for (const step of SAMPLE_STEPS.slice(1)) {
+    if (sizeOf(text) <= FACTS_TARGET) break;
+    if (!samplesFile) {
+      samplesFile = slashed(join(workDir, 'facts-folders.json'));
+      writeFileSync(samplesFile, render({ folders: folders.map((n) => {
+        const { prose, code } = directOf(ctx, n, SAMPLES_WHOLE);
+        return { path: n.path, subjects: subjectsOf(n.history), cites: prose, codeReaders: code };
+      }) }));
+    }
+    facts.folders = folders.map((n) => folderFacts(ctx, n, step));
+    facts.survey.samples = { subjects: step[0], cites: step[1], whole: samplesFile, search: 'by folder path; one folder per line' };
+    text = render(facts);
+  }
+  /* last, the rule files and the nested instruction files' ledgers go to facts-rules.json */
+  let rulesFile = null;
+  const nested = claude.filter((c) => c.file.includes('/') && !c.file.startsWith('.claude/'));
+  if (sizeOf(text) > FACTS_TARGET && (rules.length || nested.length)) {
+    rulesFile = slashed(join(workDir, 'facts-rules.json'));
+    writeFileSync(rulesFile, render({ ruleFiles: rules, claude: nested }));
+    facts.ruleFiles = { file: rulesFile, count: rules.length, search: 'by file path; one file or clause per line' };
+    facts.claude = claude.filter((c) => !nested.includes(c));
+    if (nested.length) facts.claudeNested = { file: rulesFile, clauses: nested.length, files: [...new Set(nested.map((c) => c.file))] };
+    text = render(facts);
+  }
+  timings.total = Date.now() - t0;
+  facts.survey = { ...facts.survey, ms: timings.total, timings, gitSpawns: ctx.spawns, filesOpened: ctx.opened.length, opened: ctx.opened };
+  text = render(facts);
+  writeFileSync(factsFile, text);
+  /* the folders' state the write records with its run, so the next survey marks what changed since */
+  writeFileSync(join(workDir, 'facts-map.json'), JSON.stringify({ made: facts.made, head: h.head, folders: Object.fromEntries(folders.map((n) => [n.path + '/', sigOf(n.path + '/')])),
+    instructions: { mode: setting.mode, read: instr.files.filter((x) => x.read).map((x) => x.file) } }) + '\n');
+  const sizes = { facts: sizeOf(text), ...(boardFile ? { board: statSync(boardFile).size } : {}), ...(samplesFile ? { samples: statSync(samplesFile).size } : {}), ...(rulesFile ? { rules: statSync(rulesFile).size } : {}) };
+  const b = facts.board;
+  return {
+    facts, factsFile, boardFile, samplesFile, rulesFile, sizes, work: workDir, project: facts.project, board: bs,
+    history: { commits: h.commits, first: h.first, latest: h.latest },
+    counts: {
+      folders: folders.length, files: ctx.list.files.length, untracked: ctx.list.untracked.size, modified: ctx.list.dirty.size, commits: h.commits, entryPoints: ep.entries.size,
+      memory: memory.length, clauses: claude.length, ruleFiles: rules.length, handoffFiles: rules.filter((r) => r.kind === 'handoff' || r.role).length, gitSpawns: ctx.spawns, filesOpened: ctx.opened.length, ms: timings.total,
+      ...(b ? { workstreams: b.workstreams.length, tracks: b.tracks.length, openTasks: b.openTasks.length, questions: bs.questions.length, decisions: bs.decisions.length,
+        /* decisions are knowledge records too: the line counts the facts in force apart from them */
+        knowledge: bs.knowledge.filter((k) => k.type !== 'decision' && (!k.status || k.status === 'active')).length, rules: b.rules.length, imported: b.imported.length } : {}),
+      ...(marked ? { map: marked.counts, mapLast: marked.last } : {}),
+    },
+  };
+}
+
+/* The Project instructions setting and what Claude reads by it, in one line */
+export function instructionLine(ins) {
+  const s = ins.setting || {};
+  const read = (ins.files || []).filter((x) => x.read).map((x) => x.file + (x.read === 'nested' ? ' (nested)' : ''));
+  return 'Instructions: ' + s.mode + (s.from && s.from !== 'default' ? ' (set in ' + s.from + ')' : ' (the default)') + '; Claude reads ' + (read.join(', ') || 'no project instruction file');
+}
+
+/* The survey's summary, which the doctor prints too: the facts before, the session's next step after. */
+export function surveyLines(d) {
+  const c = d.counts || {};
+  const kb = (n) => (n / 1024).toFixed(1) + ' KB';
+  const p = d.project || {};
+  const before = [
+    'Files: ' + c.files + ' (' + c.untracked + ' untracked, ' + c.modified + ' modified); ' + (p.git ? c.commits + ' commits from ' + p.first + ' to ' + p.latest : 'not a git repo'),
+    'Folders: ' + c.folders + ' listed with their counts, touches, subjects, cites and readers',
+    'Entry points: ' + ((d.facts && d.facts.entryPoints) || []).map((e) => e.file).join(', ') + (c.memory ? '; ' + c.memory + ' Claude memory files' : ''),
+    ...(d.facts && d.facts.instructions ? [instructionLine(d.facts.instructions) + '; ' + (c.ruleFiles || 0) + ' rule files with their cites and loaders'
+      + (c.handoffFiles ? ', ' + c.handoffFiles + ' of them from handoff protocols (an entry, the files it resumes from, standing rules)' : '')] : []),
+    d.board ? 'Board: ' + c.workstreams + ' workstreams, ' + c.tracks + ' tracks, ' + c.openTasks + ' open tasks, ' + c.questions + ' answered questions, ' + c.decisions + ' decisions, '
+      + c.knowledge + ' knowledge records, ' + c.rules + ' rules in force, ' + c.imported + ' records from an earlier import'
+      + (d.board.errors.length ? '; reads that failed: ' + d.board.errors.join('; ') : '') : 'Board: not read',
+    ...(c.map ? ['Map: ' + (c.mapLast ? 'the last run ' + String(c.mapLast.at).slice(0, 10) + '; ' : 'no run yet; ')
+      + (Object.entries(c.map).map(([k, n]) => n + ' ' + k).join(', ') || 'nothing mapped') + '; read only what facts.json marks changed, new or removed'] : []),
+    'Reads: ' + c.filesOpened + ' files opened, ' + c.gitSpawns + ' git spawns, ' + (c.ms / 1000).toFixed(1) + ' s',
+    'Facts: ' + d.factsFile + ' (' + kb(d.sizes.facts) + ')' + (d.boardFile ? '; the board\'s rulings and knowledge: ' + d.boardFile + ' (' + kb(d.sizes.board) + ')' : '')
+      + (d.samplesFile ? '; the folders\' whole samples: ' + d.samplesFile + ' (' + kb(d.sizes.samples) + ')' : '')
+      + (d.rulesFile ? '; the rule files and nested ledgers: ' + d.rulesFile + ' (' + kb(d.sizes.rules) + ')' : ''),
+  ];
+  const after = ['Next: read facts.json, open what it needs, and write ' + d.work + '/proposal.json (items, folders, calls, claude)'];
+  return { before, after };
 }
 
 /* ---- run ---- */
@@ -964,21 +842,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   if (!a[0] || a[0] === '--help') { console.log('node survey.mjs <project dir> [--work <dir>] [--cli <path>] [--no-board] [--manifest <file>]'); process.exit(a[0] ? 0 : 1); }
   if (!existsSync(a[0])) { console.error('survey: no folder ' + a[0]); process.exit(1); }
   const d = survey(a[0], { work, cli: cli || DEFAULT_CLI, board: !noBoard, manifestFile });
-  console.log('Survey of ' + d.project.dir + ' (' + d.project.shared + ')' + (d.project.git ? '' : ', not a git repo: dates are file times'));
-  console.log('Found: ' + Object.entries(d.finds).map(([k, v]) => k + ' ' + v).join(', ') + (d.codeTodos ? '; ' + d.codeTodos + ' TODO comments in code stay in the code' : ''));
-  console.log('Proposed homes: ' + Object.entries(d.homes).map(([k, v]) => (k === '?' ? 'unplaced' : k) + ' ' + v).join(', '));
-  if (d.board) console.log('On the board already: ' + d.board.workstreams.map((w) => w.id + ' ' + w.name).join(', ') + (d.board.workstreams.length ? '; ' : '')
-    + d.board.imported.length + ' records from an earlier import, ' + d.board.knowledge.length + ' knowledge records for the project'
-    + (d.board.errors.length ? '\nBoard reads that failed: ' + d.board.errors.join('; ') : ''));
-  const h = d.history;
-  const st = d.activity;
-  if (st.stateFile) console.log('State file: ' + st.stateFile + (st.stateNamedBy ? ' (' + st.stateNamedBy.join(' and ') + ' name' + (st.stateNamedBy.length === 1 ? 's' : '') + ' it)' : ' (no guide names one: picked by its history; include the right one if it is wrong)'));
-  if (h) console.log('Git history: the newest ' + h.read + ' of ' + h.total + ' commits (cap ' + h.cap + '), subjects and file paths only: ' + h.rulings + ' rulings in commit messages, '
-    + h.deleted + ' deleted planning files, ' + h.reverts + ' reverts, ' + h.branches + ' branches left unmerged, the arc over ' + h.months + ' months');
-  if (d.already) console.log('Left out as done by an earlier run: ' + d.already + ' rows');
-  for (const w of d.warnings) console.log('Warning: ' + w);
-  const calls = d.rows.filter((r) => r.call).length;
-  if (calls) console.log('Calls the survey could not settle: ' + calls + ' rows, first on the page');
-  if (d.unplaced.length) console.log('Unplaced (place them or ask): ' + d.unplaced.join(', '));
-  console.log('rows.json: ' + d.work + '/rows.json');
+  console.log('Survey of ' + d.project.dir + ' (' + d.project.shared + ')');
+  const lines = surveyLines(d);
+  for (const l of [...lines.before, ...lines.after]) console.log(l);
 }

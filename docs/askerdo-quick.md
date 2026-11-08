@@ -51,7 +51,7 @@ node ~/.claude/askerdo/cli.mjs <verb> [args] --json
   asking PC's name. A question belongs to the session holding its
   track, so the session that resumes the track owns it.
 - **Rulings:** reopening an answered question takes `revisits:
-  ["Q512"]` and a `reversal` and is told alone, in a reply of its own;
+  ["Q512"]` and a `reversal`, and may share a reply with other questions;
   one that only mentions it takes `cites: ["Q498"]`. An answered
   label bare in the free text without either is refused; an old
   queue's question is named by its title, and a label inside a file
@@ -101,12 +101,26 @@ prints nothing, write nothing, never "no open questions".
 - **Found work names its place.** A task you file mid-arc goes where it
   belongs, judged from what the work is and what it blocks: this track,
   another track, before or after the release, or unplaced with the reason
-  it waits on no track. `task create --track TR-4 --before T-20` (or
+  no plan reaches it. `task create --track TR-4 --before T-20` (or
   `--after T-n`), or `--unplaced "why"`; a filing with neither is refused
   and names the board's hint, the open track whose labels, files or words
   it shares, as one input beside your judgment, never a default.
-  `track capture` into the inbox takes `--unplaced` too. `task edit T-21
+  `track capture` into the inbox takes `--unplaced` too, and every inbox
+  filing, from a session or not, names its `--wake` (below). `task edit T-21
   --track TR-5 --before T-30` (or `--unplaced "why"`) moves one later.
+- **Work for later goes on a parked track**, never the inbox: `track new
+  --workstream WS-3 --name "..." --goal "..."`, then `track park TR-n
+  --reason "..." --unpark-when "task-completes T-13"`, then place the task
+  there. An unplaced reason that says no track carries the work is refused
+  with those commands. Every inbox filing names its wake, or the board
+  refuses it with both ways out: `--wake "track-ends TR-5"`,
+  `"task-completes T-13"`, `"question-answered Q60"` or a date
+  `2026-12-01` still to come (a fired one is refused), on `task create`,
+  `task edit`, `track capture` and `track finish|drop --leftovers inbox`;
+  one with none stored is due 14 days after it entered the inbox. Once
+  its event ends or its date comes it is due: `task edit T-21 --wake ...`
+  wakes it again, and the third wake in one inbox stay goes to the user
+  as a question instead (place it, keep it with a new wake, or drop it).
   `track found TR-4` (`--since handoff`) lists what the arc filed, each
   with where it went and the command that moves it; the handoff, the
   kickoff and a question gating a release task (named Release..., or
@@ -114,12 +128,19 @@ prints nothing, write nothing, never "no open questions".
 - **A ruling the user makes in chat** is recorded the same turn: the mod's
   `decide` tool, else `decide --session <own-id> --json < decision.json`
   (`title`, `words` (theirs, quoted), what it governs: `tasks`, `files`,
-  `commands`; `supersedes` a K-n); `decisions --task T-13` (`--track`,
+  `commands`; `supersedes` a K-n; `question`, the Q-n it answers: words
+  carrying `167a` or `Q167 a` record the answer, else the result says it
+  is still open); `decisions --task T-13` (`--track`,
   `--workstream`, `--since`) lists the ones in force.
 - **Changing one once used:** `knowledge amend K-7 --body "..."` appends a
   dated clarification and keeps the number; `supersede` is for a change of mind.
-- **In place only while unused:** `knowledge edit K-7` (and `task edit T-13
-  --intent "..."` before its work starts) is refused once another session read it.
+- **In place only while unused:** `knowledge edit K-7 --name` or `--body` (and
+  `task edit T-13 --intent "..."` before its work starts) is refused once another
+  session read it; a record's refs, projects and files change at any time.
+- **A fact about one area of the code** names its files: `knowledge new --type
+  gotcha --title "..." --file 'src/db/**'` (repeatable; `knowledge edit K-7
+  --add-file` or `--remove-file` at any time). A session editing a matching
+  file is pointed at it, once.
 - **Override, the user's press:** `override request K-7 --kind fix|withdraw|scrub
   --reason "..." --summary "..." --session <own-id>`, only for a bug's text, a
   ruling never made or a secret; never wording, scope or a change of mind. A
@@ -167,8 +188,11 @@ percent window, and before anything else past 40. Elsewhere:
   a name matching an open task there is that task); a
   handoff's steps left go in its `leftovers`, the same list, never as a
   Next list in the state; each leftover names its `runBy` (`orchestrator`,
-  `fork`, `agent:opus`, `agent:sonnet`), which the kickoff prints, and
-  `task edit T-14 --run-by agent:opus` changes it. `edge add T-14 T-13 --reason "..."` (T-14
+  `fork`, `agent:<model>`), which the kickoff prints, and
+  `task edit T-14 --run-by orchestrator` changes it. A leftover for later
+  work names `newTrack` (a name) and `unparkWhen` (`"task-completes 2"`
+  may name a leftover by its number): the write makes that track in the
+  workstream and parks it until the event. `edge add T-14 T-13 --reason "..."` (T-14
   waits on T-13); `track reorder T-14 --before T-13 --reason "..."` (or
   `--after`, `--position N`) moves a task in its track's order. A
   handoff's result and the kickoff name the open tasks nothing waits on
@@ -184,9 +208,14 @@ percent window, and before anything else past 40. Elsewhere:
   `review.depth` `full` a done review reopens when work it read changes,
   and `track finish` waits for a review (`--waive "<reason>"`).
 - **Inbox:** the kickoff lists every open task on no track in the
-  project's open workstreams; put each on a track (`track capture
-  --track TR-4 --task T-20`), move it (`task edit T-20 --workstream
-  WS-5`), or ask the user.
+  project's open workstreams, each with its wake; put each on a track
+  (`track capture --track TR-4 --task T-20`), move it (`task edit T-20
+  --workstream WS-5`), give it a new wake (`task edit T-20 --wake ...`),
+  or ask the user. A due one of any workstream in the project leads every
+  kickoff in its own "Due for a home" line. At a track finish, drop or
+  handoff write, a due inbox task of the closing track's workstream is
+  placed or woken again by the turn's end; naming it in the reply settles
+  one not yet due, another workstream's, or one the user is asked about.
 - **Upkeep:** `upkeep --dry-run` lists what automatic upkeep would
   unpark, close, set back to open and put on the band; `upkeep on`.
 - **Speed:** `timings` prints p50 and p95 per verb from this PC's local

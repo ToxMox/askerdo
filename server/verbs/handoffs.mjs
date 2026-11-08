@@ -8,7 +8,7 @@ import { actorOf, clockOf, isFullStamp, kebab, logVerb, mintKey, pcOfCall, putHa
 import { TrackRefusal, loadRecord, recordOf, trackGraph } from './graph.mjs';
 import { resolveRecord } from './labels.mjs';
 import {
-  CHAIN_NO, NEWEST_FIRST, acquireLease, chainOf, holderPlain, isStalled, layOut, noHandoff, openLeaves, parkTrack, projectInbox, quietSince, releaseLease, splinter, stateOf, takeOver, unparkOf, MOVES,
+  CHAIN_NO, NEWEST_FIRST, acquireLease, chainOf, holderPlain, isStalled, layOut, newTrack as startTrack, noHandoff, openLeaves, parkTrack, projectInbox, quietSince, releaseLease, splinter, stateOf, takeOver, unparkOf, MOVES,
 } from './tracks.mjs';
 import { CLI, growthLines, kickoffInput, kickoffText, workstreamHead } from './kickoff.mjs';
 import { foundWork } from './found.mjs';
@@ -188,10 +188,11 @@ const isRefusal = (e) => !!e && (e.name === 'TrackRefusal' || (e.constructor && 
 
 /* each leftover laid out on its own inside the handoff's transaction, its after
    numbers turned into the ids laid out before it, so a refusal names its step.
-   each names who runs it, which its task carries. */
+   each names who runs it, which its task carries. One naming newTrack goes on a new track of that name, parked until its unparkWhen. */
 function layLeftovers(db, track, steps, session, actor) {
   if (!Array.isArray(steps)) throw new TrackRefusal('leftovers is a list of steps: { name, task, after, before, runBy }');
   const out = [];
+  const fresh = new Map();
   steps.forEach((s, i) => {
     const at = stepAt('leftovers', i, s) + ': ';
     if (!s || typeof s !== 'object' || !runByOf(s.runBy)) throw new TrackRefusal(at + 'runBy names who runs it: ' + RUN_BY_HINT);
@@ -203,9 +204,11 @@ function layLeftovers(db, track, steps, session, actor) {
         throw new TrackRefusal(at + 'after names ' + JSON.stringify(a) + ': a T-n id, or the number of an earlier step' + (i ? ' (1 to ' + i + ')' : ', and this is the first'));
       });
     }
-    const one = after ? { ...s, after } : s;
+    const { newTrack: named, unparkWhen, ...one } = after ? { ...s, after } : s;
+    const on = named === undefined ? track : laterTrack(db, track, fresh, named, unparkWhen, at, actor);
     try {
-      out.push(layOut(db, { track: track.key, steps: [one], session }, actor).steps[0]);
+      const laid = layOut(db, { track: on.key, steps: [one], session }, actor).steps[0];
+      out.push(on === track ? laid : { ...laid, track: on.fields.id });
     } catch (e) {
       if (!isRefusal(e)) throw e;
       /* the layout names its one step as step 1; the leftover's own number stands in */
@@ -213,7 +216,38 @@ function layLeftovers(db, track, steps, session, actor) {
       throw new TrackRefusal(at + (m.startsWith(inner) ? m.slice(inner.length) : m.replace(/^step 1\b\.?\s*/, '')), e.data);
     }
   });
-  return out;
+  /* parked once every step is laid, so "task-completes 2" can name a leftover by its number */
+  const parked = [...fresh.values()].map((f) => {
+    const n = /^\s*task-completes\s+(\d+)\s*$/i.exec(f.when);
+    if (n && !(Number(n[1]) >= 1 && Number(n[1]) <= out.length)) throw new TrackRefusal(f.at + 'unparkWhen names leftover ' + n[1] + ', and there are ' + out.length);
+    const when = n ? 'task-completes ' + out[Number(n[1]) - 1].id : f.when;
+    let r;
+    try {
+      r = parkTrack(db, { track: f.rec.key, reason: 'work for later, laid out by the handoff on ' + track.fields.id, unparkWhen: when }, actor);
+    } catch (e) {
+      if (!isRefusal(e)) throw e;
+      throw new TrackRefusal(f.at + e.message, e.data);
+    }
+    return { id: r.id, name: f.rec.fields.name, unpark: r.unpark };
+  });
+  return { steps: out, parked };
+}
+
+/* The new track a leftover names, made once per name in the workstream of the track handed off. */
+function laterTrack(db, track, fresh, named, when, at, actor) {
+  if (typeof named !== 'string' || !named.trim() || /[\r\n]/.test(named)) throw new TrackRefusal(at + 'newTrack is the new track\'s name, one line');
+  const k = named.replace(/\s+/g, ' ').trim().toLowerCase();
+  const had = fresh.get(k);
+  const said = typeof when === 'string' && when.trim() ? when.trim() : null;
+  if (had) {
+    if (said && said !== had.when) throw new TrackRefusal(at + 'unparkWhen differs from the one ' + had.rec.fields.id + ' takes (' + had.when + ')');
+    return had.rec;
+  }
+  if (!said) throw new TrackRefusal(at + 'a new parked track needs its unparkWhen: "track-ends TR-n", "task-completes T-n" (or a leftover\'s number) or "question-answered Q-n"');
+  const made = startTrack(db, { name: named.replace(/\s+/g, ' ').trim(), workstream: track.fields.workstream }, actor);
+  const rec = loadRecord(db, made.key);
+  fresh.set(k, { rec, when: said, at });
+  return rec;
 }
 
 /* writeHandoff(db, { track, focus, state, whereWeWere, rulings, waitingOnUser,
@@ -239,7 +273,8 @@ function writeOn(db, input, actor) {
     const pc = pcOfCall(input, c) || '';
     /* the steps left go on the track before the handoff lands; the state carries the thinking */
     const none = input.leftovers === undefined || input.leftovers === null || (Array.isArray(input.leftovers) && !input.leftovers.length);
-    const laid = none ? null : layLeftovers(db, rec, input.leftovers, session, actor);
+    const lay = none ? null : layLeftovers(db, rec, input.leftovers, session, actor);
+    const laid = lay ? lay.steps : null;
     const chain = chainRows(db, rec.key);
     const m = chain.reduce((top, h) => Math.max(top, ending(h)), 0) + 1;
     const rulings = carryRulings(chain, input.rulings);
@@ -287,14 +322,14 @@ function writeOn(db, input, actor) {
     const ws = after.fields.workstream ? loadRecord(db, after.fields.workstream) : null;
     return {
       ...shown, superseded, released: Boolean(mine), trackState: stateOf(db, after), growthLines: growthLines(db, shown.growth),
-      ...(laid ? { laidOut: laid } : {}),
+      ...(laid ? { laidOut: laid } : {}), ...(lay && lay.parked.length ? { parkedTracks: lay.parked } : {}),
       /* read after the leftovers are laid, so the reply confirms or wires each */
       leaves: openLeaves(db, rec.key),
       /* the review readout, worded by the PC (reviewLine) */
       review: reviewHead(trackReview(db, rec.key)),
       workstream: workstreamHead(ws),
       /* the inbox the kickoff listed, so the reply places, carries or asks about each */
-      inbox: projectInbox(db, after.fields.workstream),
+      inbox: projectInbox(db, after.fields.workstream, c.day),
       resume: '/askerdo resume ' + rec.fields.id,
       next: 'Hand the user this line in a copy block: /askerdo resume ' + rec.fields.id,
       ...(warning ? { warning } : {}), ...(junction && junction.track ? { junction } : {}),

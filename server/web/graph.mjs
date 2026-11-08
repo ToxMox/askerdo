@@ -1,8 +1,9 @@
 /* The drawn graph's inputs from the track views, pure: the web reads its
    look from the database (data.mjs graphFrom), the mod from the views alone (mod-core
    homeGraph). One reading, so the web and the pane draw the same picture. */
+import { endedOf } from './draw.mjs';
 
-/* layout.mjs keptJunctions, the same rule: the pure files import nothing (mod-core test). */
+/* The finished junctions to keep drawn: each one a side line with open tasks still leaves from. */
 function keptJunctions(list) {
   const open = new Set(), ids = new Set(), out = new Map();
   for (const tv of list) { ids.add(tv.id); for (const t of tv.tasks || []) open.add(t.id); }
@@ -14,8 +15,7 @@ function keptJunctions(list) {
   return [...out.values()];
 }
 
-/* a track's last completed review stays drawn, its diamond holding what it
-   covered; the same rule as layout.mjs keptReviews (the pure files import nothing). */
+/* a track's last completed review stays drawn, holding what it covered. */
 export function keptReviews(list) {
   const out = new Map();
   for (const tv of list) {
@@ -63,7 +63,7 @@ export const viewNameOf = (view) => (id) => {
    since(tv), optional, when it entered waiting (its live handoff), else `last` stands in.
    Optional: wsOf(id) a far dependency's workstream when it is another, neededBy(t) the open
    tasks outside the views that wait on t, each { id, track, ws }. keepReview false: no completed
-   review stays drawn (Home's map), as layout.mjs layoutInput. */
+   review stays drawn (Home's picture). */
 export function graphOf(views, now, look, { keepReview = true } = {}) {
   const trackOf = new Map();
   for (const tv of views) for (const t of tv.tasks) trackOf.set(t.id, tv.id);
@@ -88,7 +88,7 @@ export function graphOf(views, now, look, { keepReview = true } = {}) {
     });
     const T = {
       state: tv.state, stalled: tv.stalled, noHandoff: tv.noHandoff, days: moved.days,
-      open: tv.tasks.length, running: 0, left: 0, ready: 0, toGo: tv.critical.length, path: tv.critical.path,
+      open: tv.tasks.length, running: 0, agents: 0, landing: 0, stopped: 0, left: 0, ready: 0, toGo: tv.critical.length, path: tv.critical.path,
     };
     D.tracks[tv.id] = T;
     const deps = {};
@@ -112,12 +112,15 @@ export function graphOf(views, now, look, { keepReview = true } = {}) {
       /* what waits on it from outside the picture: drawn waits have their connector */
       const needed = look.neededBy ? look.neededBy(t).filter((n) => !trackOf.has(n.id)) : [];
       D.tasks[t.id] = { kind, waits, gates: gs, needed };
-      if (kind === 'now') T.running += 1;
+      /* a station whose agent ended draws as now and counts apart from running */
+      if (kind === 'now') T[endedOf(t) === 'stopped' ? 'stopped' : endedOf(t) ? 'landing' : 'running'] += 1;
+      /* the Overview's agents running: a session's own task in hand is running but no agent */
+      if (kind === 'now' && t.agent && !endedOf(t)) T.agents += 1;
       if (kind === 'left') T.left += 1;
       if (kind === 'ready') T.ready += 1;
       g.tasks.push({
         id: t.id, key: t.key, track: tv.id, pos: t.position ?? i + 1, status: t.status, title: shortTitle(t.name), full: t.name,
-        promotedTo: t.pointer || undefined, agent: t.agent || null, session: t.session || null,
+        promotedTo: t.pointer || undefined, agent: t.agent || null, ...(t.agent && t.agentEnd ? { agentEnd: t.agentEnd } : {}), session: t.session || null,
         checklist: t.progress && !t.pointer ? { done: t.progress.done, total: t.progress.total } : null,
         progress: t.pointer && t.progress ? { done: t.progress.done, total: t.progress.total } : null,
         url: t.url || null, ...(t.review ? { review: true, reviewScope: t.reviewScope || 'track', ...(t.reopened ? { reopened: true } : {}) } : {}),

@@ -3,16 +3,16 @@
    track per session), junctions, promote and fold back. A track's state is
    derived when read, never stored: only park, finish, drop and fold are written. */
 import { tx } from '../db.mjs';
-import { KEY_ORDERS, actorOf, addNote, clockOf, getMeta, kebab, labelOf, logVerb, mintKey, pcOfCall, putHandoff, putRecord, sessionWords } from '../records.mjs';
-import { pickLabel, refsFor, strList } from './labels.mjs';
+import { KEY_ORDERS, actorOf, addNote, clockOf, dayOf, getMeta, kebab, labelOf, logVerb, mintKey, pcOfCall, putHandoff, putRecord, sessionWords } from '../records.mjs';
+import { namedLabel, pickLabel, refsFor, strList } from './labels.mjs';
 import { sharesProject, wakeLinked } from './questions.mjs';
 import { createRecord, editRecord } from './work.mjs';
-import { RUN_BY_HINT, runByOf, stepAt } from '../handoff-text.mjs';
+import { CLI, RUN_BY_HINT, inboxRefusal, runByOf, stepAt } from '../handoff-text.mjs';
 import { holderWords } from '../web/feed.mjs';
 import { foundSummary, isReview, placeRefusal, suggestTrack } from './found.mjs';
 import { afterTask, finishGate, reviewHead, trackReview } from './coverage.mjs';
-import { countsText } from '../web/draw.mjs';
-import { BY as UPKEEP, afterLeaseDrop, unparkWhenOf, unparkWords, whenText } from './upkeep.mjs';
+import { countsText, nowCounts } from '../web/draw.mjs';
+import { BY as UPKEEP, WAKE_ASK, afterLeaseDrop, settleWakeAsk, thirdWake, unparkWhenOf, unparkWords, wakeOf, wakeState, wakeWords, whenText } from './upkeep.mjs';
 import {
   ENDED_TASK, TASK_KEYS, TrackRefusal, addEdge, bumpVersion, checkVersion, headOf, itemsOf, keyOf,
   loadRecord, logLine, needText, pathBetween, readTx, recordOf, sideOf, trackGraph, writeFront,
@@ -82,7 +82,7 @@ export function stateOf(db, rec) {
    keeps each handoff's created as it was, out of order or not. */
 export const CHAIN_NO = "CAST(substr(label, instr(label, '.') + 1) AS INTEGER)";
 export const NEWEST_FIRST = CHAIN_NO + ' DESC, id DESC';
-const lastHandoff = (db, key) => db.stmt('SELECT status FROM handoffs WHERE track = ? ORDER BY ' + NEWEST_FIRST + ' LIMIT 1').get(key);
+const lastHandoff = (db, key) => db.stmt('SELECT status, label FROM handoffs WHERE track = ? ORDER BY ' + NEWEST_FIRST + ' LIMIT 1').get(key);
 
 /* Waiting with no live handoff (held, then let go): views and kickoff say "no handoff yet". */
 export function noHandoff(db, key, state) {
@@ -328,10 +328,15 @@ export function putOnTrack(db, task, trackRec_, c, note) {
   const changes = { track: [was ? was.track : null, trackRec_.key] };
   /* a task takes the workstream of the track it lands on, and a placed task is unplaced no more */
   const ws = trackRec_.fields.workstream;
-  const front = { ...(ws && task.fields.workstream !== ws ? { workstream: ws } : {}), ...(task.fields.unplaced !== undefined ? { unplaced: undefined } : {}) };
+  const front = { ...(ws && task.fields.workstream !== ws ? { workstream: ws } : {}), ...(task.fields.unplaced !== undefined ? { unplaced: undefined } : {}),
+    ...(task.fields.wake !== undefined ? { wake: undefined } : {}) };
+  const woke = task.fields.wake;
   if (Object.keys(front).length) Object.assign(changes, writeFront(db, task, { ...front, updated: c.at }, TASK_KEYS));
+  if (changes.wake) changes.wake = [wakeWords(db, woke), null];
   logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes, by: c.by, pc: c.pc, note });
   dropImported(db, task, trackRec_, c);
+  /* placed, the user's open question about its home is moot */
+  settleWakeAsk(db, task.key, task.fields.id + ' went on ' + trackRec_.fields.id, c);
   return true;
 }
 
@@ -358,27 +363,58 @@ const idList = (v, what) => {
   return list;
 };
 
+/* work that starts later goes on a parked track that opens on its own event,
+   so an unplaced reason saying no track carries it is refused with the commands that make one. */
+const NO_TRACK = [
+  /\bno (?:\w+ )?(?:track|line of work)s? (?:yet|carr(?:y|ies)|holds?|takes?|covers?|has|have|exists?|is open|for (?:it|this|them)|to (?:put|carry|hold|take))\b/i,
+  /\bnot (?:yet )?on (?:a|any) (?:track|line of work)\b/i, /\bwithout (?:a|any) track\b/i,
+  /\bneeds? (?:a|its own|a new|a separate) (?:new )?track\b/i, /\bwait(?:s|ing)? (?:for|on) (?:a|its|a new|no) (?:new )?track\b/i, /\bno home\b/i,
+];
+export const saysNoTrack = (why) => NO_TRACK.some((re) => re.test(String(why || '')));
+/* an inbox filing names its wake, whoever files it; what it lacks is the one
+   refusal (handoff-text.mjs inboxRefusal), null when it is whole. `at`: via, task, track, workstream. */
+export function inboxLacks(why, wake, at = {}) {
+  const said = typeof why === 'string' ? why.replace(/\s+/g, ' ').trim() : '';
+  if (said && saysNoTrack(said)) {
+    return inboxRefusal({ ...at, cause: 'unplaced "' + said + '" says no track carries this work, and work that starts later goes on a parked track that opens on its own event' });
+  }
+  if (wake === undefined || wake === null || wake === '') return inboxRefusal({ ...at, cause: (at.task || 'this task') + ' goes to the inbox with no wake' });
+  return null;
+}
+
 /* a task's place as its filer judged it: a track, with the steps it comes before or
-   after laid as track layout lays them, or unplaced with the reason the found list shows. */
+   after laid as track layout lays them, or unplaced with the reason the found list shows.
+   an unplaced task carries a wake (wakeOf); a wake alone wakes an inbox task again. */
 export function placeTask(db, taskKey, place, actor) {
   const c = ctx(actor);
   const before = idList(place.before, 'before');
   const after = idList(place.after, 'after');
   const hasWhy = place.unplaced !== undefined && place.unplaced !== null;
-  if (place.track && hasWhy) throw new TrackRefusal('a task goes on a track or stays unplaced, not both');
+  const hasWake = place.wake !== undefined && place.wake !== null && place.wake !== '';
+  if (place.track && (hasWhy || hasWake)) throw new TrackRefusal('a task goes on a track or stays unplaced with its wake, not both');
   let task = loadRecord(db, taskKey);
   const row = () => db.stmt('SELECT track FROM track_items WHERE task = ?').get(taskKey);
-  if (hasWhy) {
+  if (hasWhy || hasWake) {
     if (before.length || after.length) throw new TrackRefusal('before and after place a task on a track; an unplaced one has no steps around it');
-    const why = needText(place.unplaced, 'unplaced', 'reason');
     const was = row();
+    if (!hasWhy && was) throw new TrackRefusal(task.fields.id + ' is on ' + labelOf(db, was.track) + ': a wake is for a task on no track, so name --unplaced "<why>" with it');
+    const why = hasWhy ? needText(place.unplaced, 'unplaced', 'reason') : task.fields.unplaced;
+    const no = inboxLacks(hasWhy ? why : '', place.wake, { via: 'edit', task: task.fields.id, workstream: task.fields.workstream ? labelOf(db, task.fields.workstream) : null });
+    if (no) throw new TrackRefusal(no);
+    const wake = wakeOf(db, place.wake, c.day, task.fields.id);
+    /* a third wake this inbox stay is stored as none: the user is asked where it goes */
+    const held = was ? null : thirdWake(db, task, c, why);
+    if (held) return { ...held, wake: wakeWords(db, task.fields.wake) || null };
     if (was) {
       db.stmt('DELETE FROM track_items WHERE task = ?').run(taskKey);
       bumpVersion(db, was.track);
     }
-    const diff = writeFront(db, task, { unplaced: why, updated: c.at }, TASK_KEYS);
-    logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: { ...diff, ...(was ? { track: [was.track, null] } : {}) }, by: c.by, pc: c.pc, note: 'unplaced: ' + why });
-    return { unplaced: why };
+    const old = task.fields.wake;
+    const diff = writeFront(db, task, { ...(hasWhy ? { unplaced: why } : {}), wake, updated: c.at }, TASK_KEYS);
+    if (diff.wake) diff.wake = [old ? wakeWords(db, old) : null, wakeWords(db, wake)];
+    const note = (why ? 'unplaced: ' + why + '; ' : '') + 'wakes ' + wakeWords(db, wake);
+    logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: { ...diff, ...(was ? { track: [was.track, null] } : {}) }, by: c.by, pc: c.pc, note });
+    return { ...(why ? { unplaced: why } : {}), wake: wakeWords(db, wake) };
   }
   if (place.track) putOnTrack(db, task, openTrack(db, place.track), c);
   const on = row();
@@ -550,14 +586,20 @@ export function capture(db, input, actor) {
     const c = ctx(actor);
     const track = input.track ? openTrack(db, input.track) : null;
     const why = typeof input.unplaced === 'string' && input.unplaced.trim() ? input.unplaced : null;
-    if (track && why) throw new TrackRefusal('a capture goes on a track or stays unplaced, not both');
+    const wake = input.wake === undefined || input.wake === null || input.wake === '' ? undefined : input.wake;
+    if (track && (why || wake !== undefined)) throw new TrackRefusal('a capture goes on a track or stays unplaced with its wake, not both');
+    const at = { via: input.task ? 'edit' : 'capture', task: input.task || null, workstream: input.workstream || null };
     if (!track && !why && c.session) {
       const ws = input.workstream ? workstreamOf(db, input.workstream) : null;
-      throw new TrackRefusal(placeRefusal(input.task ? null : suggestTrack(db, { ...input, workstream: ws }, c.session)));
+      throw new TrackRefusal(placeRefusal(input.task ? null : suggestTrack(db, { ...input, workstream: ws }, c.session), at));
     }
+    const no = track ? null : inboxLacks(why, wake, at);
+    if (no) throw new TrackRefusal(no);
+    /* a new capture's fired wake is refused before the task is made, so the way out names no id */
+    if (!track && !input.task) wakeOf(db, wake, c.day, null, 'capture');
     const r = captureOn(db, track, input, actor, c);
-    if (why) placeTask(db, r.key, { unplaced: why }, actor);
-    return why ? { ...r, unplaced: why.replace(/\s+/g, ' ').trim() } : r;
+    const placed = track ? null : placeTask(db, r.key, { ...(why ? { unplaced: why } : {}), wake }, actor);
+    return placed ? { ...r, ...placed } : r;
   });
 }
 
@@ -734,25 +776,34 @@ export function parkTrack(db, input, actor) {
   });
 }
 
-/* Open tasks stop a close unless they go to the inbox or are dropped with it. */
-function settleLeftovers(db, rec, leftovers, c, why) {
+/* Open tasks stop a close unless they go to the inbox with a wake or are dropped with it. */
+function settleLeftovers(db, rec, leftovers, c, why, status, wakeRaw) {
   const g = trackGraph(db, rec.key);
   if (!g.tasks.length) return [];
   if (leftovers !== 'inbox' && leftovers !== 'drop') {
-    throw new TrackRefusal(rec.fields.id + ' still has ' + g.tasks.map((t) => t.id).join(', ') + ' open: finish them, or pass leftovers inbox or drop',
+    throw new TrackRefusal(rec.fields.id + ' still has ' + g.tasks.map((t) => t.id).join(', ') + ' open: finish them, or pass leftovers inbox (with a wake) or drop',
       { open: g.tasks.map((t) => t.id) });
   }
+  const at = { via: status === 'dropped' ? 'drop' : 'finish', track: rec.fields.id, workstream: rec.fields.workstream ? labelOf(db, rec.fields.workstream) : null };
+  if (leftovers === 'inbox' && (wakeRaw === undefined || wakeRaw === null || wakeRaw === '')) {
+    throw new TrackRefusal(inboxRefusal({ ...at, cause: g.tasks.map((t) => t.id).join(', ') + (g.tasks.length === 1 ? ' goes' : ' go') + ' to the inbox with no wake' }));
+  }
+  const wake = leftovers === 'inbox' ? wakeOf(db, wakeRaw, c.day, null, at.via, rec.fields.id) : undefined;
   /* a promoted task's done follows its side track, so a close never drops it under one */
   const promoted = leftovers === 'drop' ? g.tasks.map((t) => ({ id: t.id, side: sideOf(db, t.key) })).filter((p) => p.side) : [];
   if (promoted.length) {
     throw new TrackRefusal(rec.fields.id + ' cannot drop ' + promoted.map((p) => p.id + ' (promoted to ' + p.side.label + ', still ' + p.side.status + ')').join(', ')
-      + ': finish, drop or fold the side track first, or pass leftovers inbox', { promoted: promoted.map((p) => ({ task: p.id, track: p.side.label })) });
+      + ': finish, drop or fold the side track first, or pass leftovers inbox with a wake', { promoted: promoted.map((p) => ({ task: p.id, track: p.side.label })) });
   }
   for (const t of g.tasks) {
     const task = loadRecord(db, t.key);
     if (leftovers === 'inbox') {
       db.stmt('DELETE FROM track_items WHERE task = ?').run(t.key);
-      logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: { track: [rec.key, null] }, by: c.by, pc: c.pc, note: 'to the inbox as ' + rec.fields.id + ' closed' });
+      const old = task.fields.wake;
+      const diff = writeFront(db, task, { wake, updated: c.at }, TASK_KEYS);
+      if (diff.wake) diff.wake = [old ? wakeWords(db, old) : null, wakeWords(db, wake)];
+      logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: { track: [rec.key, null], ...diff }, by: c.by, pc: c.pc,
+        note: 'to the inbox as ' + rec.fields.id + ' closed; wakes ' + wakeWords(db, wake) });
     } else {
       const diff = writeFront(db, task, { status: 'dropped', updated: c.at, closed: c.at, inHand: undefined, inHandSince: undefined }, TASK_KEYS);
       logLine(db, { at: c.at, verb: 'drop', kind: 'task', rec: headOf(task), changes: diff, by: c.by, pc: c.pc, note: why });
@@ -769,7 +820,7 @@ function closeTrack(db, input, actor, status) {
   const why = status === 'dropped' ? needText(input.reason, 'dropping a track') : input.outcome ? needText(input.outcome, 'an outcome') : undefined;
   /* at full depth a finish waits for a review of its finished code, or a waiver */
   const waived = status === 'done' ? finishGate(db, rec, input, c) : null;
-  const left = settleLeftovers(db, rec, input.leftovers, c, why || rec.fields.id + ' finished');
+  const left = settleLeftovers(db, rec, input.leftovers, c, why || rec.fields.id + ' finished', status, input.wake);
   const held = leaseOf(db, rec.key);
   if (held) dropLease(db, held, c, status);
   setStatus(db, rec, status, why ? { outcome: why } : {}, c, status === 'dropped' ? 'drop' : 'close', [why, waived].filter(Boolean).join('; ') || undefined);
@@ -787,7 +838,8 @@ function closeTrack(db, input, actor, status) {
     if (status === 'dropped') addNote(db, pointer.key, { at: c.at, actor: c.by, body: rec.fields.id + ' was dropped: ' + why + '. ' + pointer.fields.id + ' is a plain task again.' });
   }
   /* the inbox the kickoff listed, so the reply places, carries or asks about each */
-  return { id: rec.fields.id, key: rec.key, state: status, leftovers: left, junction: junctionBack(db, rec), inbox: projectInbox(db, rec.fields.workstream), ...(waived ? { waived } : {}) };
+  return { id: rec.fields.id, key: rec.key, state: status, leftovers: left, junction: junctionBack(db, rec), inbox: projectInbox(db, rec.fields.workstream, c.day),
+    workstream: rec.fields.workstream ? labelOf(db, rec.fields.workstream) : null, ...(waived ? { waived } : {}) };
 }
 
 export const finishTrack = (db, input, actor) => tx(db, () => closeTrack(db, input || {}, actor, 'done'));
@@ -943,14 +995,16 @@ function summarize(db, input, opts) {
   const g = trackGraph(db, rec.key);
   const stale = staleOf(db, rec.key, g.now, opts);
   const now = g.now.filter((n) => !stale.includes(n));
-  const running = now.length;
+  /* a task whose agent ended stays in now, counted apart from running */
+  const c = nowCounts(now);
+  const running = c.running;
   const summary = {
     id: rec.fields.id, key: rec.key, name: rec.fields.name, goal: rec.fields.goal || null, state, stalled: isStalled(db, rec, state, nowMsOf(opts)),
     quietSince: state === 'active' ? quietSince(db, rec.key, nowMsOf(opts)) : null,
     noHandoff: noHandoff(db, rec.key, state), parkReason: rec.fields.parkReason || null, ...unparkOf(db, rec, state), chain: chainOf(db, rec.key).text, now,
     stale: stale.map((n) => ({ id: n.id, key: n.key, name: n.name })),
     running, ready: g.ready.length, toGo: g.critical.length,
-    text: countsText({ open: g.tasks.length, running, left: stale.length, ready: g.ready.length, chain: g.critical.length }),
+    text: countsText({ ...c, open: g.tasks.length, left: stale.length, ready: g.ready.length, chain: g.critical.length }),
   };
   return { summary, g };
 }
@@ -963,7 +1017,7 @@ export function trackView(db, input, opts) {
   return readTx(db, () => {
     const { summary: s, g } = summarize(db, input, opts);
     const lease = leaseOf(db, s.key);
-    /* the layout breaks ties by position (server/layout.mjs layoutInput) */
+    /* ties break by the track position */
     const pos = new Map(db.stmt('SELECT task, position FROM track_items WHERE track = ?').all(s.key).map((r) => [r.task, r.position]));
     const r = trackReview(db, s.key);
     /* an open review station says so and what it reads */
@@ -987,17 +1041,41 @@ export function trackView(db, input, opts) {
   });
 }
 
+/* The day a task with no wake stored entered the inbox: its last move off a track or its
+   last unplaced reason, else its birth. */
+function enteredInbox(db, key, created) {
+  const r = db.stmt(`SELECT at FROM activity WHERE record = ? AND (json_type(diff, '$.unplaced[1]') = 'text'
+    OR (json_type(diff, '$.track') = 'array' AND json_type(diff, '$.track[1]') = 'null')) ORDER BY seq DESC LIMIT 1`).get(key);
+  return String((r && r.at) || created || '').slice(0, 10) || null;
+}
+
+/* an inbox row's wake for the lists (draw.mjs wakeText words it): its day, or the record it waits on */
+function inboxWake(db, r, day) {
+  const w = r.wake ? JSON.parse(r.wake) : null;
+  const s = wakeState(db, w, day, w ? null : enteredInbox(db, r.key, r.created));
+  const on = w && w.on ? db.stmt('SELECT label, status FROM records WHERE key = ?').get(w.on) : null;
+  const wake = !w || !w.on ? { date: s.wake } : { kind: w.kind, key: w.on, ...(on ? { id: on.label, named: namedLabel(db, w.on), status: on.status } : { gone: true }) };
+  return { ...r, wake, due: s.due };
+}
+
 /* the open tasks on no track in every open workstream sharing a
-   project with this one, its own included, oldest first, so a task filed in the wrong one shows too. */
-export function projectInbox(db, wsKey) {
+   project with this one, its own included, oldest first, so a task filed in the wrong one shows too.
+   each with its wake and whether it is due, on `day` (today by default). */
+export function projectInbox(db, wsKey, day = dayOf(new Date())) {
   const own = wsKey ? loadRecord(db, wsKey) : null;
   if (!own) return [];
   const out = [];
+  /* the user's open question about a task's home, beside it */
+  const asked = new Map(db.stmt(`SELECT g.value AS task, r.label FROM records r, json_each(r.fields, '$.gates') g WHERE r.kind = 'question' AND r.status IN ('open', 'snoozed')
+    AND EXISTS (SELECT 1 FROM json_each(r.fields, '$.labels') WHERE value = ?)`).all(WAKE_ASK).map((x) => [x.task, x.label]));
   for (const w of db.stmt("SELECT key, label, fields FROM records WHERE kind = 'workstream' AND (status = 'open' OR key = ?) ORDER BY id").all(wsKey)) {
     const f = JSON.parse(w.fields);
     if (w.key !== wsKey && !sharesProject(own.fields, f)) continue;
-    for (const r of db.stmt(`SELECT r.key, r.label, r.title, r.id AS n, json_extract(r.fields, '$.created') AS created FROM records r WHERE ${INBOX}`).all(w.key)) {
-      out.push({ id: r.label, key: r.key, name: r.title, workstream: { id: w.label, name: f.name || '' }, created: r.created || '', n: r.n });
+    for (const r of db.stmt(`SELECT r.key, r.label, r.title, r.id AS n, json_extract(r.fields, '$.created') AS created, json_extract(r.fields, '$.wake') AS wake
+        FROM records r WHERE ${INBOX}`).all(w.key)) {
+      const s = wakeState(db, r.wake ? JSON.parse(r.wake) : null, day, r.wake ? null : enteredInbox(db, r.key, r.created));
+      out.push({ id: r.label, key: r.key, name: r.title, workstream: { id: w.label, name: f.name || '' }, created: r.created || '', n: r.n, wake: s.wake, due: s.due,
+        ...(asked.has(r.key) ? { asked: asked.get(r.key) } : {}) });
     }
   }
   return out.sort((a, b) => (Date.parse(a.created) || 0) - (Date.parse(b.created) || 0) || a.n - b.n)
@@ -1046,6 +1124,8 @@ export function listTracks(db, input, opts) {
         id: rec.fields.id, key: rec.key, name: rec.fields.name, state, stalled: isStalled(db, rec, state, nowMs),
         quietSince: state === 'active' ? quietSince(db, rec.key, nowMs) : null,
         noHandoff: noHandoff(db, rec.key, state), parkReason: rec.fields.parkReason || null, ...unparkOf(db, rec, state),
+        /* the newest handoff's label (TR-n.m): a judgment kept until a track's next handoff watches it */
+        handoff: (lastHandoff(db, rec.key) || {}).label || null,
         labels: rec.fields.labels || [], refs: (rec.fields.refs || []).map((r) => labelOf(db, r)),
       });
     }
@@ -1060,6 +1140,12 @@ export function workstreamView(db, input, opts) {
   return readTx(db, () => {
     const ls = listTracks(db, input, opts);
     const tracks = ls.tracks.map((t) => trackView(db, { track: t.key }, opts));
-    return { workstream: ls.workstream, inbox: ls.inbox, inboxStalled: ls.inboxStalled, tracks };
+    /* the inbox's tasks, oldest first as the board's panel lists them, and the stall setting its words name;
+       each with its wake, the due first */
+    const day = dayOf(new Date(nowMsOf(opts)));
+    const inboxList = db.stmt(`SELECT r.key, r.label AS id, r.title AS name, r.status, r.created, json_extract(r.fields, '$.wake') AS wake
+      FROM records r WHERE ${INBOX} ORDER BY r.created, r.label`).all(workstreamOf(db, input && input.workstream))
+      .map((r) => inboxWake(db, r, day)).sort((a, b) => b.due - a.due);
+    return { workstream: ls.workstream, inbox: ls.inbox, inboxStalled: ls.inboxStalled, inboxList, stallDays: stallDays(db), tracks };
   });
 }

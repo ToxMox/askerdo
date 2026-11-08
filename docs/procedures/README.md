@@ -96,7 +96,7 @@ A bullet list. Each bullet starts with exactly one backticked target, then `: ` 
 | Store record | `` `T-239` ``, `` `Q495` ``, `` `K-12` `` | A link on the card; no staleness. |
 | URL | `` `https://...` `` | A link; no staleness. |
 
-The References list is the authoritative set of paths for staleness. Every repo path that appears in backticks or inside a command in Steps or Verify MUST also appear here; the parser lints Steps and Verify for backticked tokens that contain `/` or end in a file extension and exist in the repo, and reports each one missing from References.
+The References list is the authoritative set of paths for staleness. Every repo path that appears in backticks or inside a command in Steps or Verify MUST also appear here; the parser lints Steps and Verify for backticked tokens that contain `/` or end in a file extension and exist in the repo, and reports each one missing from References, except a path git ignores (a build's output). `askerdo proc scan --check` runs the parse, the lint and the staleness judge on the files of the checkout it runs in, a worktree's branch included, and writes nothing to the board.
 
 ## How the card judges staleness
 

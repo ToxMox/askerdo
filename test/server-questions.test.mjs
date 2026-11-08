@@ -44,7 +44,7 @@ const ids = (rows) => rows.map((e) => e.id);
 
 /* An answer flips status, fills Answer and fans out to subscribers minus the caller,
    told alone. */
-test('a ruling is cited or revisited with a reversal, a reversal is stored blocking and quotes it, and the next question of its minute is flagged beside it', () => {
+test('a ruling is cited or revisited with a reversal, a reversal is stored blocking and quotes it', () => {
   const db = freshBoard();
   const first = q.register(db, payload(), null, at('2026-10-25T12:00:00'));
   /* the registered ask comes back with its tokens numbered, for the card's head */
@@ -79,16 +79,6 @@ test('a ruling is cited or revisited with a reversal, a reversal is stored block
   const [quoted] = rev.reverses;
   assert.deepEqual([quoted.id, quoted.quote, quoted.declined.length], ['Q1', ruling.answer, 1]);
   assert.match(quoted.declined[0], /1a.*every edit touches everything/);
-
-  /* the session's next question within the minute is flagged on both cards, never refused */
-  assert.equal(rev.beside, undefined, 'the first of the minute had nothing beside it');
-  const next = q.register(db, payload({ session: 's-c' }), null, strict('2026-10-25T12:05:30'));
-  assert.deepEqual(next.beside, [rev.id]);
-  const later = at('2026-10-25T12:06:00');
-  assert.deepEqual(q.show(db, rev.id, null, later).beside, [next.id]);
-  assert.deepEqual(q.show(db, next.id, null, later).beside, [rev.id]);
-  const listed = Object.fromEntries(q.list(db, {}, null, later).map((e) => [e.id, e.beside]));
-  assert.deepEqual([listed[rev.id], listed[next.id]], [[next.id], [rev.id]]);
 });
 
 /* --amend replaces the pick and the note and keeps the first answer beneath; an

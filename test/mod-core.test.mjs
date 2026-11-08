@@ -18,8 +18,7 @@ import {
   guardChip, guardOf, guardText, handoffAlert, handoffGate, isStateNoteCall, mainDepthNote, mainOf, marksCrossed, marksFor, parseGuard,
   projectName, readingFrom, rememberKeys, stateNoteFrom, whereNames,
   agentChecks, firstTellingCard, flagLine, flagNote, footerOf, isHubShell, namesBoardId, replyChecks, receiptsOf,
-  closedFinished, handedOn, inboxWaiting, laneNote, latestLane, tasksOfDispatch, homeGraph, callRows, callCard, cardText, agentsModel,
-  aloneInTurn,
+  closedFinished, handedOn, inboxWaiting, laneNote, latestLane, tasksOfDispatch, homeGraph, callRows, callCard, cardText, agentsModel, flightsRebuilt,
 } from '../lib/mod-core.mjs';
 import { freshBoard } from './helpers/board-db.mjs';
 
@@ -33,11 +32,14 @@ test("the pure half imports only the pure handoff check and the board's drawing,
   const froms = (f) => (f.match(/^\s*import\s.*$/gm) || []).map((l) => l.replace(/^.*from\s*/, ''));
   const src = read('lib', 'mod-core.mjs');
   const check = read('lib', 'handoff-payload.mjs');
-  const pure = [['server', 'handoff-text.mjs'], ['server', 'layout.mjs'], ['server', 'web', 'draw.mjs'], ['server', 'web', 'graph.mjs'], ['server', 'web', 'feed.mjs']].map((p) => read(...p));
-  assert.deepEqual(froms(src), ["'./handoff-payload.mjs';", "'../server/layout.mjs';", "'../server/web/draw.mjs';", "'../server/web/graph.mjs';", "'../server/web/feed.mjs';"]);
-  /* the handoff check shares the board's text checks */
+  const pure = [['server', 'handoff-text.mjs'], ['server', 'web', 'draw.mjs'], ['server', 'web', 'feed.mjs']].map((p) => read(...p));
+  assert.deepEqual(froms(src), ["'./handoff-payload.mjs';", "'../server/web/draw.mjs';", "'../server/web/graph.mjs';", "'../server/web/picture-model.mjs';", "'../server/web/picture-draw.mjs';", "'../server/web/feed.mjs';"]);
+  /* the handoff check shares the board's text checks; the picture's two modules the board's drawing */
   assert.deepEqual(froms(check), ["'../server/handoff-text.mjs';"]);
+  const picture = [read('server', 'web', 'graph.mjs'), read('server', 'web', 'picture-model.mjs'), read('server', 'web', 'picture-draw.mjs')];
+  assert.deepEqual(picture.map(froms), [["'./draw.mjs';"], ["'./graph.mjs';", "'./draw.mjs';"], ["'./draw.mjs';"]]);
   for (const f of pure) assert.equal(/^\s*import\s/m.test(f), false);
+  pure.push(...picture);
   for (const f of [src, check, ...pure]) assert.equal(/\bprocess\.|require\(/.test(f), false);
 });
 
@@ -341,6 +343,12 @@ test('the project slug is the harness folder name for a project', () => {
 test('band: no question and nothing on the shelf is no model at all', () => {
   assert.equal(bandModel({ questions: [], shelfRows: [{ status: 'parked' }], sid: 's' }), null);
   assert.equal(bandModel(), null);
+  /* a review due is no band row and counts nowhere on it; its card still draws where a page lists it */
+  const review = { kind: 'review', record: 'tr1', id: 'TR-1', name: 'lane', text: 'Review due on TR-1 lane', presses: [{ label: 'Open the track', url: '/track/TR-1', pane: 'tracks' }] };
+  assert.equal(bandModel({ questions: [], calls: [review], sid: 's' }), null);
+  const scrub = { kind: 'scrub', id: 'K-2', text: 'K-2 was scrubbed', presses: [{ label: 'Unscrub', verb: 'unscrub' }] };
+  assert.deepEqual(bandModel({ questions: [], calls: [review, scrub], sid: 's' }).calls.map((c) => c.kind), ['scrub']);
+  assert.equal(callCard(callRows([review])[0]).head.state.text, 'review due');
 });
 
 test('band: the model carries answer tokens, the pick, the overflow and the counts', () => {
@@ -373,6 +381,9 @@ test('band: newly waiting threads, none on the first read, a new handoff of a th
 test('off-track: work with no task in hand is flagged, but not in an onboarding run', () => {
   assert.equal(offTrackSlip({ dispatched: 1 }).id, 'off-track');
   assert.equal(offTrackSlip({ dispatched: 1, commits: 2, onboarding: true }), null);
+  /* a merge landing an agent task started in an earlier turn names that task, not an unseen track */
+  const landed = offTrackSlip({ commits: 1, agentTasks: ['T-393'] }).say;
+  assert.ok(landed.includes('T-393') && !landed.includes('never shows'), landed);
 });
 
 test('alert: the loopback route from a board URL, and the track alert in the api/alert shape', () => {
@@ -478,13 +489,6 @@ test('dialog: a gets/costs split becomes a table row; no split, no change', () =
   assert.equal(decisionQuestions(undefined), null);
   /* an already rewritten row is left as it is */
   assert.equal(decisionQuestions(out), null);
-});
-
-test('ask: a reversal beside another ask of the turn is named, its own rewording is not', () => {
-  const rev = { id: 'Q577', revisits: ['Q41'], reversal: 'r' };
-  assert.deepEqual(aloneInTurn({ revisits: ['Q41'], reversal: 'r' }, [{ id: 'Q512' }]), ['Q512']);
-  assert.deepEqual(aloneInTurn({ edits: 'Q577', revisits: ['Q41'], reversal: 'r' }, [rev]), []);
-  assert.deepEqual(aloneInTurn({ edits: 'Q512' }, [rev, rev]), ['Q577']);
 });
 
 test('ask: crux and the option slots are optional text, passed through as given', () => {
@@ -751,7 +755,8 @@ test('the desktop hide takes a question told in the footer with its bullets and 
   assert.equal(hideTold('Done.\n\nThe band stays short.', [q]), 'Done.\n\nThe band stays short.');
 });
 
-import { closedInbox, commitsIn } from '../lib/mod-core.mjs';
+import { closedInbox, commitsIn, inboxLeft } from '../lib/mod-core.mjs';
+import { inboxLines } from '../server/handoff-text.mjs';
 test('engagement: a board id in a prompt and a hub CLI call; a shell call that commits', () => {
   assert.ok(namesBoardId('look at T-304') && namesBoardId('Q12?') && namesBoardId('TH-3.2'));
   assert.ok(!namesBoardId('a T-shirt and Q-tips'));
@@ -793,6 +798,20 @@ test('reply checks: dashes, the names line where the band draws, the footer; a r
   assert.equal(closedInbox('node ~/.claude/askerdo/cli.mjs track show TR-7', 'Inbox (1): T-5 a (WS-1 b).'), null);
   /* a line cut at ten says so, and the turn-end check reads the board's whole list */
   assert.equal(closedInbox('node ~/.claude/askerdo/cli.mjs track finish TR-7', 'Inbox (14): T-5 a (WS-1 b); and 13 more.').more, true);
+  /* a due task is placed or woken again by the turn's end, naming it is not enough; one woken since passes */
+  const closed = closedInbox('node ~/.claude/askerdo/cli.mjs track finish TR-7', 'Inbox (3): T-5 a (WS-1 b, due); T-6 c (WS-1 b, due); T-9 d (WS-1 b, wakes 2026-12-01).');
+  assert.deepEqual(closed.due, ['T-5', 'T-6']);
+  const left = inboxLeft(closed, [{ id: 'T-5', due: true }, { id: 'T-6', due: false }, { id: 'T-9', due: false }]);
+  assert.deepEqual(left, { name: ['T-9'], due: ['T-5'] });
+  /* the close owes only its own workstream's due tasks; another's, or one with the user, is named */
+  const rows = [{ id: 'T-5', due: true, workstream: { id: 'WS-2' } }, { id: 'T-6', due: true, asked: 'Q-9', workstream: { id: 'WS-1' } }, { id: 'T-9', due: false }];
+  assert.deepEqual(inboxLeft(closed, rows, 'WS-1'), { name: ['T-5', 'T-6', 'T-9'], due: [] });
+  /* the close's Inbox line owes what the check owes, and the check reads it back so with the board's read failed, text or JSON */
+  const two = [{ id: 'T-4', name: 'a', due: true, workstream: { id: 'WS-1', name: 'b' } }, { id: 'T-7', name: 'c', due: true, workstream: { id: 'WS-2', name: 'd' } }];
+  const said = closedInbox('node ~/.claude/askerdo/cli.mjs track finish TR-3', 'TR-3 done.\n' + inboxLines(two, undefined, 'WS-1').join('\n'));
+  const json = closedInbox('node ~/.claude/askerdo/cli.mjs track finish TR-3 --json', JSON.stringify({ id: 'TR-3', workstream: 'WS-1', inbox: two }));
+  for (const c of [said, json]) assert.deepEqual(inboxLeft(c, null), { name: ['T-7'], due: ['T-4'] });
+  assert.deepEqual(replyChecks({ answer: 'T-5 and T-9 wait.', inbox: left.name, due: left.due }).map((s) => s.id + ' ' + s.say.includes('T-5')), ['inbox-due true']);
 });
 
 test('agent checks: none with no rules in force, the state note and size rule by their profile keys; flag text', () => {
@@ -803,6 +822,12 @@ test('agent checks: none with no rules in force, the state note and size rule by
   assert.deepEqual(agentChecks({ prompt: 'Fix it.' }, { ...on, rules: { 'dispatch.stateNote': false } }).map((s) => s.id), ['size']);
   assert.deepEqual(agentChecks({ prompt: 'Keep x-state.md. Final response under 2000 characters.' }, on), []);
   assert.deepEqual(agentChecks({ prompt: 'Read your brief: docs/briefs/lane-6.md. Reply in at most 300 words.' }, on), []);
+  /* the testing rule in the brief's own words passes; a brief with neither clause slips, citing no repo path */
+  const ran = 'Keep x-state.md. Final response under 2000 characters. Run the tests.';
+  assert.deepEqual(agentChecks({ prompt: ran + ' While working, run only the test files you touch; run the full suite (or full gate) once at the end, before your last commit.' }, on), []);
+  const bare = agentChecks({ prompt: ran }, on);
+  assert.deepEqual(bare.map((s) => s.id), ['tests']);
+  assert.ok(!/run-tests\.md/.test(bare[0].say), bare[0].say);
   const slips = agentChecks({ prompt: 'x-state.md' }, on);
   assert.equal(flagLine('the dispatch of a', slips), 'AskerDo: the dispatch of a: the brief has no output-size rule. Flagged, not rewritten.');
   assert.ok(flagNote([{ what: 'your last reply', slips: [{ say: 'em or en dashes' }] }]).includes('your last reply: em or en dashes.'));
@@ -829,6 +854,20 @@ test("agents: a running agent's time since its start reads in minutes, a finishe
   assert.match(agentsModel(list, null, now + 3600000).rows[1].detail, /\b10s\b/);
 });
 
+test('agents: a load rebuilds the flights from the kept copy and the engine list, a helper counted under its dispatch', () => {
+  const now = Date.parse('2026-11-07T01:35:00Z');
+  const kept = [{ id: 'r5', job: 'Rehearsal', model: 'opus', calls: 9, tokens: 1000, start: now - 3600000 },
+    { id: 'sp', job: 'Skills parts', model: 'opus', calls: 2, start: now - 1400000, end: now - 500000, done: true, parent: 'r5' },
+    { id: 'gone', job: 'Ended while unloaded', model: 'opus', calls: 1, start: now - 900000 }];
+  const listed = [{ id: 'r5', status: 'running', description: 'Rehearsal' }, { id: 'qr', status: 'running', description: 'QR lane' }];
+  const m = agentsModel(flightsRebuilt(kept, listed), null, now);
+  assert.deepEqual([m.running, m.done], [2, 1]);
+  const at = (id) => m.rows.findIndex((r) => r.id === id);
+  assert.deepEqual([at('sp') - at('r5'), m.rows[at('sp')].under, m.rows[at('sp')].ended, m.rows[at('gone')].ended], [1, 1, false, true]);
+  assert.match(m.rows[at('r5')].detail, /\b1h\b/);
+  assert.deepEqual(flightsRebuilt(kept, [{ id: 'r5', status: 'completed' }]), []);
+});
+
 test('the mod reads its contract section and check switches through scripts/mod-contract.mjs', (t) => {
   const home = tempDir('ttd-home-', t);
   const data = tempDir('askerdo-data-', t);
@@ -853,18 +892,36 @@ test("Home with no track held draws the project's workstream the band carries, w
   putRecord(db, { key: 'ws000001', kind: 'workstream', fields: { id: 'WS-1', key: 'ws000001', name: 'Board', status: 'open', labelHistory: ['WS-1 2026-10-25'] }, body: '' });
   const line = t.newTrack(db, { name: 'Main line', workstream: 'WS-1' }, 'cli');
   t.capture(db, { track: line.id, name: 'First step' }, 'cli');
-  const graph = { workstream: 'WS-1', name: 'Board', view: t.workstreamView(db, { workstream: 'WS-1' }), layout: null, unheld: true, others: [{ id: 'WS-2', name: 'Inbox' }] };
+  const { runVerb } = await import('../server/verbs/index.mjs');
+  const graph = { workstream: 'WS-1', name: 'Board', view: t.workstreamView(db, { workstream: 'WS-1' }), unheld: true, others: [{ id: 'WS-2', name: 'Inbox' }],
+    picture: runVerb(db, 'pictureView', { workstream: 'WS-1' }, 'cli') };
   const mine = { held: false, track: null, workstream: null, tracks: [] };
   const gm = homeGraph({ graph, mine, local: true, columns: 60 });
-  assert.deepEqual([gm.scope, gm.lines.map((l) => l.id)], ['all', [line.id]]);
-  assert.ok(gm.picture && /WS-2/.test(gm.why), 'drawn, the note naming the other workstream');
+  /* the workstream's level, each track a pill */
+  assert.deepEqual([gm.level, gm.lines.map((l) => l.id), gm.views], [1, [line.id], []]);
+  assert.ok(gm.picture && gm.picture.zones.some((z) => z.k === 'pill:' + line.id) && /WS-2/.test(gm.why), 'drawn, the note naming the other workstream');
   assert.equal(homeGraph({ graph: { ...graph, unheld: false }, mine, local: true }).lines.length, 0, "a held track's graph is never drawn for a session without one");
+  /* another workstream the Overview zoomed into, read apart from the band, draws beside it */
+  putRecord(db, { key: 'ws000002', kind: 'workstream', fields: { id: 'WS-2', key: 'ws000002', name: 'Inbox', status: 'open', labelHistory: ['WS-2 2026-10-25'] }, body: '' });
+  const far = t.newTrack(db, { name: 'Far line', workstream: 'WS-2' }, 'cli');
+  t.capture(db, { track: far.id, name: 'Far step' }, 'cli');
+  const zoomed = homeGraph({ graph, mine, local: true, columns: 60, view: { level: 1, ws: 'WS-2', tr: null, sel: null },
+    far: { workstream: 'WS-2', view: t.workstreamView(db, { workstream: 'WS-2' }), picture: runVerb(db, 'pictureView', { workstream: 'WS-2' }, 'cli') } });
+  assert.deepEqual([zoomed.view.ws, zoomed.picture.zones.some((z) => z.k === 'pill:' + far.id)], ['WS-2', true]);
+  /* the workstream's loose tasks under its picture, each with its page; an empty inbox draws none */
+  assert.equal(gm.inbox, null);
+  const loose = ['Stray idea', 'Another'].map((name) => t.capture(db, { workstream: 'WS-1', name, wake: '2099-01-01' }, 'cli'));
+  const local = 'http://localhost:1/' + 'ab'.repeat(16) + '/';
+  const ib = homeGraph({ graph: { ...graph, view: t.workstreamView(db, { workstream: 'WS-1' }) }, mine, local, columns: 60 }).inbox;
+  assert.ok(/\b2\b/.test(ib.count) && /#inbox$/.test(ib.href), 'the count, its press the board panel');
+  assert.deepEqual(ib.tasks.map((x) => [x.id, !!x.href]), loose.map((x) => [x.id, true]));
+  for (const x of loose) t.capture(db, { track: line.id, task: x.id }, 'cli');
+  assert.equal(homeGraph({ graph: { ...graph, view: t.workstreamView(db, { workstream: 'WS-1' }) }, mine, local, columns: 60 }).inbox, null, 'placed on a track, the line goes');
 });
 
-test("a completed review takes the code it covered off the rail and leaves Home's map itself, and the legend lists a review mark only where the map draws it", async () => {
+test("a completed review takes the code it covered off the track's review due and leaves Home's picture itself", async () => {
   const { runVerb } = await import('../server/verbs/index.mjs');
   const { putRecord } = await import('../server/records.mjs');
-  const { graphLegend } = await import('../lib/mod-core.mjs');
   const t = await import('../server/verbs/tracks.mjs');
   const db = freshBoard();
   putRecord(db, { key: 'ws000001', kind: 'workstream', fields: { id: 'WS-1', key: 'ws000001', name: 'Board', status: 'open', labelHistory: ['WS-1 2026-10-25'] }, body: '' });
@@ -878,52 +935,62 @@ test("a completed review takes the code it covered off the rail and leaves Home'
     runVerb(db, 'commitLink', { repo: 'r', sha: String(i + 1).repeat(40), task: c.id, via: 'message', at: at(8).now.toISOString(), added: 3, removed: 0 }, at(8));
     runVerb(db, 'editRecord', { id: c.id, status: 'completed' }, at(9));
   });
-  const draw = () => homeGraph({ graph: { workstream: 'WS-1', view: t.workstreamView(db, { workstream: 'WS-1' }), layout: null },
-    mine: { held: true, track: line.id, workstream: 'WS-1', tracks: [] }, local: true, columns: 52 });
-  const before = draw();
-  assert.equal((before.picture.source.match(/class="bead"/g) || []).length, 2, 'two finished code tasks wait as beads');
-  assert.ok(graphLegend(before.marks).some((m) => m.key === 'bead') && graphLegend(before.marks).some((m) => m.key === 'review'));
+  const graph = () => ({ workstream: 'WS-1', view: t.workstreamView(db, { workstream: 'WS-1' }), picture: runVerb(db, 'pictureView', { workstream: 'WS-1' }, 'cli') });
+  const draw = (view) => homeGraph({ graph: graph(), mine: { held: true, track: line.id, workstream: 'WS-1', tracks: [] }, local: true, view, columns: 52 });
+  /* the pill's strip names the review due; the held line draws the review's station */
+  const pill = { level: 1, ws: 'WS-1', sel: 'pill:' + line.id };
+  const due = (gm) => gm.strip.facts.some((f) => /review/i.test(f.label));
+  const station = (gm) => gm.picture.zones.some((z) => z.k === 'stn:' + review.id) || gm.picture.source.includes('stn:' + review.id);
+  assert.ok(!due(draw(pill)) && station(draw()), 'two finished code tasks under the review size are not due');
+  runVerb(db, 'settingsSet', { key: 'review.tasks', value: 2, at: 'track', record: line.id }, 'cli');
+  assert.ok(due(draw(pill)), 'two finished code tasks at a size of two wait for the review');
   runVerb(db, 'editRecord', { id: review.id, status: 'completed' }, at(11));
-  const after = draw();
-  assert.ok(!/class="bead"/.test(after.picture.source), 'what the review covered draws no bead');
-  assert.ok(!after.picture.source.includes('data-task="' + review.id + '"') && !after.picture.hits.some((h) => h.id === review.id), 'the finished review leaves the map');
-  const keys = graphLegend(after.marks).map((m) => m.key);
-  assert.ok(!keys.some((k) => /^(bead|review|reviewed)$/.test(k)), keys.join(','));
+  assert.ok(!due(draw(pill)), 'what the review covered is no longer due');
+  assert.ok(!station(draw()), 'the finished review leaves the picture');
 });
 
-test("Home's strips each close their own card, and a wait on another line ends at each card's edge (in-app run 3)", async () => {
-  const w = await import('../server/verbs/work.mjs');
-  const t = await import('../server/verbs/tracks.mjs');
-  const gr = await import('../server/verbs/graph.mjs');
-  const db = freshBoard();
-  const ws = w.createRecord(db, { kind: 'workstream', name: 'Board', description: 'd' }, 'cli');
-  const task = (name) => w.createRecord(db, { kind: 'task', name, description: 'd', workstream: ws.id }, 'cli');
-  const main = ['Web views', 'The look', 'Command file', 'The move', 'Release'].map(task);
-  const side = ['Strips', 'Cards', 'Last web view'].map(task);
-  const line = t.newTrack(db, { name: 'Main line through the web views, the look, the command file and the move', workstream: ws.id, tasks: [...main, ...side].map((x) => x.id) }, 'cli');
-  main.forEach((x, i) => i && gr.addEdge(db, { task: x.id, on: main[i - 1].id, reason: 'o' }, 'cli'));
-  const branch = t.splinter(db, { from: line.id, name: 'Before the look', park: false, tasks: side.map((x) => x.id) }, 'cli');
-  side.forEach((x, i) => i && gr.addEdge(db, { task: x.id, on: side[i - 1].id, reason: 'o' }, 'cli'));
-  gr.addEdge(db, { task: main[1].id, on: side[2].id, reason: 'the look after the web views' }, 'cli');
-  const graph = { workstream: ws.id, name: 'Board', view: t.workstreamView(db, { workstream: ws.id }), layout: null };
-  const gm = homeGraph({ graph, mine: { held: true, track: branch.id, workstream: ws.id, tracks: [] }, local: 'http://localhost:1/' + 'ab'.repeat(16) + '/', columns: 28 });
-  assert.ok(gm.picture.strips > 2, 'drawn in strips: ' + gm.picture.strips);
-  const src = gm.picture.source;
-  const frames = [...src.matchAll(/<svg x="[\d.]+" y="[\d.]+" width="[\d.]+" height="[\d.]+" viewBox="([-\d. ]+)"><rect x="([-\d.]+)" y="([-\d.]+)" width="([\d.]+)" height="([\d.]+)"/g)];
-  assert.equal(frames.length, gm.picture.strips, 'every strip draws its own frame');
-  for (const f of frames) {
-    const [vx, vy, vw, vh] = f[1].split(' ').map(Number), [x, y, fw, fh] = f.slice(2).map(Number);
-    assert.ok(x >= vx && x + fw <= vx + vw + 0.01 && y >= vy && y + fh <= vy + vh, 'a frame inside its strip, closed on every side: ' + f[0]);
+test("Home draws the redrawn picture's three levels inside the pane's Svg limits, each press zone carrying its action, and a track past the limits up to them and '+N more on the board'", async () => {
+  const { panePicture } = await import('../lib/mod-core.mjs');
+  const { pictureMockData } = await import('./helpers/picture-mock-data.mjs');
+  const P = pictureMockData();
+  const local = 'http://localhost:1/' + 'ab'.repeat(16) + '/';
+  const draw = (V, columns = 51, data = P) => panePicture(data, V, { held: 'TR-12', local, columns });
+  const levels = [{ level: 0, ws: 'WS-12', tr: null, sel: 'ws:WS-7' },{ level: 1, ws: 'WS-12', tr: null, sel: 'pill:TR-12' }, { level: 2, ws: 'WS-12', tr: 'TR-12', sel: 'stn:T-675' }];
+  for (const columns of [28, 166]) for (const V of levels) {
+    const m = draw(V, columns), p = m.picture, at = columns + ' ' + JSON.stringify(V);
+    assert.ok(p && p.source.length <= 131072 && p.width <= 4096 && p.height <= 4096 && !m.more, at);
+    assert.ok(p.zones.length && p.zones.every((z) => z.act), 'every zone presses: ' + at);
+    assert.ok(m.strip && m.legend.length && m.legend.every((e) => e.source && e.width > 0), at);
   }
-  const shared = src.slice(src.indexOf('<g id="hg">'), src.indexOf('</defs>'));
-  assert.ok(!/stroke-dasharray="5 4"/.test(shared), 'the wait between lines is not in the drawing every strip shows');
-  const leaving = shared.slice(shared.indexOf('data-task="' + side[2].id + '"'));
-  assert.ok(leaving.slice(0, leaving.indexOf('</g>')).includes(main[1].id), 'the station it leaves names the far end');
-  /* every strip's line name opens the track, a continuation's small one too, and a wrapped name on all its lines */
-  const heads = gm.picture.hits.filter((h) => h.kind === 'track');
-  assert.equal(heads.length, gm.picture.strips, 'one head press per strip: ' + JSON.stringify(heads));
-  const tallest = (id) => Math.max(...heads.filter((h) => h.id === id).map((h) => h.h));
-  assert.ok(tallest(line.id) > tallest(branch.id), 'the wrapped name presses on every line it draws');
+  /* a station: the first press selects, the second opens its task; the ground clears */
+  const zone = (m, k) => m.picture.zones.find((z) => z.k === k).act;
+  const first = zone(draw({ ...levels[2], sel: null }), 'stn:T-675');
+  assert.deepEqual([first.kind, first.view.sel], ['select', 'stn:T-675']);
+  const sel = draw(first.view), again = zone(sel, 'stn:T-675');
+  assert.ok(again.kind === 'open' && again.id === 'T-675' && /t-675/i.test(again.href), JSON.stringify(again));
+  assert.equal(sel.picture.clear.view.sel, null);
+  assert.ok(sel.strip.acts[0].primary && sel.strip.acts[0].act.kind === 'open');
+  /* a pill's second press zooms in; the Overview crumb and the views pair step out */
+  const pill = zone(draw(levels[1]), 'pill:TR-12');
+  assert.deepEqual([pill.kind, pill.view.level, pill.view.tr], ['zoom', 2, 'TR-12']);
+  assert.deepEqual([sel.crumbs[0].act.kind, sel.crumbs[0].act.view.level], ['zoom', 0]);
+  assert.deepEqual(sel.views.map((v) => [v.key, v.on, v.act.view.level]), [['mine', true, 2], ['all', false, 1]]);
+  /* a workstream the band did not carry zooms from the Overview, the pane reading it first, and "List them" opens the finished list */
+  const other = draw(levels[0]);
+  assert.deepEqual([zone(other, 'ws:WS-7'), other.strip.acts[0].act].map((a) => [a.kind, a.read, a.view.level, a.view.ws]), [['zoom', 'WS-7', 1, 'WS-7'], ['zoom', 'WS-7', 1, 'WS-7']]);
+  assert.match(draw({ level: 2, ws: 'WS-12', tr: 'TR-3', sel: 'bead:TR-3' }).strip.acts[0].act.href, /#done$/);
+  /* a track of 150 more stations draws those that fit, the rest one press to its board page */
+  const big = JSON.parse(JSON.stringify(P));
+  let prev = 'T-283';
+  for (let i = 0; i < 150; i++) {
+    const id = 'T-' + (9000 + i);
+    big.tasks[id] = { id, key: id.toLowerCase(), tr: 'TR-12', ws: 'WS-12', name: 'Step ' + i + ' of a long line', st: 'waits', waits: [prev], cross: [], frees: [] };
+    big.tasks[prev].frees.push(id);
+    prev = id;
+  }
+  const cut = draw({ ...levels[2], sel: null }, 28, big);
+  assert.ok(cut.picture.height <= 4096 && cut.picture.source.length <= 131072, cut.picture.height + ' px');
+  assert.ok(cut.more && cut.more.n > 50 && cut.more.n < 158 && /tr-12/i.test(cut.more.href), JSON.stringify(cut.more));
 });
 
 test('the mark names this PC\'s version in both shapes; the board is behind only when older by number', async () => {
@@ -936,4 +1003,29 @@ test('the mark names this PC\'s version in both shapes; the board is behind only
   assert.match(versionWords('0.8.10', '0.8.9').behind, /0\.8\.9.*0\.8\.10/);
   assert.match(versionWords('0.8.10', '0.8.8').board, /0\.8\.8/);
   for (const board of ['0.8.10', '0.9.0', 'unknown', undefined]) assert.equal(versionWords('0.8.10', board).behind, '', String(board));
+});
+
+test('the drift line reads the conversion map: a dead pointer, a cite into a retired folder, a long rule line and a retired folder holding files again', async () => {
+  const { driftOf } = await import('../lib/mod-core.mjs');
+  const files = new Set(['docs/guide.md']);
+  const map = { last: { source: 'run:r1', kind: 'run', at: '2026-11-01T10:00:00Z' }, rows: [
+    { source: 'handoff/', kind: 'folder', fate: 'delete', sha: 'c1' },
+    { source: 'handoff/RESULTS.md', kind: 'file', records: ['K-1'] },
+    { source: 'docs/', kind: 'folder', fate: 'keep', why: 'the project\'s own docs' },
+  ] };
+  const rules = (cited, long) => [
+    { rule: 'read-the-guide', text: 'Read `' + cited + '` before a change.', source: 'mine on default' },
+    { rule: 'wordy', text: 'x'.repeat(long), source: 'mine on default' },
+    { rule: 'few-tests', text: 'y'.repeat(500), source: 'built in' },
+  ];
+  const off = driftOf({ rules: rules('docs/gone.md', 401), exists: (p) => files.has(p), map, listed: { 'handoff/': ['NEW.md'] } });
+  assert.deepEqual(off.dead.map((d) => d.path), ['docs/gone.md']);
+  assert.deepEqual(off.long.map((l) => l.slug), ['wordy'], 'a built-in line is never flagged');
+  assert.deepEqual(off.fresh, [{ folder: 'handoff/', names: ['NEW.md'] }]);
+  assert.match(off.text, /handoff\/.*2026-11-01/, 'the nudge names the run it changed since');
+  assert.ok(off.doctor);
+  const cites = driftOf({ rules: rules('handoff/STATE.md', 10), exists: (p) => files.has(p), map, listed: {} });
+  assert.deepEqual(cites.dead.map((d) => [d.path, d.retired]), [['handoff/STATE.md', true]], 'a cite into a retired folder');
+  assert.equal(driftOf({ rules: rules('docs/guide.md', 400), exists: (p) => files.has(p), map, listed: { 'handoff/': [] } }), null);
+  assert.equal(driftOf({ rules: rules('docs/guide.md', 400), exists: (p) => files.has(p), map: null, listed: {} }), null, 'no map, nothing retired');
 });

@@ -151,7 +151,7 @@ function countOf(h, key) {
 
 const placesOf = (db, e, text) => countOf(hitsOf(db, e, text), e.key);
 
-function itemOf(db, kind, raw, ctx) {
+function itemOf(db, kind, raw, ctx, named = new Set()) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new UsageError('each item is { record, ... }');
   const id = String(raw.record ?? raw.id ?? '').trim();
   if (!id) throw new UsageError('each item names its record');
@@ -187,7 +187,10 @@ function itemOf(db, kind, raw, ctx) {
   } else if (kind === 'withdraw') {
     extra([]);
     if (!isRuling(e)) throw new UsageError('a withdraw takes back a ruling never made; ' + label + ' is not a decision');
-    if (e.front.status !== 'active') throw new UsageError(label + ' is ' + e.front.status + ': nothing to withdraw');
+    /* a superseded one goes with its superseder: withdrawn already, or in this request */
+    const by = e.front.status === 'superseded' && e.front.supersededBy ? loadEntry(db, e.front.supersededBy) : null;
+    const goes = by && (by.front.status === 'withdrawn' || named.has(by.key));
+    if (e.front.status !== 'active' && !goes) throw new UsageError(label + ' is ' + e.front.status + ': nothing to withdraw');
   } else {
     extra(['text']);
     const text = typeof raw.text === 'string' ? raw.text : '';
@@ -308,15 +311,13 @@ export function overrideRequest(db, input = {}, actor, opts) {
   const raws = Array.isArray(o.items) ? o.items : [];
   if (!raws.length) throw new UsageError('override request names at least one record');
   const run = () => {
-    const items = raws.map((r) => itemOf(db, kind, r, ctx));
+    const keyOf = (r) => { const f = r && typeof r === 'object' && !Array.isArray(r) ? resolveRecord(db, String(r.record ?? r.id ?? '').trim(), { day: ctx.day }) : null; return f && f.key; };
+    const named = new Set(raws.map(keyOf).filter(Boolean));
+    const items = raws.map((r) => itemOf(db, kind, r, ctx, named));
     const seen = new Set();
     for (const it of items) {
       if (seen.has(it.e.key)) throw new UsageError(it.label + ' is named twice');
       seen.add(it.e.key);
-    }
-    if (items.length > 1) {
-      const r = items.find((it) => isRuling(it.e));
-      if (r) throw new UsageError('a batch holds only records that are not rulings: ' + r.label + ' is a ruling, asked alone (Q32)');
     }
     if (kind === 'scrub' && items.some((it) => summary.includes(it.proposed.text) || reason.includes(it.proposed.text))) {
       throw new UsageError('the summary and the reason never carry the text a scrub removes');
@@ -668,7 +669,9 @@ export function overrideView(db, input = {}, actor, opts) {
     const req = findRequest(db, o.request, ctx.day);
     if (!req) return null;
     const records = itemsOf(db, req.id).map((it) => {
-      const head = { id: it.label, key: it.key, kind: it.e ? it.e.kind : '', name: it.e ? it.e.front.name || '' : '' };
+      const head = { id: it.label, key: it.key, kind: it.e ? it.e.kind : '', name: it.e ? it.e.front.name || '' : '',
+        /* a batch may mix rulings with other records, so each ruling it reverses is marked */
+        ...(it.e && req.kind !== 'scrub' && isRuling(it.e) ? { reversal: true } : {}) };
       if (!it.e) return { ...head, gone: true, fields: [] };
       const secs = sectionsOf(it.e.body);
       if (req.kind === 'withdraw') return { ...head, fields: [{ field: 'status', before: it.e.front.status, after: 'withdrawn: never ruled' }] };

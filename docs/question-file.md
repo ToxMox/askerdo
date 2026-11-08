@@ -112,15 +112,12 @@ Rulings (T-6): an answered question is a ruling.
   frozen at registration: the ruling's label and name, its Answer's first
   paragraph verbatim, and each option it did not choose with its catch.
   The reversal's text goes in `## Reversal`.
-- A question with `revisits` is stored blocking and told alone, in a reply
-  of its own, its ask leading with Reversal of Q-n, and its decision table
-  too: every reply writes the full copy in its footer, and on the desktop
-  the mod hides it under the card and draws the footer under the last card,
-  with one line in it that names the question and says it is on the card
-  above. When
-  the same session registered another question within the minute (before
-  or after it), the hub still registers it, returns `beside` with the other
-  labels and a note; the mod marks both cards and the turn-end note says so.
+- A question with `revisits` is stored blocking, its ask leading with
+  Reversal of Q-n, and its decision table too: every reply writes the full
+  copy in its footer, and on the desktop the mod hides it under the card and
+  draws the footer under the last card, with one line in it that names the
+  question and says it is on the card above. It may share a reply with other
+  questions: its reversal line and the card's quoted ruling mark it.
 - `cites: [Q498]`: answered questions mentioned as context only. On the
   model's path a Q-n label of an answered question in the ask, crux, gist,
   stakes or option text that is in neither list is refused.
