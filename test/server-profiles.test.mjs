@@ -10,8 +10,10 @@ import { putRecord, stampNow } from '../server/records.mjs';
 import { frontText } from '../server/frontmatter.mjs';
 import { resolveRecord as recordByLabel } from '../server/verbs/labels.mjs';
 import { rulesBlock } from '../server/verbs/profile-rules.mjs';
+import { agentsBlockFor } from '../server/rules-block.mjs';
 import * as pf from '../server/verbs/profiles.mjs';
 import { inTodaysOrder } from './helpers/old-store.mjs';
+import { settingsWrite } from '../server/web/settings.mjs';
 
 const APP = 'C:/repos/app';
 const actor = { by: 'cli', now: () => new Date(2026, 9, 20, 10, 0, 0) };
@@ -24,7 +26,9 @@ function tree() {
   const rec = (key, kind, fields) => putRecord(db, { key, kind, slug: 'x', fields: { key, ...fields }, body: '' });
   rec(K.ws, 'workstream', { id: 'WS-1', name: 'ws', status: 'open', projects: [APP], created: AT, updated: AT });
   rec(K.t, 'task', { id: 'T-1', name: 'task', workstream: K.ws, status: 'in_progress', created: AT, updated: AT, subscribers: ['sess-9'] });
-  rec(K.t2, 'task', { id: 'T-2', name: 'next', workstream: K.ws, status: 'open', created: AT, updated: AT, inHand: 'sess-9' });
+  rec(K.t2, 'task', { id: 'T-2', name: 'next', workstream: K.ws, status: 'open', created: AT, updated: AT });
+  db.prepare("INSERT INTO runs (id, worker, session, started, heard) VALUES (1, 'session', 'sess-9', ?, ?)").run(AT, AT);
+  db.prepare('INSERT INTO run_tasks (run, task) VALUES (1, ?)').run(K.t2);
   rec(K.tr, 'track', { id: 'TR-1', name: 'tr', workstream: K.ws, status: 'open', created: AT, updated: AT,
     labelHistory: ['P-1 2026-10-01 2026-10-20', 'TR-1 2026-10-20'] });
   db.prepare('INSERT INTO track_items (track, task, position) VALUES (?, ?, 1)').run(K.tr, K.t);
@@ -82,6 +86,15 @@ test('resolution: built-in < default < project < workstream < track < task, the 
   const split = rulesBlock(eff(db, 'T-1'));
   assert.deepEqual([split.session.text.includes('wave note'), split.agents.text.includes('wave note'), split.text.includes('wave note'), split.agents.text.includes('Unity tests')],
     [true, false, false, true]);
+  /* a line for one role's agents rides neither plain block, only a dispatch playing that role */
+  pf.profileRule(db, { name: 'lean', op: 'add', slug: 'audit-ground', text: 'Read every account record first.', for: 'agents:Audit' }, actor);
+  assert.throws(() => pf.profileRule(db, { name: 'lean', op: 'add', slug: 'x', text: 'X.', for: 'session:audit' }, actor), /agents:<role>/);
+  /* the board page's role field on its default audience (both) adds the line for that role's agents */
+  settingsWrite(db, 'rule', { name: 'lean', op: 'add', slug: 'review-ground', text: 'Read the diff whole.', for: 'both', role: 'review' }, 'pc-1');
+  const roled = rulesBlock(eff(db, 'T-1'));
+  const has = (blk) => blk.text.includes('Read every account record');
+  assert.deepEqual([has(roled.session), has(roled.agents), has(agentsBlockFor(roled, ['audit'])), has(agentsBlockFor(roled, ['review'])), agentsBlockFor(roled, ['review']).text.includes('Read the diff whole'), agentsBlockFor(roled, ['audit']).text.includes('Unity tests')],
+    [false, false, true, false, true, true]);
   /* a line from a ruling changes only alongside a newer ruling, and its old words are kept */
   const ruling = (key, id, created) => putRecord(db, { key, kind: 'knowledge', slug: 'x', body: '', fields: { id, key, name: id, type: 'decision', status: 'active', created } });
   ruling('kk000001', 'K-1', AT);
@@ -131,6 +144,16 @@ test('add refuses two profiles setting one value on one record; remove drops an 
   assert.equal(pf.profileRemove(db, { record: 'WS-1', name: 'deep-code' }, actor).how, 'removed');
   assert.throws(() => pf.profileRemove(db, { record: 'T-1', name: 'deep-code' }, actor), /neither holds nor inherits/);
   assert.equal(recordByLabel(db, 'P-1').fields.profileDrops, undefined, 'an empty holding leaves no line');
+
+  /* delete: refused while a record holds it, naming the record; built-in refused; then gone from the list */
+  pf.profileAdd(db, { record: 'T-1', name: 'orch' }, actor);
+  assert.throws(() => pf.profileDelete(db, { name: 'orch' }, actor), (e) => /refused/.test(e.message) && /WS-1/.test(e.message) && /T-1/.test(e.message));
+  assert.throws(() => pf.profileDelete(db, { name: 'guard-on' }, actor), /built in/);
+  pf.profileRemove(db, { record: 'WS-1', name: 'orch' }, actor);
+  pf.profileRemove(db, { record: 'T-1', name: 'orch' }, actor);
+  assert.equal(pf.profileDelete(db, { name: 'orch' }, actor).deleted, true);
+  assert.equal(pf.profileList(db).profiles.some((p) => p.profile === 'orch'), false);
+  assert.throws(() => pf.profileDelete(db, { name: 'orch' }, actor), /no profile named/);
 });
 
 test('the guard shortcut holds a project by its remote, so every checkout of it and every machine sees it', () => {

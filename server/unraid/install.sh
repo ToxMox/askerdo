@@ -3,6 +3,7 @@
 # and create the container the way its Apply does. Run as root from a checkout (or a copy of server/):
 #   bash server/unraid/install.sh [--staging] [--new] [tag]
 # --new starts an empty board when the data folder holds no database yet.
+# A tag ending -<commit> (0.8.16-dev-86b0d444) or ASKERDO_COMMIT names the server tree's commit, which /health reports.
 # ASKERDO_PORT, ASKERDO_DATA_DIR, ASKERDO_BACKUP_DIR and ASKERDO_TZ set the app's values;
 # unset, a rerun keeps what the app's template holds, else the defaults below.
 set -euo pipefail
@@ -39,6 +40,16 @@ if [ ! -f "$DATA/askerdo.db" ]; then
 fi
 mkdir -p "$BACKUPS" && chown 99:100 "$BACKUPS"
 
+# the server tree's commit rides the image for /health: ASKERDO_COMMIT, else a tag ending -<sha>;
+# with neither, a build.json left by an earlier run goes, so the board never names a commit it is not
+COMMIT="${ASKERDO_COMMIT:-$(printf '%s' "$TAG" | sed -n 's/.*-\([0-9a-f]\{7,40\}\)$/\1/p')}"
+if [ -n "$COMMIT" ]; then
+  printf '%s' "$COMMIT" | grep -qx '[0-9a-f]\{7,40\}' || { echo "ASKERDO_COMMIT $COMMIT is not a commit hash" >&2; exit 1; }
+  printf '{\n  "commit": "%s"\n}\n' "$COMMIT" > server/build.json
+else
+  rm -f server/build.json
+fi
+
 docker build -f server/Dockerfile -t "$IMAGE" .
 # root runs this, so server/ goes back to its folder's owner and a later copy over it still writes
 chown -R --reference=. server
@@ -65,4 +76,4 @@ if [ "$STAGING" = 0 ]; then
   grep -qx "$NAME\( .*\)\?" "$AUTO" 2>/dev/null || echo "$NAME" >> "$AUTO"
 fi
 
-echo "$NAME runs $IMAGE on port $PORT"
+echo "$NAME runs $IMAGE on port $PORT${COMMIT:+, server commit $COMMIT}"

@@ -7,11 +7,14 @@ import assert from 'node:assert/strict';
 import { freshBoard } from './helpers/board-db.mjs';
 import { frontText } from '../server/frontmatter.mjs';
 import { resolveRecord as recordByLabel } from '../server/verbs/labels.mjs';
-import { badgeOf, cardsAt } from '../server/verbs/proc-cards.mjs';
+import { badgeOf, cardView, cardsAt } from '../server/verbs/proc-cards.mjs';
 import * as pv from '../server/verbs/procedures.mjs';
 import { parseProcedure } from '../lib/procedures.mjs';
 import { matchCall } from '../lib/proc-match.mjs';
 import { inTodaysOrder } from './helpers/old-store.mjs';
+import { createRecord, editRecord } from '../server/verbs/work.mjs';
+import { addNote } from '../server/records.mjs';
+import { runVerb } from '../server/verbs/index.mjs';
 
 const actor = { by: 'cli', now: () => new Date(2026, 9, 20, 10, 0, 0) };
 const DIR = 'C:/repos/demo';
@@ -99,9 +102,13 @@ test('a scan makes one card per procedure, writes nothing when nothing moved, fo
   assert.equal(notes(db, back.key).length, 3, 'made, retired and back each leave a note');
   const verbs = db.prepare("SELECT verb FROM activity WHERE kind = 'procedure'").all().map((r) => r.verb);
   assert.deepEqual(verbs, ['create', 'edit', 'edit', 'edit'], 'every change is an activity row, the no-op scans none');
+  /* a card that opts in to the mod's own run record says so to the watcher */
+  assert.equal(cardView(recordByLabel(db, 'PR-1').fields).record, undefined);
+  scan(db, [file(DEMO.replace('repos: {}', 'repos: {}\nrecord: command'))]);
+  assert.equal(cardView(recordByLabel(db, 'PR-1').fields).record, 'command');
 });
 
-test('runs: clean moves the verified commit, deviated flags and drafts, three clean in a row suggest a script', () => {
+test('runs: clean moves the verified commit, a deviation says its outcome and files nothing, three clean in a row suggest a script', () => {
   const db = freshBoard();
   scan(db, [file()]);
   assert.throws(() => pv.recordRun(db, { name: 'nope', result: 'clean', project: DIR, repo: REPO }, actor), /no procedure named nope/);
@@ -110,23 +117,70 @@ test('runs: clean moves the verified commit, deviated flags and drafts, three cl
   const head = 'a'.repeat(40);
   const one = pv.recordRun(db, { name: 'demo', result: 'clean', project: DIR, repo: REPO, heads: { self: head } }, actor);
   assert.deepEqual([one.id, one.runs, one.cleanRuns, one.verified.self], ['PR-1', 1, 1, head]);
-  const dev = pv.recordRun(db, { name: 'PR-1', result: 'deviated', note: 'the build needed --force', project: DIR }, actor);
-  assert.deepEqual([dev.flag, dev.cleanRuns, dev.verified.self], ['the build needed --force', 0, head]);
-  assert.ok(dev.draft.includes('docs/procedures/demo.md'));
-  assert.equal(badgeOf(recordByLabel(db, 'PR-1').fields).badge, 'flagged');
-  // a run report as the note leaves the draft and the flag its lead, the journal the whole once
+  /* a deviated run with no outcome is refused, naming the three, and writes nothing */
+  const tasks = () => db.prepare("SELECT count(*) AS n FROM records WHERE kind = 'task'").get().n;
+  const card = () => recordByLabel(db, 'PR-1');
+  const before = [card().fields.runs, notes(db, card().key).length, tasks()];
+  assert.throws(() => pv.recordRun(db, { name: 'PR-1', result: 'deviated', note: 'the build needed --force', project: DIR }, actor), /--fixed.*--one-off.*--filed/);
+  assert.deepEqual([card().fields.runs, notes(db, card().key).length, tasks()], before);
+  /* a one-off records its why and files no task; the same step a one-off again is the card to fix */
+  const off = pv.recordRun(db, { name: 'PR-1', result: 'deviated', note: 'Step 3 needed --force.', oneOff: 'the cache was cold', project: DIR }, actor);
+  assert.deepEqual([off.flag, off.cleanRuns, off.verified.self, off.outcome.kind, tasks()], ['', 0, head, 'one-off', before[2]]);
+  assert.match(notes(db, card().key).at(-1), /the cache was cold/);
+  assert.throws(() => pv.recordRun(db, { name: 'demo', result: 'deviated', note: 'step 3 needed it again', oneOff: 'cold again', project: DIR }, actor), /card should be fixed/);
+  assert.throws(() => pv.recordRun(db, { name: 'demo', result: 'deviated', note: 'x', fixed: 'not a sha', project: DIR }, actor), /sha/);
+  /* filed names an open task the session placed; an unplaced one is refused */
+  const ws = createRecord(db, { kind: 'workstream', name: 'Demo', description: 'd' }, actor);
+  const loose = createRecord(db, { kind: 'task', name: 'Loose', description: 'd', workstream: ws.id }, actor);
+  assert.throws(() => pv.recordRun(db, { name: 'demo', result: 'deviated', note: 'x', filed: loose.id, project: DIR }, actor), /no track and in no inbox/);
+  const line = runVerb(db, 'newTrack', { name: 'Demo line', workstream: ws.id }, 'cli');
+  const work = createRecord(db, { kind: 'task', name: 'Make the build take --force', description: 'd', track: line.id }, actor);
+  const dev = pv.recordRun(db, { name: 'PR-1', result: 'deviated', note: 'the build needed --force', filed: work.id, project: DIR }, actor);
+  assert.deepEqual([dev.flag, dev.outcome.kind, dev.openTasks], ['the build needed --force', 'filed', [work.id]]);
+  assert.equal(badgeOf(card().fields).badge, 'flagged');
+  /* a task's refs name the card with its badge, and the card lists the open tasks citing it */
+  const [citing, closed] = ['Run the demo build', 'An old demo run'].map((name) => createRecord(db, { kind: 'task', name, description: 'd', workstream: ws.id, refs: ['PR-1'] }, actor));
+  editRecord(db, { id: closed.id, status: 'dropped', note: 'gone' }, actor);
+  assert.deepEqual(pv.cardsCited(db, recordByLabel(db, citing.id).fields.refs).map((c) => c.id + ' ' + c.badge), ['PR-1 flagged']);
+  assert.deepEqual(pv.tasksCiting(db, card()).map((t) => t.label), [citing.id]);
+  /* a ref stored as a bare string names the card in the kickoff too, as the card's list counts it */
+  const bare = createRecord(db, { kind: 'task', name: 'A bare ref', description: 'd', track: line.id }, actor);
+  db.prepare("UPDATE records SET fields = json_set(fields, '$.refs', 'PR-1') WHERE key = ?").run(recordByLabel(db, bare.id).key);
+  assert.ok(pv.tasksCiting(db, card()).some((t) => t.label === bare.id));
+  const ready = runVerb(db, 'trackKickoff', { track: line.id }, 'cli').kickoff.split('\n').find((l) => l.startsWith('Ready'));
+  assert.match(ready, new RegExp(bare.id + ' [^;]*PR-1'));
+  // a run report as the note leaves the flag its lead, the journal the whole once
   const report = 'step 2 ran the build twice.\n' + 'The report goes on at length. '.repeat(40);
-  const long = pv.recordRun(db, { name: 'demo', result: 'deviated', note: report, project: DIR }, actor);
+  const long = pv.recordRun(db, { name: 'demo', result: 'deviated', note: report, filed: work.id, project: DIR }, actor);
   assert.equal(long.flag, 'step 2 ran the build twice');
-  assert.ok(long.draft.includes('step 2 ran the build twice') && long.draft.length < 400 && !long.draft.includes('at length'));
-  assert.equal(notes(db, recordByLabel(db, 'PR-1').key).at(-1).split('at length').length - 1, 40);
+  assert.equal(notes(db, card().key).at(-1).split('at length').length - 1, 40);
+  assert.equal(tasks(), 5, 'no run filed a task');
+  /* a clean run leaves the flag while the filed task is open; closing it lets the next one clear it */
   for (let i = 0; i < 2; i++) pv.recordRun(db, { name: 'demo', result: 'clean', project: DIR, heads: { self: 'b'.repeat(40) } }, actor);
   const three = pv.recordRun(db, { name: 'demo', result: 'clean', project: DIR, stale: [] }, actor);
-  assert.deepEqual([three.runs, three.cleanRuns, three.flag, three.verified.self], [6, 3, '', 'b'.repeat(40)]);
+  assert.deepEqual([three.cleanRuns, three.flag, three.verified.self, three.openTasks], [3, 'step 2 ran the build twice', 'b'.repeat(40), [work.id]]);
   assert.ok(three.suggestScript);
+  editRecord(db, { id: work.id, status: 'done' }, actor);
+  assert.equal(pv.recordRun(db, { name: 'demo', result: 'clean', project: DIR }, actor).flag, '');
   assert.equal(pv.triggerCards(db)[0].badge, 'fresh');
 });
 
+test('proc drafts reads the outcomes of a journal by step and lists the old draft tasks still open', () => {
+  const db = freshBoard();
+  scan(db, [file()]);
+  const card = recordByLabel(db, 'PR-1');
+  /* drafts as the runs before the ruling left them: journal notes with no outcome, and one open draft task */
+  const old = (text) => addNote(db, card.key, { at: '2026-10-22T10:00:00+00:00', actor: 'cli', body: 'deviated run: ' + text + '. Draft edit for docs/procedures/demo.md: bring the step that differed in line.' });
+  for (const t of ['Merged lane 1. Deviation: step 4 names the old build', 'Merged lane 2. Step 4 still names it', 'Ran it all at once']) old(t);
+  const ws = createRecord(db, { kind: 'workstream', name: 'Demo', description: 'd' }, actor);
+  const draft = createRecord(db, { kind: 'task', name: 'PR-1 demo: apply or decline the draft for step 4', description: 'd', workstream: ws.id }, actor);
+  db.prepare("UPDATE records SET fields = json_set(fields, '$.drafts', json(?)) WHERE key = ?").run(JSON.stringify({ 'step 4': recordByLabel(db, draft.id).key }), card.key);
+  pv.recordRun(db, { name: 'PR-1', result: 'deviated', note: 'Step 4 named the old build again.', fixed: 'c'.repeat(40), project: DIR }, actor);
+  const r = pv.procDrafts(db, { name: 'PR-1' }, actor);
+  assert.deepEqual(r.steps.map((s) => [s.step, s.runs, s.last.kind]), [['step 4', 3, 'fixed'], ['', 1, 'none']]);
+  assert.deepEqual(r.drafts, [{ step: 'step 4', task: draft.id }], 'the old draft is listed, not deleted');
+  assert.deepEqual(pv.triggerCards(db)[0].openTasks, [draft.id]);
+});
 test('a card names its project, never a folder, so a scan on another PC stays one card and is matched at this checkout', () => {
   const db = freshBoard();
   scan(db, [file()], { project: 'Z:/other-pc/demo' });

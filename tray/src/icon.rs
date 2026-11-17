@@ -1,7 +1,7 @@
-/* The six faces, the taskbar theme that picks between them, and the HICON the
+/* The ten faces, the taskbar theme that picks between them, and the HICON the
  * tray actually wears.
  *
- * The art is NOT drawn here, nor anywhere in this repo. The six committed tray
+ * The art is NOT drawn here, nor anywhere in this repo. The ten committed tray
  * .ico files come from the icon package (assets/icons/README.md carries its
  * provenance, its colours and its manifest), and they are compiled into the
  * exe by include_bytes! in tray.rs, so the tray cannot lose its icon to a
@@ -98,7 +98,7 @@ pub struct Frame {
 
 /* Reads every classic 32 bit frame out of an .ico. A frame in any other depth,
    and a PNG-compressed frame (app.ico carries one at 256), is skipped rather
-   than guessed at: the six committed tray files are five classic 32 bit frames
+   than guessed at: the ten committed tray files are five classic 32 bit frames
    each by construction, and a fallback that silently drew the wrong thing
    would be worse than an empty list. The 40 byte BITMAPINFOHEADER is checked
    FIRST, because a PNG payload's own bytes would otherwise be read as a width
@@ -348,7 +348,7 @@ mod tests {
     const DELIVERED: [u32; 5] = [16, 20, 24, 32, 48];
 
     #[test]
-    fn all_six_faces_carry_the_five_delivered_frames() {
+    fn all_ten_faces_carry_the_five_delivered_frames() {
         for (set, which) in [(ART_DARK, "dark"), (ART_LIGHT, "light")] {
             for bytes in set {
                 let frames = parse(bytes);
@@ -378,13 +378,13 @@ mod tests {
     }
 
     #[test]
-    fn the_light_and_dark_sets_are_six_distinct_files() {
+    fn the_light_and_dark_sets_are_ten_distinct_files() {
         let mut seen: Vec<&[u8]> = Vec::new();
         for bytes in ART_DARK.iter().chain(ART_LIGHT.iter()) {
             assert!(!seen.contains(bytes), "two faces are the same file");
             seen.push(bytes);
         }
-        assert_eq!(seen.len(), 6);
+        assert_eq!(seen.len(), 10);
     }
 
     #[test]

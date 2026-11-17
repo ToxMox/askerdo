@@ -39,7 +39,7 @@ else if (a.includes('--project')) out({ questions: [{ id: 'Q5', key: 'q5', name:
 else if (a.includes('--label')) out(a.includes('knowledge') ? [{ id: 'K-2', name: 'Bus rate', refs: ['onboard:fact:handoff/STATE.md#L2'] }] : []);
 else if (a.includes('workstream') && !a.includes('--workstream')) out([{ id: 'WS-1', name: 'Proj', status: 'open', projectRepos: mine }]);
 else if (a.includes('knowledge')) out([{ id: 'K-2', name: 'Bus rate', type: 'gotcha', status: 'active', projectRepos: mine }]);
-else if (a.includes('task')) out([{ id: 'T-1', name: 'Wire the bus', status: 'open' }, { id: 'T-2', name: 'Port the mixer', status: 'completed' }]);
+else if (a.includes('task')) out([{ id: 'T-1', name: 'Wire the bus', status: 'open' }, { id: 'T-2', name: 'Port the mixer', status: 'done' }]);
 else out([]);`;
 
 test('the survey writes facts and judges nothing', (t) => {
@@ -53,6 +53,14 @@ test('the survey writes facts and judges nothing', (t) => {
   for (let i = 1; i <= 15; i++) p.commit('2026-02-' + String(i).padStart(2, '0'), { ['notes/n' + i + '.md']: 'note ' + i + '\n' }, 'note ' + i + ' ' + 'x'.repeat(i === 15 ? 300 : 0));
   p.commit('2026-03-01', {
     'reviews/wave-1.md': '# Wave 1 review\n',
+    /* a data file naming a folder's file reads it */
+    /* a ../ value resolves from its own folder: ../notes here is tools/notes, not the root notes */
+    'tools/sync/paths.json': '{\n  "runs": "../../logs/run-1.md",\n  "notes": "../notes"\n}\n',
+    'tools/notes/a.md': 'a\n',
+    /* a value written from the root with a leading slash still counts for the root folder */
+    'tools/root.json': '{\n  "index": "/notes/index.md"\n}\n',
+    /* a JSON value that only mentions a folder in a sentence does not read it */
+    'tools/sync/notes.json': '{\n  "about": "the run notes under logs/ are old"\n}\n',
     'tests/check.mjs': "import { readFileSync } from 'node:fs';\nreadFileSync('reviews/wave-1.md', 'utf8');\n",
   }, 'review: wave 1');
   p.commit('2026-04-20', {
@@ -82,6 +90,11 @@ test('the survey writes facts and judges nothing', (t) => {
   assert.ok(claude.text.includes('force-push') && claude.names.some((n) => n.file === 'handoff/STATE.md'));
   assert.ok(plans.cites.from.some((c) => c.startsWith('CLAUDE.md:')));
   assert.ok(folder('reviews').codeReaders.from.some((c) => c.startsWith('tests/check.mjs:')));
+  assert.ok(folder('logs').codeReaders.from.includes('tools/sync/paths.json:2'));
+  assert.ok(folder('tools/notes').codeReaders.from.includes('tools/sync/paths.json:3'));
+  assert.ok(!(folder('notes').codeReaders || { from: [] }).from.some((c) => c.startsWith('tools/sync/')));
+  assert.ok(folder('notes').codeReaders.from.includes('tools/root.json:2'));
+  assert.ok(!folder('logs').codeReaders.from.some((c) => c.startsWith('tools/sync/notes.json')));
   assert.ok(f.claude.some((c) => /force-push/.test(c.clause)), 'the CLAUDE.md clauses');
 
   /* the board: the answered question with its answer clipped, open tasks only, the earlier import with its refs */

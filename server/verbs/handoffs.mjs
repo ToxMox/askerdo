@@ -2,19 +2,21 @@
    checkpoint TR-n.m on its track. Writing one supersedes the live one before it
    and lets the session's lease go, so the track reads waiting (or parked);
    resuming takes the lease back and marks it resumed. The board keeps only each
-   repo's verify-first summary: the loose-file lists stay on the PC. */
+   repo's verify-first summary: the loose-file, worktree and branch lists stay on the PC. */
 import { tx, readTx } from '../db.mjs';
-import { actorOf, clockOf, isFullStamp, kebab, logVerb, mintKey, pcOfCall, putHandoff } from '../records.mjs';
+import { actorOf, clockOf, isFullStamp, kebab, logVerb, mintKey, pcOfCall, putHandoff, unguardHeadings } from '../records.mjs';
 import { TrackRefusal, loadRecord, recordOf, trackGraph } from './graph.mjs';
 import { resolveRecord } from './labels.mjs';
 import {
-  CHAIN_NO, NEWEST_FIRST, acquireLease, chainOf, holderPlain, isStalled, layOut, newTrack as startTrack, noHandoff, openLeaves, parkTrack, projectInbox, quietSince, releaseLease, splinter, stateOf, takeOver, unparkOf, MOVES,
+  CHAIN_NO, NEWEST_FIRST, acquireLease, chainOf, holderPlain, isStalled, noHandoff, openLeaves, parkTrack, projectInbox, quietSince, releaseLease, splinter, stateOf, takeOver, unparkOf, MOVES,
 } from './tracks.mjs';
-import { CLI, growthLines, kickoffInput, kickoffText, workstreamHead } from './kickoff.mjs';
-import { foundWork } from './found.mjs';
+import { CLI, UNTAKEN_MAX, ageText, checkpointOf, goalNote, growthLines, kickoffInput, kickoffText, mentions, untakenTracks, workstreamHead } from './kickoff.mjs';
+import { foundWork, inboxOffers } from './found.mjs';
 import { reviewHead, trackReview } from './coverage.mjs';
-import { giveHand, letGoHand } from './work.mjs';
-import { RUN_BY_HINT, applyOps, opsProblems, runByOf, staleToolsLine, stateProblems, stepAt, waitingOf, whereProblems } from '../handoff-text.mjs';
+import { handKeys, letGoHand, noteRecord, restateGoal } from './work.mjs';
+import { applyOps, cutLines, opsProblems, staleToolsLine, stateProblems, waitingOf, whereProblems } from '../handoff-text.mjs';
+import { layLeftovers } from './leftovers.mjs';
+import { workersOf } from './runs.mjs';
 import { boardVersion } from '../version.mjs';
 
 /* Today's budgets (lib/handoff-payload.mjs); the PC checks the same first, so
@@ -23,15 +25,21 @@ export const FOCUS_MAX = 400;
 export const LINE_MAX = 400;
 export const STATE_BYTES = 10240;
 export const WHERE_BYTES = 4096;
+export const GOAL_MAX = 600;
 const LIVE = ['waiting', 'parked'];
 const CLOSED = ['done', 'dropped', 'folded'];
 /* inHand: the session's tasks in hand at the handoff, as keys, newest first */
-export const HANDOFF_KEYS = Object.freeze(['id', 'key', 'track', 'pc', 'status', 'focus', 'waitingOnUser', 'rulings', 'fromSession', 'inHand',
-  'depthAtHandoff', 'growth', 'chain', 'parkReason', 'resumedBy', 'resumed', 'supersededBy', 'created', 'updated']);
+/* silentInHand: those of them with nothing written on them that leg */
+export const HANDOFF_KEYS = Object.freeze(['id', 'key', 'track', 'pc', 'status', 'focus', 'waitingOnUser', 'rulings', 'fromSession', 'inHand', 'silentInHand',
+  'depthAtHandoff', 'growth', 'chain', 'parkReason', 'nextPc', 'resumedBy', 'resumed', 'supersededBy', 'created', 'updated', 'goal', 'goalWas']);
 /* the summary a repo carries on the board; files and snapshots are refused */
-const VERIFY_KEYS = ['path', 'branch', 'worktree', 'commit', 'ok', 'problems'];
+/* remote: the repo's shared name, so a PC that holds it at another path finds it */
+const VERIFY_KEYS = ['path', 'remote', 'branch', 'worktree', 'commit', 'ok', 'problems'];
 
 const bytes = (s) => Buffer.byteLength(s, 'utf8');
+/* blank lines and the end trimmed, never a line's leading space: the PC's heading guard is one */
+const NL = String.fromCharCode(10);
+export const edgeTrim = (s) => { const ls = String(s).trimEnd().split(NL); while (ls.length && !ls[0].trim()) ls.shift(); return ls.join(NL); };
 const text = (v) => typeof v === 'string' && v.trim() !== '';
 const oneLine = (v) => text(v) && !/[\r\n]/.test(v) && v.trim().length <= LINE_MAX;
 
@@ -54,11 +62,11 @@ function checkVerify(list) {
     const at = 'verify[' + i + ']';
     if (!e || typeof e !== 'object' || Array.isArray(e)) throw new TrackRefusal(at + ' must be an object');
     for (const k of Object.keys(e)) {
-      if (!VERIFY_KEYS.includes(k)) throw new TrackRefusal(at + ' does not take ' + k + ': the board keeps ' + VERIFY_KEYS.join(', ') + ', the loose-file lists stay on the PC');
+      if (!VERIFY_KEYS.includes(k)) throw new TrackRefusal(at + ' does not take ' + k + ': the board keeps ' + VERIFY_KEYS.join(', ') + ', the loose-file, worktree and branch lists stay on the PC');
     }
     if (!text(e.path)) throw new TrackRefusal(at + '.path is required: the repo directory');
     const out = { path: e.path.trim() };
-    for (const k of ['branch', 'worktree', 'commit']) if (text(e[k])) out[k] = e[k].trim();
+    for (const k of ['remote', 'branch', 'worktree', 'commit']) if (text(e[k])) out[k] = e[k].trim();
     out.ok = e.ok !== false;
     if (Array.isArray(e.problems) && e.problems.length) out.problems = e.problems.map((p) => String(p).replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 10);
     return out;
@@ -101,7 +109,7 @@ function taskGrowth(db, trackKey, since, until) {
 
 /* The payload as the PC's check left it; refusals name the field. */
 /* the keys a current caller sends; an older session's renamed key is refused, never dropped */
-const WRITE_KEYS = ['track', 'focus', 'state', 'whereWeWere', 'rulings', 'waitingOnUser', 'verify', 'depth', 'session', 'pc', 'status', 'parkReason', 'created', 'growth', 'leftovers'];
+const WRITE_KEYS = ['track', 'focus', 'state', 'whereWeWere', 'rulings', 'waitingOnUser', 'verify', 'depth', 'session', 'pc', 'status', 'parkReason', 'created', 'growth', 'leftovers', 'taskNotes', 'nextPc', 'goal'];
 
 /* the board never learns the caller's version, so a name a release stopped
    sending is what says the caller is older: name, first release without it */
@@ -118,14 +126,58 @@ function checkPayload(input) {
   if (input.whereWeWere !== undefined && input.whereWeWere !== null && input.whereWeWere !== ''
     && (!text(input.whereWeWere) || bytes(input.whereWeWere.trim()) > WHERE_BYTES)) e.push('whereWeWere is text of at most ' + WHERE_BYTES + ' bytes');
   const waiting = input.waitingOnUser === undefined ? [] : input.waitingOnUser;
-  if (!Array.isArray(waiting) || !waiting.every(oneLine)) e.push('waitingOnUser is a list of lines of at most ' + LINE_MAX);
+  const dropOf = (w) => (w && typeof w === 'object' && !Array.isArray(w) && Object.keys(w).length === 1 ? w.drop : undefined);
+  if (!Array.isArray(waiting) || !waiting.every((w) => oneLine(w) || oneLine(dropOf(w)))) e.push('waitingOnUser is a list of lines of at most ' + LINE_MAX + ', or { drop: a carried line }');
   const status = input.status === undefined ? 'waiting' : input.status;
   if (!LIVE.includes(status)) e.push('a new handoff is waiting or parked');
   if (status === 'parked' && !text(input.parkReason)) e.push('a parked handoff needs a parkReason');
   if (status === 'waiting' && input.parkReason) e.push('parkReason belongs to a parked handoff');
   if (input.created !== undefined && !isFullStamp(input.created)) e.push('created is a full local stamp');
+  if (input.taskNotes !== undefined && !(Array.isArray(input.taskNotes) && input.taskNotes.every(taskNoteOk))) e.push(TASK_NOTES);
+  if (input.goal !== undefined && input.goal !== null && (!text(input.goal) || input.goal.trim().length > GOAL_MAX)) e.push('goal is what the track is doing now, text of at most ' + GOAL_MAX + ' characters');
   if (e.length) throw new TrackRefusal('handoff write: ' + e.join('; '));
-  return { status, waiting: waiting.map((w) => w.trim()) };
+  return { status, waiting: waiting.filter((w) => typeof w === 'string').map((w) => w.trim()), drops: waiting.filter((w) => typeof w !== 'string').map((w) => w.drop.trim()) };
+}
+
+/* a task in hand gets its note (and a new description or intent) in the handoff's own call */
+const TASK_NOTES = 'taskNotes is a list of { id: T-n, note, description?, intent? }';
+const NOTE_KEYS = ['id', 'note', 'description', 'intent'];
+const taskNoteOk = (t) => !!t && typeof t === 'object' && !Array.isArray(t) && Object.keys(t).every((k) => NOTE_KEYS.includes(k))
+  && typeof t.id === 'string' && /^T-\d+$/i.test(t.id.trim()) && text(t.note) && ['description', 'intent'].every((k) => t[k] === undefined || text(t[k]));
+
+/* The tasks in hand with nothing written on them since `since` (the session's lease on the
+   track, else each task's own time in hand): a note or a rewrite, which comes with a note. */
+function silentInHand(db, session, since) {
+  const who = workersOf(db, handKeys(db, session));
+  return [...who.keys()].filter((key) => {
+    const t0 = Date.parse(since || who.get(key).inHandSince || '');
+    if (!Number.isFinite(t0)) return false;
+    return !db.stmt('SELECT at FROM notes WHERE record = ?').all(key).some((n) => Date.parse(n.at) >= t0);
+  });
+}
+
+/* The latest handoff's waits carry into the next until the writer drops each, as rulings
+   carry until registered; a line given again is not doubled. */
+const flatWait = (s) => String(s).replace(/\s+/g, ' ').trim();
+/* a carried line is settled once every question it names is answered or dropped, by the kickoff's test */
+function settledWait(db, w) {
+  const ids = [...new Set([...w.matchAll(/\bQ-?(\d+)\b/gi)].map((m) => 'Q' + Number(m[1])))].filter((id) => mentions(w, id));
+  /* a label is reused once its old holder rests, so read the holder it names today */
+  return ids.length > 0 && ids.every((id) => ['answered', 'dropped'].includes((resolveRecord(db, id, { kinds: ['question'] }) || { fields: {} }).fields.status));
+}
+function carryWaits(db, prev, given, drops) {
+  const was = prev ? waitingOf(prev.fields).map(flatWait) : [];
+  const gone = drops.map(flatWait);
+  const stray = gone.filter((d) => !was.includes(d));
+  if (stray.length) {
+    throw new TrackRefusal('waitingOnUser: ' + stray.map((d) => '"' + d + '"').join(', ') + (stray.length === 1 ? ' is' : ' are') + ' not a wait the latest handoff carries'
+      + (was.length ? '; its waits: ' + was.map((w) => '"' + w + '"').join(', ') : '; it carries none'));
+  }
+  const left = was.filter((w) => !gone.includes(w));
+  const settled = left.filter((w) => settledWait(db, w));
+  const kept = left.filter((w) => !settled.includes(w));
+  const fresh = given.map(flatWait).filter((w, i, all) => !kept.includes(w) && all.indexOf(w) === i);
+  return { waiting: [...kept, ...fresh], carried: kept.filter((w) => !given.map(flatWait).includes(w)), settled };
 }
 
 /* the latest handoff's unregistered rulings carry into the next until the
@@ -171,9 +223,12 @@ export function handoffPayload(db, h) {
   return {
     ...f, kind: 'handoff', track: lab(f.track) || h.track, ...(sup ? { supersededBy: sup.label } : {}),
     ...(Array.isArray(f.inHand) ? { inHand: f.inHand.map((k) => lab(k) || k) } : {}),
+    /* one written on since the handoff is no longer silent */
+    ...(Array.isArray(f.silentInHand) ? { silentInHand: f.silentInHand.filter((k) => !db.stmt('SELECT at FROM notes WHERE record = ?').all(k).some((n) => Date.parse(n.at) >= Date.parse(f.created)))
+      .map((k) => { const r = loadRecord(db, k); return { id: r ? r.fields.id : k, name: r ? r.fields.name || '' : '' }; }) } : {}),
     ...(f.growth ? { growth: { ...f.growth, since: f.growth.since ? handoffLabel(db, f.growth.since) : undefined } } : {}),
     waitingOnUser: waitingOf(f), rulings: (f.rulings || []).map(parseRuling).filter(Boolean),
-    state: h.state, ...(h.where_we_were ? { whereWeWere: h.where_we_were } : {}), verify: h.verify,
+    state: h.state, ...(h.where_we_were ? { whereWeWere: unguardHeadings(h.where_we_were) } : {}), verify: h.verify,
   };
 }
 
@@ -186,68 +241,25 @@ const ending = (c) => (c ? Number((/\.(\d+)$/.exec(String(c.fields.id || '')) ||
 export const REFUSED = 'the board refused this handoff and wrote nothing';
 const isRefusal = (e) => !!e && (e.name === 'TrackRefusal' || (e.constructor && e.constructor.name === 'UsageError'));
 
-/* each leftover laid out on its own inside the handoff's transaction, its after
-   numbers turned into the ids laid out before it, so a refusal names its step.
-   each names who runs it, which its task carries. One naming newTrack goes on a new track of that name, parked until its unparkWhen. */
-function layLeftovers(db, track, steps, session, actor) {
-  if (!Array.isArray(steps)) throw new TrackRefusal('leftovers is a list of steps: { name, task, after, before, runBy }');
-  const out = [];
-  const fresh = new Map();
-  steps.forEach((s, i) => {
-    const at = stepAt('leftovers', i, s) + ': ';
-    if (!s || typeof s !== 'object' || !runByOf(s.runBy)) throw new TrackRefusal(at + 'runBy names who runs it: ' + RUN_BY_HINT);
-    let after;
-    if (s && typeof s === 'object' && Array.isArray(s.after)) {
-      after = s.after.map((a) => {
-        if (typeof a === 'string' && /^T-\d+$/.test(a.trim())) return a.trim();
-        if (Number.isInteger(a) && a >= 1 && a <= i) return out[a - 1].id;
-        throw new TrackRefusal(at + 'after names ' + JSON.stringify(a) + ': a T-n id, or the number of an earlier step' + (i ? ' (1 to ' + i + ')' : ', and this is the first'));
-      });
-    }
-    const { newTrack: named, unparkWhen, ...one } = after ? { ...s, after } : s;
-    const on = named === undefined ? track : laterTrack(db, track, fresh, named, unparkWhen, at, actor);
-    try {
-      const laid = layOut(db, { track: on.key, steps: [one], session }, actor).steps[0];
-      out.push(on === track ? laid : { ...laid, track: on.fields.id });
-    } catch (e) {
-      if (!isRefusal(e)) throw e;
-      /* the layout names its one step as step 1; the leftover's own number stands in */
-      const m = String(e.message), inner = stepAt('steps', 0, one) + ': ';
-      throw new TrackRefusal(at + (m.startsWith(inner) ? m.slice(inner.length) : m.replace(/^step 1\b\.?\s*/, '')), e.data);
-    }
-  });
-  /* parked once every step is laid, so "task-completes 2" can name a leftover by its number */
-  const parked = [...fresh.values()].map((f) => {
-    const n = /^\s*task-completes\s+(\d+)\s*$/i.exec(f.when);
-    if (n && !(Number(n[1]) >= 1 && Number(n[1]) <= out.length)) throw new TrackRefusal(f.at + 'unparkWhen names leftover ' + n[1] + ', and there are ' + out.length);
-    const when = n ? 'task-completes ' + out[Number(n[1]) - 1].id : f.when;
-    let r;
-    try {
-      r = parkTrack(db, { track: f.rec.key, reason: 'work for later, laid out by the handoff on ' + track.fields.id, unparkWhen: when }, actor);
-    } catch (e) {
-      if (!isRefusal(e)) throw e;
-      throw new TrackRefusal(f.at + e.message, e.data);
-    }
-    return { id: r.id, name: f.rec.fields.name, unpark: r.unpark };
-  });
-  return { steps: out, parked };
+/* the PCs the board knows by name: live device tokens, and the PCs its leases,
+   handoffs and project maps name (a board with no tokens knows its PCs that way). */
+function pcsKnown(db, caller) {
+  const names = new Set();
+  const add = (v) => { if (typeof v === 'string' && v.trim()) names.add(v.trim()); };
+  for (const r of db.stmt('SELECT DISTINCT device FROM tokens WHERE revoked IS NULL').all()) add(r.device);
+  for (const t of ['leases', 'handoffs']) for (const r of db.stmt('SELECT DISTINCT pc FROM ' + t).all()) add(r.pc);
+  for (const r of db.stmt("SELECT name FROM meta WHERE name LIKE 'pc.map.%'").all()) add(r.name.slice('pc.map.'.length));
+  add(caller);
+  return [...names].sort((a, b) => a.localeCompare(b));
 }
 
-/* The new track a leftover names, made once per name in the workstream of the track handed off. */
-function laterTrack(db, track, fresh, named, when, at, actor) {
-  if (typeof named !== 'string' || !named.trim() || /[\r\n]/.test(named)) throw new TrackRefusal(at + 'newTrack is the new track\'s name, one line');
-  const k = named.replace(/\s+/g, ' ').trim().toLowerCase();
-  const had = fresh.get(k);
-  const said = typeof when === 'string' && when.trim() ? when.trim() : null;
-  if (had) {
-    if (said && said !== had.when) throw new TrackRefusal(at + 'unparkWhen differs from the one ' + had.rec.fields.id + ' takes (' + had.when + ')');
-    return had.rec;
-  }
-  if (!said) throw new TrackRefusal(at + 'a new parked track needs its unparkWhen: "track-ends TR-n", "task-completes T-n" (or a leftover\'s number) or "question-answered Q-n"');
-  const made = startTrack(db, { name: named.replace(/\s+/g, ' ').trim(), workstream: track.fields.workstream }, actor);
-  const rec = loadRecord(db, made.key);
-  fresh.set(k, { rec, when: said, at });
-  return rec;
+/* a name as the board spells it, any case; one it does not know is refused with those it does */
+function knownPc(db, name, caller) {
+  const want = String(name).trim();
+  const all = pcsKnown(db, caller);
+  const hit = all.find((n) => n.toLowerCase() === want.toLowerCase());
+  if (!hit) throw new TrackRefusal('nextPc names ' + want + ', a PC the board does not know; it knows ' + (all.length ? all.join(', ') : 'none yet'));
+  return hit;
 }
 
 /* writeHandoff(db, { track, focus, state, whereWeWere, rulings, waitingOnUser,
@@ -262,7 +274,7 @@ export function writeHandoff(db, input = {}, actor) {
 }
 
 function writeOn(db, input, actor) {
-  const { status, waiting } = checkPayload(input || {});
+  const { status, waiting: given, drops } = checkPayload(input || {});
   const verify = checkVerify(input.verify);
   const repoGrowth = repoHalf(input.growth);
   return tx(db, () => {
@@ -271,12 +283,13 @@ function writeOn(db, input, actor) {
     if (CLOSED.includes(rec.fields.status)) throw new TrackRefusal(rec.fields.id + ' is ' + rec.fields.status + '; a closed track takes no handoff');
     const session = (text(input.session) && input.session.trim()) || c.session || '';
     const pc = pcOfCall(input, c) || '';
+    const nextPc = input.nextPc === undefined || input.nextPc === null || input.nextPc === '' ? undefined : knownPc(db, input.nextPc, pc);
     /* the steps left go on the track before the handoff lands; the state carries the thinking */
     const none = input.leftovers === undefined || input.leftovers === null || (Array.isArray(input.leftovers) && !input.leftovers.length);
-    const lay = none ? null : layLeftovers(db, rec, input.leftovers, session, actor);
-    const laid = lay ? lay.steps : null;
     const chain = chainRows(db, rec.key);
     const m = chain.reduce((top, h) => Math.max(top, ending(h)), 0) + 1;
+    const lay = none ? null : layLeftovers(db, { track: rec, workstream: rec.fields.workstream, why: 'work for later, laid out by the handoff on ' + rec.fields.id, session, via: 'handoff' }, input.leftovers, actor);
+    const laid = lay ? lay.steps : null;
     const rulings = carryRulings(chain, input.rulings);
     const d = input.depth && typeof input.depth === 'object' ? input.depth : null;
     const depth = d && (Number.isFinite(d.tokens) || Number.isFinite(d.percent))
@@ -285,15 +298,27 @@ function writeOn(db, input, actor) {
     const focus = input.focus.trim();
     const created = input.created || c.at;
     const prev = chain.length ? chain[chain.length - 1] : null;
+    const { waiting, carried, settled } = carryWaits(db, prev, given, drops);
     const growth = { since: prev ? prev.key : undefined, ...taskGrowth(db, rec.key, prev ? prev.fields.created : rec.fields.created, created), ...repoGrowth };
     /* the handoff carries the session's tasks in hand, read from the board; each lets go for the resume */
-    const hand = session ? letGoHand(db, session, actor, 'handed off at ' + rec.fields.id + '.' + m) : [];
+    for (const t of input.taskNotes || []) noteRecord(db, { id: t.id.trim(), text: t.note, description: t.description, intent: t.intent }, actor);
+    const mineSince = session ? (db.stmt('SELECT since FROM leases WHERE track = ? AND session = ?').get(rec.key, session) || {}).since : null;
+    const silent = session ? silentInHand(db, session, mineSince) : [];
+    const hand = session ? letGoHand(db, session, actor, 'handed off at ' + rec.fields.id + '.' + m, key) : [];
+    /* the session's runs with a branch, ended by this write or still open (its agents'), for the PC's remote check */
+    const runs = session ? db.stmt(`SELECT id, worker, job, pc, repo, branch, ended, how FROM runs WHERE session = ? AND branch IS NOT NULL AND branch <> ''
+      AND (handoff = ? OR ended IS NULL) ORDER BY id`).all(session, key).map((r) => ({ run: r.id, worker: r.worker, job: r.job, pc: r.pc, repo: r.repo, branch: r.branch, ended: r.ended, how: r.how })) : [];
+    /* a goal restated at the handoff amends the track's as a note does, the handoff its why */
+    const goal = text(input.goal) ? input.goal.trim() : undefined;
+    const amended = goal ? restateGoal(db, resolveRecord(db, rec.fields.id, { kinds: ['track'] }), goal, goalNote(rec.fields.id + '.' + m), c) : null;
+    /* a track born with no goal keeps its name in that section, which was never a goal to restate */
+    const goalWas = rec.fields.goal ? amended : null;
     const h = {
-      key, slug: kebab(focus, 'handoff'), state: input.state.trim(), where_we_were: text(input.whereWeWere) ? input.whereWeWere.trim() : null, verify,
+      key, slug: kebab(focus, 'handoff'), state: input.state.trim(), where_we_were: text(input.whereWeWere) ? edgeTrim(input.whereWeWere) : null, verify,
       fields: ordered({
         id: rec.fields.id + '.' + m, key, track: rec.key, pc, status, focus, waitingOnUser: waiting, rulings: rulings.map(rulingLine),
-        fromSession: session, inHand: hand.length ? hand : undefined, depthAtHandoff: depth, growth, chain: chainOf(db, rec.key).text, parkReason: status === 'parked' ? input.parkReason.trim() : undefined,
-        created, updated: c.at,
+        fromSession: session, inHand: hand.length ? hand : undefined, silentInHand: silent.length ? silent : undefined, depthAtHandoff: depth, growth, chain: chainOf(db, rec.key).text, parkReason: status === 'parked' ? input.parkReason.trim() : undefined,
+        nextPc, created, updated: c.at, goal, goalWas: goalWas ?? undefined,
       }),
     };
     save(db, h);
@@ -320,18 +345,22 @@ function writeOn(db, input, actor) {
     const after = loadRecord(db, rec.key);
     const shown = handoffPayload(db, h);
     const ws = after.fields.workstream ? loadRecord(db, after.fields.workstream) : null;
+    /* the inbox the kickoff listed; each due item owed here carries the board's call, printed once */
+    const inbox = inboxOffers(db, projectInbox(db, after.fields.workstream, c.day), { held: rec.key, wsKey: after.fields.workstream });
     return {
-      ...shown, superseded, released: Boolean(mine), trackState: stateOf(db, after), growthLines: growthLines(db, shown.growth),
-      ...(laid ? { laidOut: laid } : {}), ...(lay && lay.parked.length ? { parkedTracks: lay.parked } : {}),
+      ...shown, superseded, released: Boolean(mine), ...(runs.length ? { runs } : {}), trackState: stateOf(db, after), ...(carried.length ? { carriedWaits: carried } : {}), ...(settled.length ? { settledWaits: settled } : {}),
+      growthLines: growthLines(db, shown.growth, { held: rec.key, day: c.day, inbox, calledAt: 'under the inbox\'s Place each line' }),
+      ...(laid ? { laidOut: laid, steps: laid.map((t) => (t.asked && !t.id ? { step: t.step, asked: t.asked } : { step: t.step, id: t.id })) } : {}), ...(lay && lay.parked.length ? { parkedTracks: lay.parked } : {}),
       /* read after the leftovers are laid, so the reply confirms or wires each */
       leaves: openLeaves(db, rec.key),
       /* the review readout, worded by the PC (reviewLine) */
-      review: reviewHead(trackReview(db, rec.key)),
+      review: reviewHead(trackReview(db, rec.key)), checkpoint: checkpointOf(db, rec.key),
       workstream: workstreamHead(ws),
-      /* the inbox the kickoff listed, so the reply places, carries or asks about each */
-      inbox: projectInbox(db, after.fields.workstream, c.day),
+      inbox,
+      /* the workstream's tracks with ready work no session holds, for the reply to name */
+      untaken: untakenTracks(db, after.fields.workstream, rec.key, null, c.date.getTime()),
       resume: '/askerdo resume ' + rec.fields.id,
-      next: 'Hand the user this line in a copy block: /askerdo resume ' + rec.fields.id,
+      next: 'Hand the user this line in a copy block' + (nextPc ? ', to run on ' + nextPc : '') + ': /askerdo resume ' + rec.fields.id,
       ...(warning ? { warning } : {}), ...(junction && junction.track ? { junction } : {}),
     };
   });
@@ -341,7 +370,7 @@ function writeOn(db, input, actor) {
 export const UPDATE_REFUSED = 'the board refused this update and changed nothing';
 const MAX = { state: STATE_BYTES, where: WHERE_BYTES, line: LINE_MAX };
 const HANDOFF_ID = /^TR-\d+\.\d+$/i;
-const textProblems = (state, where) => [...stateProblems(state || '', MAX), ...(text(where) ? whereProblems(where, MAX) : [])];
+const textProblems = (state, where, held) => [...stateProblems(state || '', MAX, held), ...(text(where) ? whereProblems(where, MAX) : [])];
 
 /* updateHandoff(db, { id, session, pc, ops }, actor): the track's last handoff patched in
    place while it waits or is parked, keeping its id and depth (lib/handoff-payload.mjs
@@ -368,7 +397,7 @@ function noLongerLive(db, rec, h, c) {
 function updateOn(db, input, actor) {
   const shape = opsProblems(input.ops, MAX);
   if (shape.length) throw new TrackRefusal(shape.join('; '));
-  /* a repo's summary alone, as on a write; the loose-file lists stay on the PC */
+  /* a repo's summary alone, as on a write; the loose-file, worktree and branch lists stay on the PC */
   const ops = input.ops.map(({ op, ...rest }) => (op === 'verifyFirst' ? { op, ...checkVerify([rest])[0] } : { op, ...rest }));
   return tx(db, () => {
     const c = actorOf(actor);
@@ -389,18 +418,22 @@ function updateOn(db, input, actor) {
     if (!LIVE.includes(h.fields.status)) throw noLongerLive(db, rec, h, c);
     const pc = pcOfCall(input, c) || '';
     if (h.fields.pc && pc && pc !== h.fields.pc && ops.some((o) => o.op === 'verifyFirst')) {
-      throw new TrackRefusal('the loose-file lists of ' + h.fields.id + ' stay on ' + h.fields.pc + ', so its verifyFirst is refreshed there');
+      throw new TrackRefusal('the loose-file, worktree and branch lists of ' + h.fields.id + ' stay on ' + h.fields.pc + ', so its verifyFirst is refreshed there');
     }
     const p = applyOps({ state: h.state, whereWeWere: h.where_we_were, waitingOnUser: waitingOf(h.fields), verify: h.verify }, ops);
     if (p.problems.length) throw new TrackRefusal(p.problems.join('; '));
-    /* the write's budgets and prose-order check on the patched text; what was there already stands */
+    /* the write's budgets and prose-order check on the patched text; what was there already stands,
+       a stored line by its text, since a patch above it moves its number */
     const was = textProblems(h.state, h.where_we_were);
-    const fresh = textProblems(p.state, p.whereWeWere).filter((x) => !was.includes(x));
+    const fresh = textProblems(p.state, p.whereWeWere, new Set(cutLines(h.state || '', LINE_MAX).map(([, l]) => l))).filter((x) => !was.includes(x));
     if (fresh.length) throw new TrackRefusal(fresh.join('; '));
     h.state = p.state.trim();
-    h.where_we_were = text(p.whereWeWere) ? p.whereWeWere.trim() : null;
+    h.where_we_were = text(p.whereWeWere) ? edgeTrim(p.whereWeWere) : null;
     h.verify = p.verify;
-    h.fields = ordered({ ...h.fields, waitingOnUser: p.waitingOnUser, updated: c.at });
+    /* the last nextPc op wins; '' clears it */
+    const setPc = ops.filter((o) => o.op === 'nextPc').pop();
+    const nextPc = !setPc ? h.fields.nextPc : setPc.pc.trim() ? knownPc(db, setPc.pc, pc) : undefined;
+    h.fields = ordered({ ...h.fields, nextPc, waitingOnUser: p.waitingOnUser, updated: c.at });
     save(db, h);
     line(db, c, 'edit', h, Object.fromEntries(Object.entries(p.changes).map(([k, v]) => [k, [null, v]])));
     return { ...handoffPayload(db, h), changed: p.changes, trackState: stateOf(db, loadRecord(db, rec.key)) };
@@ -453,6 +486,16 @@ export function resumeTrack(db, input = {}, actor) {
     if (!session) throw new TrackRefusal('resume needs the session');
     if (CLOSED.includes(rec.fields.status)) throw new TrackRefusal(id + ' is ' + rec.fields.status + '; a closed track takes no session');
     const heldByOther = holder && holder.session !== session;
+    /* a handoff that names the PC its next leg runs on is taken elsewhere only once the user says so */
+    const named = !move && !heldByOther ? liveOf(db, rec.key) : null;
+    const away = named && named.fields.nextPc && pc && named.fields.nextPc.toLowerCase() !== String(pc).toLowerCase() ? named.fields.nextPc : null;
+    if (away && !input.here) {
+      return {
+        acquired: false, elsewhere: true, track: id, key: rec.key, pc, nextPc: away, handoff: named.fields.id,
+        next: 'Not taken: handoff ' + named.fields.id + ' says the next leg of ' + id + ' runs on ' + away + ', and this is ' + pc + '. Resume it there with /askerdo resume ' + id
+          + ', or take it here anyway with /askerdo resume ' + id + ' --here.',
+      };
+    }
     if (move === 'splinter') {
       const s = splinter(db, { from: rec.key, name: input.name, goal: input.goal, session, pc }, actor);
       const k = kickoffInput(db, s.key, null, opts);
@@ -467,13 +510,15 @@ export function resumeTrack(db, input = {}, actor) {
       if (move !== 'take over') {
         return { acquired: false, track: id, key: rec.key, holder, pc, moves: MOVES.slice(), chain: chainOf(db, rec.key).text, next: holderText(id, who) + '. ' + movesNext(id) };
       }
-      from = takeOver(db, { track: rec.key, session, pc, reason: input.reason }, actor).from;
+      const took = takeOver(db, { track: rec.key, session, pc, reason: input.reason, ...(text(input.continues) ? { continues: input.continues.trim() } : {}) }, actor);
+      /* the same session going on after a /clear is no take from another, so no one is told */
+      if (!took.continued) from = took.from;
     } else {
       const a = acquireLease(db, { track: rec.key, session, pc }, actor);
       if (!a.acquired) throw new TrackRefusal(holderText(id, holderPlain(db, rec.key, a.holder, { now: nowMs, pc })));
     }
+    /* the handoff ended its tasks' runs, so they read to continue; nothing comes back in hand */
     const live = liveOf(db, rec.key);
-    const hand = live ? giveHand(db, live.fields.inHand, session, actor, 'back in hand at the resume of ' + live.fields.id) : null;
     if (live) {
       const was = live.fields.status;
       live.fields = ordered({ ...live.fields, status: 'resumed', resumedBy: session, resumed: c.at, updated: c.at });
@@ -486,8 +531,7 @@ export function resumeTrack(db, input = {}, actor) {
     return {
       acquired: true, track: id, key: rec.key, session, pc, ...(from ? { takenOverFrom: from } : {}), handoff: h,
       noHandoff: !h, state: stateOf(db, after), chain: k.view.chain, answersSince: k.answers, workstream: k.workstream,
-      ...(hand && (hand.given.length || hand.kept.length) ? { inHand: hand } : {}),
-      kickoff: kickoffText(k, { mode: 'resumed', hand }),
+      kickoff: kickoffText(k, { mode: 'resumed', away: away ? { pc, nextPc: away } : null }),
       ...(from ? { next: id + ' was taken from ' + holderPlain(db, rec.key, from, { now: nowMs, pc }) + '; that session hears so at its next prompt.' } : {}),
     };
   });
@@ -519,7 +563,7 @@ export function trackHandoffs(db, input = {}) {
         id: h.fields.id, key: h.key, status: h.fields.status, focus: h.fields.focus, created: h.fields.created, pc: h.fields.pc || null,
         fromSession: h.fields.fromSession || null, ...(h.fields.parkReason ? { parkReason: h.fields.parkReason } : {}),
         resumed: h.fields.resumed || null, waitingOnUser: waitingOf(h.fields),
-        verify: h.verify.map((v) => ({ path: v.path, ok: v.ok !== false, ...(v.commit ? { commit: v.commit } : {}) })),
+        verify: h.verify.map((v) => ({ path: v.path, ...(v.remote ? { remote: v.remote } : {}), ok: v.ok !== false, ...(v.commit ? { commit: v.commit } : {}) })),
       })),
     };
   });
@@ -560,13 +604,6 @@ export function readHandoff(db, input = {}) {
   });
 }
 
-const ageText = (msAgo) => {
-  const m = Math.max(0, Math.floor(msAgo / 60000));
-  if (m < 60) return m + 'm';
-  const hrs = Math.floor(m / 60);
-  return hrs < 48 ? hrs + 'h' : Math.floor(hrs / 24) + 'd';
-};
-
 /* history an import wrote: the handoff was written backdated (its created is not
    its write's stamp) and no lease or status change has moved the track since. */
 function historyOf(db, trackKey, h) {
@@ -578,22 +615,30 @@ function historyOf(db, trackKey, h) {
 
 /* Waiting and parked tracks across workstreams, oldest handoff first, stalled
    ones marked, each with its last handoff's focus and age; a held track whose
-   lease went quiet is listed too, with take over as its way in. */
+   lease went quiet is listed too, with take over as its way in. And a track no
+   session ever held with ready work, as kickoffs name them (five a workstream), after the rest. */
 export function shelf(db, input = {}, opts) {
   return readTx(db, () => {
     const nowMs = clockOf(opts).getTime();
+    const untaken = new Map();
+    for (const { ws } of db.stmt(`SELECT DISTINCT workstream AS ws FROM records WHERE kind = 'track' AND status = 'open' AND workstream IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM leases WHERE track = records.key)`).all()) {
+      untakenTracks(db, ws, null, (rec) => stateOf(db, rec) === 'new', nowMs).map((t) => ({ ...t, rec: recordOf(db, t.id, 'track') }))
+        .slice(0, UNTAKEN_MAX).forEach((t) => untaken.set(t.rec.key, t));
+    }
     const rows = [];
     for (const r of db.stmt("SELECT key FROM records WHERE kind = 'track' AND status IN ('open', 'parked') ORDER BY id").all()) {
       const rec = loadRecord(db, r.key);
       const state = stateOf(db, rec);
       const quiet = state === 'active' ? quietSince(db, rec.key, nowMs) : null;
-      if (state !== 'waiting' && state !== 'parked' && !quiet) continue;
+      const fresh = untaken.get(rec.key);
+      if (state !== 'waiting' && state !== 'parked' && !quiet && !fresh) continue;
       const lease = quiet ? db.stmt('SELECT session, pc FROM leases WHERE track = ?').get(rec.key) : null;
       const last = rowOf(db.stmt(ROW + ' WHERE track = ? ORDER BY ' + NEWEST_FIRST + ' LIMIT 1').get(rec.key));
       const born = last ? Date.parse(last.fields.created) : NaN;
       const ws = rec.fields.workstream ? loadRecord(db, rec.fields.workstream) : null;
       /* the Tracks tab's tile names the workstream and draws the bar */
-      const g = trackGraph(db, rec.key);
+      const g = fresh || trackGraph(db, rec.key, nowMs);
       rows.push({
         track: rec.fields.id, key: rec.key, name: rec.fields.name, workstream: ws ? ws.fields.id : null,
         workstreamName: ws ? ws.fields.name || '' : '', goal: rec.fields.goal || null, done: g.done, total: g.total, state,
@@ -604,6 +649,7 @@ export function shelf(db, input = {}, opts) {
         age: Number.isFinite(born) ? ageText(nowMs - born) : '', waitingOnUser: last ? waitingOf(last.fields) : [],
         verify: last ? last.verify : [], resume: '/askerdo resume ' + rec.fields.id + (quiet ? ' --take-over' : ''),
         ...(quiet ? { quietSince: quiet, holder: { session: lease.session, pc: lease.pc || null } } : {}),
+        ...(fresh ? { ready: fresh.ready, from: fresh.from } : {}),
       });
     }
     rows.sort((a, b) => (a.created === b.created ? a.track.localeCompare(b.track, 'en', { numeric: true })

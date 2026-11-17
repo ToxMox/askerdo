@@ -13,6 +13,8 @@ process.on('warning', (w) => { if (w.name !== 'ExperimentalWarning') process.std
 const NAMES = ['node:http', 'node:fs', 'node:os', 'node:path'];
 const [{ Agent, request }, { readFileSync }, { homedir }, { isAbsolute, join }] = typeof process.getBuiltinModule === 'function'
   ? NAMES.map((n) => process.getBuiltinModule(n)) : await Promise.all(NAMES.map((n) => import(n)));
+/* pure and import-free, so the launcher stays light */
+import { runsInCaller } from '../lib/caller-runs.mjs';
 
 /* What the commands read of the environment: the seams, the session's settings and the home. */
 const SENT = /^(ASKERDO_|CLAUDE_)/;
@@ -98,7 +100,8 @@ async function main() {
   const env = process.env;
   const cwd = process.cwd();
   const tty = process.stdin.isTTY === true;
-  const url = localServer(env);
+  /* a command the server would refuse (409) is never posted */
+  const url = runsInCaller(argv) ? null : localServer(env);
   /* stdin read once: a refusal after it was read hands the text itself to the fallback */
   let stdin;
   if (url) {

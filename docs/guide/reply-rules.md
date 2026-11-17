@@ -40,7 +40,7 @@ Line 1 opens with up to three glyphs, one per slot, in a fixed order: STATUS (wh
 |3 FORECAST|🟢|no input needed here, safe to walk away; the footer carries what's next|
 |3 FORECAST|🔜|input will be needed soon: a gate, decision or check-in at the next step or the one after; one further off is 🟢 until then|
 |3 FORECAST|🙋|input outstanding: an ask in this reply, a standing go-gate, an open question this session asked, or a blocking question in this session's scope|
-|3 FORECAST|🏁|finished: the arc is closed, nothing pending here; a next arc staged by a depth or asked-for handoff rides its resume command|
+|3 FORECAST|🏁|finished: the arc is closed, nothing pending here; a next arc staged by a handoff the mod's note called for or that was asked for rides its resume command|
 |counts|⏳|progress counter on multi-part work|
 |questions|❓|the open-questions names line: count of unanswered questions in the queue|
 |input label|⬇️|starts the label line above a fenced block the user must type or click|
@@ -201,7 +201,7 @@ Past roughly a screenful, one lone `---` rule separates what you must read (abov
 
 ### 15. Decision tables
 
-Each question is its own block: the question line, a one-line crux (the fact that decides it), then its options as a small table (type, option, what happens, catch), the pick starred on its row and a choice that is hard to undo marked one-way in its catch. The question line is the ask: one plain question ending in a question mark that names the options inline with their tokens and the pick. Never options before the ask, and never two questions in one table.
+Each question is its own block: the question line, a one-line crux (the fact that decides it), then its options as a small table (type, option, what happens, catch), the pick starred on its row and a choice that is hard to undo marked one-way in its catch. The question line is the ask: one plain question ending in a question mark that names the options inline with their tokens and the pick. A question choosing between wordings (a rule line, a message, copy) shows each option in full, never only a description of it. Never options before the ask, and never two questions in one table.
 
 The type cell is the token you answer with, the question's number and the option's letter (106a, 106b), so it names its question wherever it is read or typed. Free-form answers stay welcome.
 

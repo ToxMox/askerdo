@@ -59,6 +59,9 @@ export const ICON_DIRS = ['assets', join('assets', 'icons')];
 
 /* The three SVGs the board serves, and the one viewBox the package draws in. */
 export const FAVICONS = ['favicon.svg', 'favicon-quiet.svg', 'favicon-blocking.svg'];
+/* Every favicon SVG the checker holds: the served three and the two crescent faces, which
+   scripts/cut-asleep-icons.mjs cuts for the tray and the mod and the board does not serve. */
+export const DRAWINGS = [...FAVICONS, 'favicon-asleep.svg', 'favicon-waiting-asleep.svg'];
 export const VIEWBOX = '0 0 64 64';
 
 /* AND THEY WEAR NO TILE: the mark alone, enlarged
@@ -254,7 +257,7 @@ export function check(root = REPO_ROOT) {
   /* The favicons are SVG and carry no manifest frames of their own: what is
      pinned is the 64 unit space every drawing in the package shares, and the
      re-cut that took the tile out of them. */
-  for (const name of FAVICONS) {
+  for (const name of DRAWINGS) {
     let text;
     try {
       text = readFileSync(join(root, 'assets', name), 'utf8');

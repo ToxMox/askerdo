@@ -368,7 +368,7 @@ test('categoryOf places every event shape, and blocking beats woken', () => {
   assert.equal(categoryOf({ kind: 'collapse' }), 'collapse');
   /* the work half keys on the ENDING first, so a plan and a workstream closing
      land on the ONE row both endings mean */
-  assert.equal(categoryOf({ id: 'T-1', ending: 'completed' }), 'task-completed');
+  assert.equal(categoryOf({ id: 'T-1', ending: 'done' }), 'task-completed');
   assert.equal(categoryOf({ id: 'T-1', ending: 'dropped' }), 'task-dropped');
   assert.equal(categoryOf({ id: 'P-1', ending: 'closed' }), 'plan-closed');
   assert.equal(categoryOf({ id: 'WS-1', ending: 'closed' }), 'plan-closed');
@@ -408,7 +408,7 @@ test('attributionOf says the id, the state and the workstream, and the collapse 
   assert.equal(attributionOf({ ...q, blocking: true }), 'Q107, blocks work');
   assert.equal(attributionOf({ ...q, blocking: false }), 'Q107, a preference',
     'the reassurance past the semicolon lives in the body room now');
-  assert.equal(attributionOf({ ...q, blocking: false, woken: true, wokeBy: 'T-1 completed' }),
+  assert.equal(attributionOf({ ...q, blocking: false, woken: true, wokeBy: 'T-1 done' }),
     'Q107, a preference', 'a linked wake changes the body, never this line');
   assert.equal(attributionOf({ kind: 'closed', id: 'Q107', status: 'answered' }),
     'Q107, closed as answered');
@@ -416,7 +416,7 @@ test('attributionOf says the id, the state and the workstream, and the collapse 
     'Q107, closed as dropped', 'the landed vocabulary, not a form that only spells answered');
 
   /* the work endings, in the same three-part shape */
-  assert.equal(attributionOf({ id: 'T-42', ending: 'completed' }), 'T-42, completed');
+  assert.equal(attributionOf({ id: 'T-42', ending: 'done' }), 'T-42, done');
   assert.equal(attributionOf({ id: 'T-42', ending: 'dropped' }), 'T-42, dropped');
   assert.equal(attributionOf({ id: 'P-9', ending: 'closed' }), 'P-9, closed');
   assert.equal(attributionOf({ id: 'T-42', ending: 'exploded' }), 'T-42',
@@ -428,8 +428,8 @@ test('attributionOf says the id, the state and the workstream, and the collapse 
     'Q107, blocks work, WS-4 AskerDo');
   assert.equal(attributionOf({ ...q, blocking: true, workstream: 'WS-4' }),
     'Q107, blocks work, WS-4', 'a work store that would not read costs the clause its name');
-  assert.equal(attributionOf({ id: 'T-42', ending: 'completed', workstream: 'WS-4' }),
-    'T-42, completed, WS-4');
+  assert.equal(attributionOf({ id: 'T-42', ending: 'done', workstream: 'WS-4' }),
+    'T-42, done, WS-4');
 
   /* THE COLLAPSE SUMMARY NAMES NO RECORD, so it gets no line: an attribution
      with nothing to attribute is a blank row under the text */
@@ -979,13 +979,13 @@ function workNotifier(over = {}) {
   return { w, root, log, settle, ensured };
 }
 
-const ENDING = { id: 'T-1', name: 'counter rebuild', ending: 'completed' };
+const ENDING = { id: 'T-1', name: 'counter rebuild', ending: 'done' };
 
 /* THE WORK HALF KEEPS THE SAME GATE ORDER, in the same words: the master
    switch, then the quiet-hours window, then this ending's own row. */
 test('the work half places every ending on a row, and the row decides the alert', BOUND, async (t) => {
   const cases = [
-    [{ id: 'T-1', name: 'x', ending: 'completed' }, 'task-completed'],
+    [{ id: 'T-1', name: 'x', ending: 'done' }, 'task-completed'],
     [{ id: 'T-1', name: 'x', ending: 'dropped' }, 'task-dropped'],
     [{ id: 'P-1', name: 'x', ending: 'closed' }, 'plan-closed'],
     [{ id: 'WS-1', name: 'x', ending: 'closed' }, 'plan-closed'],
@@ -1023,7 +1023,7 @@ test('the work half places every ending on a row, and the row decides the alert'
   writeFileSync(settingsPath(w.root), JSON.stringify({
     enabled: true, categories: { 'task-completed': { show: false } },
   }) + '\n');
-  assert.equal(w.w.raise({ id: 'T-1', name: 'x', ending: 'completed' }), 0);
+  assert.equal(w.w.raise({ id: 'T-1', name: 'x', ending: 'done' }), 0);
   assert.equal(w.w.raise({ id: 'T-1', name: 'x', ending: 'dropped' }), 1);
   await w.settle();
   assert.equal(seen.length, 1);
@@ -1071,7 +1071,7 @@ test('the work alert is offered to the relay route, and a 204 is the whole of it
     kind: 'done', title: sent.alert.title, where: sent.alert.where, blocking: false,
     card: 'T-1', files: true, sound: 'Default',
   });
-  assert.deepEqual(log.lines, ['notify: work completed T-1']);
+  assert.deepEqual(log.lines, ['notify: work done T-1']);
   assert.deepEqual(ensured, [], 'a board that answered is not a board worth starting');
 
   /* 503 is the server saying it could not put the alert anywhere, so the alert
@@ -1081,7 +1081,7 @@ test('the work alert is offered to the relay route, and a 204 is the whole of it
   await settle();
   assert.equal(seen.length, 2);
   assert.deepEqual(ensured, [], 'a 503 is an answer: the board is up');
-  assert.deepEqual(log.lines, ['notify: work completed T-1',
+  assert.deepEqual(log.lines, ['notify: work done T-1',
     'notify: the work alert for T-1 was dropped: no tray took it']);
   for (const line of log.lines) assert.ok(!line.includes(SECRET), line);
 
@@ -1125,7 +1125,7 @@ test('a verb that blocks its own loop after raise() still takes the 204 path', B
   while (Date.now() < until) { /* deliberately blocking, exactly as spawnSync does */ }
   await settle();
   assert.equal(seen.length, 1, 'the request reached the board on the far side of the block');
-  assert.deepEqual(log.lines, ['notify: work completed T-1']);
+  assert.deepEqual(log.lines, ['notify: work done T-1']);
   await board.close();
 });
 
@@ -1155,7 +1155,7 @@ test('a refused relay runs the ensure, waits for the real ping, and relays once 
   assert.deepEqual(ensured, [root], 'the ensure is handed the store root, once');
   assert.equal(seen.length, 1, 'the alert landed on the far side of the ensure');
   assert.equal(seen[0].url, '/' + SECRET + '/api/relay');
-  assert.deepEqual(log.lines, ['notify: work completed T-1']);
+  assert.deepEqual(log.lines, ['notify: work done T-1']);
   /* the shipped budget is the contract one, and the poll's step with it: 700
      rather than 1000 because the verb's exit is bounded by ONE SECOND, and 700
      plus the second relay's own 300 cap stays inside it on the refused path. */
@@ -1214,7 +1214,7 @@ test('an alert that never went is not reported as one, on either side of the rel
   const { w, log, settle } = workNotifier({ port: board.port });
   assert.equal(w.raise(ENDING), 1);
   await settle();
-  assert.ok(!log.lines.includes('notify: work completed T-1'), 'nothing went, so nothing is claimed');
+  assert.ok(!log.lines.includes('notify: work done T-1'), 'nothing went, so nothing is claimed');
   assert.deepEqual(log.lines, ['notify: the work alert for T-1 was dropped: no tray took it']);
   await board.close();
 });
@@ -1500,7 +1500,7 @@ test('the question watcher sends names and the pick with the alert; an answer se
 });
 
 test('workAlertTitle and workWhereNames lead with names and add nothing unknown', () => {
-  assert.equal(workAlertTitle({ id: 'T-1', name: 'counter rebuild', ending: 'completed' }), 'counter rebuild completed');
+  assert.equal(workAlertTitle({ id: 'T-1', name: 'counter rebuild', ending: 'done' }), 'counter rebuild done');
   assert.equal(workAlertTitle({ id: 'P-2', name: 'board rework', ending: 'closed', outcome: 'shipped' }),
     'board rework closed: shipped');
   assert.equal(workAlertTitle({ id: 'T-1', ending: 'dropped' }), '', 'no name, so the id and the ending stand');
@@ -1518,9 +1518,9 @@ test('the work sender posts a name-led title and the names it holds', BOUND, asy
   await settle();
   const posts = seen.map((s) => JSON.parse(s.body).alert);
   assert.equal(posts.length, 2);
-  assert.equal(posts[0].title, 'counter rebuild completed');
+  assert.equal(posts[0].title, 'counter rebuild done');
   assert.deepEqual(posts[0].whereNames, { project: 'Tidewatch', workstream: 'the board' });
   assert.equal('whereNames' in posts[1], false, 'no names known, none sent');
-  assert.equal(posts[1].title, 'counter rebuild completed');
+  assert.equal(posts[1].title, 'counter rebuild done');
   await board.close();
 });

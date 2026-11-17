@@ -184,7 +184,7 @@ const CARDS = [
   {
     id: 'decision', family: 'Structure', match: /^Decision tables\./, title: 'Decision tables',
     text: [
-      'Each question is its own block: the question line, a one-line crux (the fact that decides it), then its options as a small table (type, option, what happens, catch), the pick starred on its row and a choice that is hard to undo marked one-way in its catch. The question line is the ask: one plain question ending in a question mark that names the options inline with their tokens and the pick. Never options before the ask, and never two questions in one table.',
+      'Each question is its own block: the question line, a one-line crux (the fact that decides it), then its options as a small table (type, option, what happens, catch), the pick starred on its row and a choice that is hard to undo marked one-way in its catch. The question line is the ask: one plain question ending in a question mark that names the options inline with their tokens and the pick. A question choosing between wordings (a rule line, a message, copy) shows each option in full, never only a description of it. Never options before the ask, and never two questions in one table.',
       '',
       'The type cell is the token you answer with, the question\'s number and the option\'s letter (106a, 106b), so it names its question wherever it is read or typed. Free-form answers stay welcome.',
     ],

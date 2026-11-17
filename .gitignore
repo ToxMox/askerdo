@@ -5,3 +5,5 @@ node_modules/
 scripts/viewer/.build/
 tray/target/
 /tsconfig.json
+# written by server/unraid/install.sh on the box from its tag
+server/build.json

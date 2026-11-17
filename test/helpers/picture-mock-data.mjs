@@ -28,7 +28,7 @@ task('T-16', 'TR-14', 'R070 Retire old flow: Currents, Swell, Rip and Eddy gone 
 // TR-15 Fog
 task('T-285', 'TR-15', 'K020 Accept integrated fog replacement', { st: 'ready' });
 task('T-286', 'TR-15', 'R050 Retire mist dependency', { st: 'waits', waits: ['T-285'] });
-// TR-3 Chart independence (main)
+// TR-3 Tide charts redraw (main)
 task('T-271', 'TR-3', 'K010 Reconcile existing fog work and remaining replacement contract', { st: 'done', leaves: 'TR-15' });
 task('T-272', 'TR-3', 'C030a Buoy preview: native follow-up validation, framing and final symbols', { st: 'done', leaves: 'TR-13' });
 task('T-293', 'TR-3', 'F025 Beacon light-pattern mockup and native contract', { st: 'done', leaves: 'TR-12' });
@@ -50,7 +50,7 @@ task('T-848', 'TR-33', 'Build the redrawn tide chart on the dock screen and in t
 task('T-849', 'TR-33', 'Your second look: the redrawn tide chart on the dock screen and the web page, and the web page on your phone', { st: 'waits', waits: ['T-848'], fresh: 'new', by: 'the main session' });
 task('T-851', 'TR-33', "The station import keeps a harbor's own datum notes and its printout's height rules instead of moving them into the station file", { st: 'waits', waits: ['T-853', 'T-854'], fresh: 'new' });
 task('T-852', 'TR-33', 'Rehearse the Kettle Point import again after the datum-notes fix: its notes and printouts judged into station files, a fresh standalone report', { st: 'waits', waits: ['T-851'], fresh: 'new' });
-task('T-790', 'TR-33', "Your look: the surge rehearsal's warning page and run report", { st: 'held', session: true, waits: ['T-852'] });
+task('T-790', 'TR-33', "Your look: the surge rehearsal's warning page and run report", { st: 'now', session: true, waits: ['T-852'] });
 task('T-791', 'TR-33', 'Review what lands in 2.4.10: the charts, the reader fixes, the station import and the alarm', { st: 'waits', review: true, waits: ['T-790', 'T-846', 'T-849'], by: 'a helper agent' });
 task('T-792', 'TR-33', 'Release 2.4.10 and its public download', { st: 'waits', waits: ['T-791'], by: 'the main session' });
 // frees, from the waits on either side
@@ -67,7 +67,7 @@ for (const [id, a] of Object.entries(ans)) Object.assign(a, { id, key: id.toLowe
 const ov = [
   { id: 'WS-11', name: 'Tidewatch: fixes from the dock', short: 'Tidewatch: fixes from the dock', state: 'active', words: 'TR-33 Release 2.4.10 active', counts: '11 open: 5 running, 6 waiting',
     train: { agents: 3, names: ['alarm first-read fix', 'import plan auditor', 'station reader reviewer'] }, needs: 'Review due on TR-33: 6 finished code tasks wait for a review', changed: '8 new, 4 started, 2 done', opens: true },
-  { id: 'WS-12', name: 'Chart independence: original charts and licensed data retirement', short: 'Chart independence', state: 'waiting', words: '5 tracks: 1 waiting, 1 new, 3 parked', counts: '28 open, critical path 17 tasks', opens: true },
+  { id: 'WS-12', name: 'Tide charts redraw: original charts and licensed data retirement', short: 'Tide charts redraw', state: 'waiting', words: '5 tracks: 1 waiting, 1 new, 3 parked', counts: '28 open, critical path 17 tasks', opens: true },
   { id: 'WS-7', name: 'Dock screen modernization: new layout and big type', short: 'Dock screen modernization', state: 'parked', words: '2 tracks: 1 parked, 1 new', counts: 'TR-1 opens when T-326 completes', stalled: 'stalled 7 days', opens: true },
   { id: 'WS-8', name: 'Harbor accounts: sign-in, API, website and app', short: 'Harbor accounts', state: 'parked', words: '1 track parked', counts: 'TR-2 waits on the release timing', gated: 'the release timing (Q169, Q422)', gatedQ: ['Q169', 'Q422'], stalled: 'stalled 7 days', opens: true },
   { id: 'WS-3', name: 'Lighthouse', short: 'Lighthouse', state: 'waiting', words: '5 tracks: 1 waiting, 4 parked', counts: '16 open on the main line', needs: 'Whether to run the foghorns a fourth time before your try', opens: true },
@@ -82,7 +82,7 @@ const ovLinks = [{ from: 'WS-12', to: 'WS-7', n: 1, pairs: [['TR-1', 'T-326']], 
 function track(ws, o) { return { ws, key: o.id.toLowerCase(), url: '/r/' + o.id, running: 0, junctions: [], doneRun: 0, doneList: [], moves: [], ...o }; }
 const ws = {
   'WS-12': {
-    name: 'Chart independence: original charts and licensed data retirement', short: 'Chart independence', key: 'ws-12', url: '/ws/WS-12',
+    name: 'Tide charts redraw: original charts and licensed data retirement', short: 'Tide charts redraw', key: 'ws-12', url: '/ws/WS-12',
     // the longest chain, each parked track waiting on the one it opens after (the contract's section 3)
     crit: { n: 17, from: 'T-675', to: 'T-326', path: ['T-675', 'T-676', 'T-677', 'T-678', 'T-279', 'T-283', 'T-274', 'T-275', 'T-276', 'T-282', 'T-254', 'T-16', 'T-285', 'T-286', 'T-289', 'T-290', 'T-326'] },
     held: null, changed: null,
@@ -95,7 +95,7 @@ const ws = {
         spine: ['T-254', 'T-16'], unpark: { kind: 'track-ends', on: 'TR-13' } }),
       track('WS-12', { id: 'TR-15', name: 'Fog', state: 'parked', words: 'parked: after Currents', open: 2, ready: 1, waiting: 1, done: 0, chain: 2, from: 'T-271',
         spine: ['T-285', 'T-286'], unpark: { kind: 'track-ends', on: 'TR-14' } }),
-      track('WS-12', { id: 'TR-3', name: 'Chart independence (main: cleanup, license triage, validation, release)', short: 'Chart independence', state: 'waiting', words: 'waiting since Oct 21', open: 9, ready: 5, waiting: 4, done: 23, chain: 9,
+      track('WS-12', { id: 'TR-3', name: 'Tide charts redraw (main: cleanup, license triage, validation, release)', short: 'Tide charts redraw', state: 'waiting', words: 'waiting since Oct 21', open: 9, ready: 5, waiting: 4, done: 23, chain: 9,
         from: null, spine: ['T-289', 'T-290', 'T-326'], doneRun: 20, junctions: ['T-271', 'T-272', 'T-293'], resume: '/askerdo resume TR-3' })
     ],
     links: [

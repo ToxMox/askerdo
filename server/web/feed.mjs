@@ -1,6 +1,7 @@
 /* The activity feed's words (the tray console's lines), for the app's
    Home and the board's activity page alike. The server image ships only server/, so
    they live here and lib/mod-core.mjs imports them back. */
+import { leftWords } from './draw.mjs';
 
 const MID = ' · ';
 const flat = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
@@ -17,13 +18,14 @@ const VERB_WORDS = {
 };
 const verbWord = (v) => VERB_WORDS[v] || String(v || '');
 /* an override line's verb is its kind, so its act is worded from its changes */
-const OVERRIDE_ACTS = [['asked', () => 'asked'], ['decided', (v) => (v === 'allow' ? 'allowed' : 'kept as written')],
+const OVERRIDE_DONE = { withdraw: 'withdrawn', fix: 'fixed', scrub: 'scrubbed' };
+const OVERRIDE_ACTS = [['asked', () => 'asked'], ['decided', (v, act) => (v === 'allow' ? OVERRIDE_DONE[act] || 'allowed' : 'kept as written')],
   ['changed', () => 'refused, changed since asked'], ['dropped', () => 'closed unanswered']];
 function overrideWord(changes) {
+  const now = (v) => (Array.isArray(v) ? v[1] : v);
   for (const [k, word] of OVERRIDE_ACTS) {
-    const v = changes && changes[k];
-    const now = Array.isArray(v) ? v[1] : v;
-    if (now !== undefined && now !== null) return word(now);
+    const v = now(changes && changes[k]);
+    if (v !== undefined && v !== null) return word(v, now(changes.act));
   }
   return 'changed';
 }
@@ -33,10 +35,20 @@ function handWord(changes, status) {
   const pair = changes && changes.inHand;
   if (!Array.isArray(pair)) return '';
   if (pair[1]) return pair[0] ? 'taken over' : 'taken in hand';
-  return pair[0] && status !== 'completed' && status !== 'dropped' ? 'let go' : '';
+  return pair[0] && !['done', 'completed', 'dropped'].includes(status) ? 'let go' : '';
+}
+/* A session run's line (runs.mjs) in the hand's words: its open a take, its end handed on a
+   let go, taken over a take-over; a close's end is no hand move */
+function runWord(changes) {
+  const run = changes && changes.run;
+  const worker = changes && Array.isArray(changes.worker) ? changes.worker[0] || changes.worker[1] : null;
+  if (!Array.isArray(run) || worker !== 'session') return '';
+  if (run[1]) return 'taken in hand';
+  const how = Array.isArray(changes.how) ? changes.how[1] : null;
+  return how === 'taken_over' ? 'taken over' : how === 'handed_on' ? 'let go' : how === 'closed_idle' ? 'let go, closed by the app' : '';
 }
 /* the status a hand move brings with it, which its row leaves unsaid */
-const HAND_STATUS = { 'taken in hand': 'in progress', 'taken over': 'in progress', 'let go': 'open' };
+const HAND_STATUS = { 'taken in hand': 'in progress', 'taken over': 'in progress', 'let go': 'open', 'let go, closed by the app': 'open' };
 export const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const localDay = (ms) => { const d = new Date(ms); return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()); };
@@ -68,6 +80,35 @@ export function atWords(iso, now) {
   }
   const year = Number.isFinite(now) && at.getUTCFullYear() !== wall(now).getUTCFullYear() ? ', ' + at.getUTCFullYear() : '';
   return MONTHS[at.getUTCMonth()].slice(0, 3) + ' ' + at.getUTCDate() + year + ' ' + clock;
+}
+
+/* An age as the shelf and the kickoff say it: "40m", "3h", "2d". */
+export const ageText = (msAgo) => {
+  const m = Math.max(0, Math.floor(msAgo / 60000));
+  if (m < 60) return m + 'm';
+  const hrs = Math.floor(m / 60);
+  return hrs < 48 ? hrs + 'h' : Math.floor(hrs / 24) + 'd';
+};
+
+/* Who a task's word names, where and since when, one wording for track show's rows
+   and a task's own head; a session as this one or a session, never its id. */
+export const runnerWords = (w, reader) => (w.worker === 'agent' ? 'agent ' + (w.job || 'with no job name') : w.session && w.session === reader ? 'this session' : 'a session');
+export function whoWords(w, now, reader) {
+  const who = runnerWords(w, reader);
+  if (w.is === 'unconfirmed') return who + (w.pc ? ' on ' + w.pc : '') + (w.since ? ', not heard since ' + atWords(w.since, now) : '');
+  if (w.is === 'running') return who;
+  if (w.is !== 'ready') return '';
+  return w.next === 'settle' ? who + ' finished' : w.next === 'continue' ? leftWords(who, w.how) : '';
+}
+
+/* A task's word on one line, for its show head and its block: "running for 40m: agent x",
+   "ready to continue for 2h: a session handed on", "waiting: after T-4". */
+export function wordLine(w, now, reader) {
+  if (!w || !w.is) return '';
+  const t = Date.parse(w.since || '');
+  const age = (w.is === 'running' || w.is === 'ready') && Number.isFinite(t) && Number.isFinite(now) ? ageText(now - t) : '';
+  const rest = w.is === 'waiting' ? (Array.isArray(w.on) ? w.on.join('; ') : '') : whoWords(w, now, reader);
+  return (w.is === 'ready' ? 'ready to ' + (w.next || 'start') : w.is) + (age ? ' for ' + age : '') + (rest ? ': ' + rest : '');
 }
 
 /* who holds a track, plainly: its PC ("this PC" for the asker's), when it took the
@@ -113,7 +154,7 @@ export function feedEntry(l, wsNames = {}) {
   if (ts.length < 16 || !l.kind || !l.id) return null;
   const pair = l.changes && l.changes.status;
   const status = String((Array.isArray(pair) ? pair[1] : '') || '').replace(/_/g, ' ');
-  const hand = l.verb === 'edit' ? handWord(l.changes, status) : '';
+  const hand = l.verb === 'edit' ? handWord(l.changes, status) : l.verb === 'run' ? runWord(l.changes) : '';
   const word = hand || (l.kind === 'override' && l.verb === 'override' ? overrideWord(l.changes) : verbWord(l.verb));
   const project = lastPart(String(l.project || '').replace(/\\/g, '/'));
   const ws = l.ws ? (wsNames && wsNames[l.ws]) || l.ws : '';
@@ -135,7 +176,15 @@ function merged(entries) {
   const out = [];
   const last = new Map();
   for (const e of entries) {
-    const k = [e.key || e.kind, e.id, e.verb, e.ts.slice(0, 16)].join('\n');
+    /* a take-over is two run lines, the old run's end and the new one's open: one row */
+    const prev = out[out.length - 1];
+    const pair = prev && !prev.folded && prev.key === e.key && prev.id === e.id && prev.ts.slice(0, 16) === e.ts.slice(0, 16) ? [prev.hand, e.hand].sort().join() : '';
+    if (pair === 'taken in hand,taken over') {
+      out[out.length - 1] = { ...(e.hand === 'taken over' ? e : prev), name: e.name || prev.name, href: e.href || prev.href, count: 1, folded: true };
+      continue;
+    }
+    /* a run's hand move merges with the upkeep status that follows it, as an edit's did */
+    const k = [e.key || e.kind, e.id, e.hand ? 'edit' : e.verb, e.ts.slice(0, 16)].join('\n');
     const p = last.has(k) && !(e.hand && out[last.get(k)].hand) ? out[last.get(k)] : null;
     if (p && follows(e, p)) continue;
     if (p && follows(p, e)) { out[last.get(k)] = { ...e, name: e.name || p.name, href: e.href || p.href, count: 1 }; continue; }

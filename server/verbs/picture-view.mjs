@@ -5,19 +5,18 @@ import { readTx } from '../db.mjs';
 import { WEB } from '../paths.mjs';
 import { clockOf, dayOf } from '../records.mjs';
 import { UsageError, resolveRecord } from './labels.mjs';
-import { loadRecord } from './graph.mjs';
+import { loadRecord, wordsOf } from './graph.mjs';
 import { parseOptions, questionSections } from './questions.mjs';
 import { NEWEST_FIRST, listTracks, projectInbox, trackMoved, trackView } from './tracks.mjs';
 import { runByWords } from './kickoff.mjs';
 import { critOf } from '../web/picture-model.mjs';
 /* the one reading of what waits on the user, which the Overview page counts too */
-import { waitingItems } from '../web/data.mjs';
-import { endedOf, nowCounts } from '../web/draw.mjs';
+import { waitingItems } from './waiting.mjs';
 
 const DAY = 86400000;
 const MOVE_DAYS = 30;
 const DONE_LIST = 20;
-const ENDED = "('completed', 'dropped')";
+const ENDED = "('done', 'dropped')";
 const CLOSED_TRACK = "('done', 'dropped', 'folded')";
 const IN = 'SELECT value FROM json_each(?)';
 const J = (xs) => JSON.stringify(xs);
@@ -42,11 +41,13 @@ function movesOf(db, wsKeys, nowMs) {
         WHERE r.kind = 'task' AND r.workstream IN (${IN}) AND tr.workstream IS NULL)
     SELECT t.ws, a.label, a.at, a.verb, json_extract(a.line, '$.changes.status[1]') AS st, t.track
     FROM t JOIN activity a ON a.record = t.key
-    WHERE a.at >= ? AND a.kind = 'task' AND (a.verb = 'create' OR json_extract(a.line, '$.changes.status[1]') IN ('in_progress', 'completed'))
+    WHERE a.at >= ? AND a.kind = 'task' AND (a.verb = 'create' OR (a.verb = 'run' AND json_type(a.line, '$.changes.run[0]') = 'null')
+      OR json_extract(a.line, '$.changes.status[1]') IN ('in_progress', 'done', 'completed'))
     ORDER BY a.seq`).all(J(wsKeys), J(wsKeys), from);
   const last = new Map(wsKeys.map((k) => [k, new Map()]));
   for (const r of rows) {
-    const kind = r.verb === 'create' ? 'new' : r.st === 'in_progress' ? 'started' : 'done';
+    /* a start is a run's open line; a board from before runs holds it as a flip to in_progress */
+    const kind = r.verb === 'create' ? 'new' : r.verb === 'run' || r.st === 'in_progress' ? 'started' : 'done';
     last.get(r.ws).set(r.label + ' ' + kind, { move: [r.label, kind, r.at], track: r.track || null });
   }
   return new Map([...last].map(([k, m]) => [k, [...m.values()].sort((a, b) => String(a.move[2]).localeCompare(String(b.move[2])))]));
@@ -97,8 +98,8 @@ function answerRecord(db, qKey, settles) {
 function parkQuestion(db, reason) {
   const m = /\bQ(\d+)\b/.exec(String(reason || '')) || /\b(\d+)[a-z]\b/.exec(String(reason || ''));
   if (!m) return null;
-  const q = db.stmt("SELECT key FROM records WHERE kind = 'question' AND label = ? AND status = 'answered'").get('Q' + m[1]);
-  return q ? q.key : null;
+  const q = resolveRecord(db, 'Q' + m[1], { kinds: ['question'] });
+  return q && q.front.status === 'answered' ? q.key : null;
 }
 
 /* What opens a parked track, by label, with what it names: its name and workstream. */
@@ -110,7 +111,7 @@ function unparkOf(db, fields) {
   return r ? { kind: u.kind, on: r.label, onKey: u.on, onName: r.title || '', onWs: r.ws || null } : null;
 }
 
-const FAR = `SELECT o.key, o.label, o.title, o.status, json_extract(o.fields, '$.created') AS created, tr.label AS track, tr.title AS trName,
+const FAR = `SELECT o.key, o.label, o.title, json_extract(o.fields, '$.created') AS created, tr.label AS track, tr.title AS trName,
   w.label AS ws, w.title AS wsName FROM records o LEFT JOIN track_items ti ON ti.task = o.key LEFT JOIN records tr ON tr.key = ti.track
   LEFT JOIN records w ON w.key = coalesce(tr.workstream, o.workstream) WHERE o.key = ?`;
 
@@ -136,7 +137,7 @@ export function pictureView(db, input, actor, opts) {
       const moved = trackMoved(db, rec);
       const h = t.state === 'waiting' ? db.stmt('SELECT created FROM handoffs WHERE track = ? ORDER BY ' + NEWEST_FIRST + ' LIMIT 1').get(t.key) : null;
       const doneList = db.stmt(`SELECT r.label AS id, r.title AS name, coalesce(nullif(json_extract(r.fields, '$.closed'), ''), json_extract(r.fields, '$.updated')) AS closed
-        FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ? AND r.status = 'completed' ORDER BY closed DESC, r.id DESC LIMIT ?`).all(t.key, DONE_LIST);
+        FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ? AND r.status = 'done' ORDER BY closed DESC, r.id DESC LIMIT ?`).all(t.key, DONE_LIST);
       tracks[t.id] = {
         unpark: t.state === 'parked' ? unparkOf(db, rec.fields) : null,
         stalledDays: t.stalled && moved !== null ? Math.floor((nowMs - moved) / DAY) : null,
@@ -154,17 +155,17 @@ export function pictureView(db, input, actor, opts) {
     const taskAns = {};
     const tasks = {};
     const rowOf = db.stmt(`SELECT r.label, r.fields FROM records r WHERE r.key = ?`);
-    const started = db.stmt(`SELECT at FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[1]') = 'in_progress' ORDER BY seq DESC LIMIT 1`);
+    const started = db.stmt(`SELECT max(r.started) AS at FROM run_tasks rt JOIN runs r ON r.id = rt.run WHERE rt.task = ? AND r.ended IS NULL`);
     for (const k of [...openKeys, ...junctions]) {
       const r = rowOf.get(k);
       const f = parse(r.fields) || {};
-      const s = f.status === 'in_progress' ? (started.get(k) || {}).at : null;
+      const s = ['done', 'dropped'].includes(f.status) ? null : started.get(k).at;
       tasks[r.label] = {
         created: f.created || null, ...(s ? { started: s } : {}), ...(f.closed ? { closed: f.closed } : {}),
         ...(f.runBy ? { by: runByWords(f.runBy) } : {}), ...(f.priority === 'low' ? { low: true } : {}),
       };
       const a = ans.task.get(k);
-      if (a && !['completed', 'dropped'].includes(f.status)) { const q = named(a.q, a.settles); if (q) taskAns[r.label] = q; }
+      if (a && !['done', 'dropped'].includes(f.status)) { const q = named(a.q, a.settles); if (q) taskAns[r.label] = q; }
     }
     const trackAns = {};
     for (const t of ls.tracks) {
@@ -181,7 +182,7 @@ export function pictureView(db, input, actor, opts) {
       if (!far[row.label]) {
         far[row.label] = {
           id: row.label, key: row.key, url: WEB.record(row.label), name: row.title || '', tr: row.track || null, trName: row.trName || '',
-          ws: row.ws || null, wsName: row.wsName || '', st: row.status === 'in_progress' ? 'now' : 'waits', created: row.created || null, waits: [],
+          ws: row.ws || null, wsName: row.wsName || '', st: 'waits', created: row.created || null, waits: [],
         };
       }
       return far[row.label];
@@ -228,6 +229,14 @@ export function pictureView(db, input, actor, opts) {
       inn.push({ to: t.id, task: null, ws: u.onWs, on: u.on, text: 'waits on ' + u.onWs + ' ' + u.on,
         words: 'opens when ' + u.onWs + ' ' + u.on + ' ' + u.onName + (u.kind === 'task-completes' ? ' completes' : ' ends') });
     }
+    /* a far task's station is its word, read once for all of them */
+    const farWords = wordsOf(db, Object.values(far).map((f) => f.key), nowMs);
+    for (const f of Object.values(far)) {
+      const wd = farWords.get(f.key);
+      if (!wd) continue;
+      f.word = wd;
+      f.st = { running: 'now', unconfirmed: 'left', ready: 'ready' }[wd.is] || 'waits';
+    }
     for (const t of Object.values(tracks)) if (t.unpark) delete t.unpark.onKey;
     return { workstream: w.id, key: w.key, name: w.name, url: WEB.workstream(w.id), tracks, tasks, far, answers: byLabel(answers), taskAns, trackAns, out, in: inn };
   });
@@ -268,19 +277,25 @@ function ovLinks(db, wsKeys) {
 export const inboxDueOf = (db, w, nowMs) => projectInbox(db, w.key, dayOf(new Date(nowMs))).filter((t) => t.workstream.id === w.label && t.due).length;
 
 /* pictureOverview({}): every workstream with open work, in the Overview page's order, and the waits between them. */
-export function pictureOverview(db, input, actor, opts) {
+export const pictureOverview = (db, input, actor, opts) => overviewParts(db, clockOf(actor, opts).getTime()).overview;
+
+/* The Overview's picture with what it read on the way (waiting items, each open workstream's
+   listTracks and track views), so the Overview page builds each view once. */
+export function overviewParts(db, nowMs) {
   return readTx(db, () => {
-    const nowMs = clockOf(actor, opts).getTime();
     const items = waitingItems(db, nowMs);
+    const lists = new Map();
     const rows = [];
     const keys = [];
     const wss = db.stmt("SELECT key, label, title FROM records WHERE kind = 'workstream' AND status = 'open' ORDER BY id").all();
     const moves = movesOf(db, wss.map((w) => w.key), nowMs);
     for (const w of wss) {
       const ls = listTracks(db, { workstream: w.key }, { now: nowMs });
+      /* the found summary is most of a view's cost, and nothing the Overview draws reads it */
+      const views = ls.tracks.map((t) => trackView(db, { track: t.key }, { now: nowMs, found: false }));
+      lists.set(w.key, { ls, views });
       if (!ls.tracks.length && !ls.inbox) continue;
       keys.push(w.key);
-      const views = ls.tracks.map((t) => trackView(db, { track: t.key }, { now: nowMs }));
       const tracks = ls.tracks.map((t) => {
         const u = t.state === 'parked' ? unparkOf(db, loadRecord(db, t.key).fields) : null;
         return { id: t.id, name: t.name, state: t.state, stalled: t.stalled, ...(u ? { unpark: { kind: u.kind, on: u.on } } : {}) };
@@ -288,15 +303,16 @@ export function pictureOverview(db, input, actor, opts) {
       const parks = tracks.filter((t) => t.unpark).map((t) => ({ tr: t.id, kind: t.unpark.kind, on: t.unpark.on }));
       const mine = items.filter((i) => i.wss.includes(w.key));
       const gated = mine.filter((i) => i.kind === 'question' && i.gates.length);
-      const agents = views.flatMap((v) => (v.now || []).filter((n) => n.agent && !endedOf(n)).map((n) => n.agent));
-      const c = nowCounts(views.flatMap((v) => v.now || []));
+      /* the agents running now; an unconfirmed one draws no car, since nothing has heard it */
+      const agents = views.flatMap((v) => (v.now || []).filter((n) => n.agent && n.word && n.word.is === 'running').map((n) => n.agent));
+      const sum = (k) => views.reduce((n, v) => n + (v[k] || 0), 0);
       /* stalled when every line that can stall (held, waiting or parked) has */
       const can = ls.tracks.filter((t) => ['active', 'waiting', 'parked'].includes(t.state));
       const moved = can.map((t) => trackMoved(db, loadRecord(db, t.key))).filter((m) => m !== null);
       const allStalled = can.length > 0 && can.every((t) => t.stalled);
       rows.push({
         id: w.label, key: w.key, url: WEB.workstream(w.label), name: w.title || '', tracks,
-        open: views.reduce((n, v) => n + v.tasks.length, 0), running: c.running, ...(c.landing ? { landing: c.landing } : {}), ...(c.stopped ? { stopped: c.stopped } : {}),
+        open: views.reduce((n, v) => n + v.tasks.length, 0), running: sum('running'), unconfirmed: sum('unconfirmed'),
         ready: views.reduce((n, v) => n + (v.readySet || []).length, 0), inbox: ls.inbox, ...(ls.inbox ? { inboxDue: inboxDueOf(db, w, nowMs) } : {}), crit: critOf({ views, parks }).n,
         held: views.some((v) => v.holder), agents,
         ...(mine.length ? { needs: mine[0].text } : {}), needCount: mine.length,
@@ -309,6 +325,6 @@ export function pictureOverview(db, input, actor, opts) {
     /* the Overview's order: a session on it, then needs, then movement; no track last */
     const live = (r) => r.tracks.some((t) => t.state === 'active');
     rows.sort((a, b) => (b.tracks.length > 0) - (a.tracks.length > 0) || live(b) - live(a) || b.needCount - a.needCount || b.moved - a.moved);
-    return { at: new Date(nowMs).toISOString(), ws: rows.map(({ needCount, moved, ...r }) => r), links: ovLinks(db, keys) };
+    return { items, lists, overview: { at: new Date(nowMs).toISOString(), ws: rows.map(({ needCount, moved, ...r }) => r), links: ovLinks(db, keys) } };
   });
 }

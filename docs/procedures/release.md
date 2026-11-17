@@ -91,7 +91,7 @@ node scripts/run-tests.mjs
 node scripts/build.mjs --check
 node scripts/check-tray-signed.mjs
 claude plugin validate .
-claude plugin test .
+node scripts/run-tests.mjs --plugin
 git log -1 --format=%s
 ```
 
@@ -99,7 +99,7 @@ git log -1 --format=%s
 - expect: `node scripts/build.mjs --check` exits 0 (`server/version.json` says `<x.y.z>`, `docs/guide/reply-rules.md` matches the contract builder, and `docs/guide/cli.md` matches the CLI's help).
 - expect: `node scripts/check-tray-signed.mjs` exits 0 (the committed tray exe carries a Valid signature), before anything is pushed. Step 4 already read the signature before the commit, so a refusal here means the release commit lacks the signed bytes: commit them before the push.
 - expect: `claude plugin validate .` reports no error.
-- expect: `claude plugin test .` passes on the desktop app's own `claude.exe` by path (the engine the mod runs on; the `claude` on PATH only when it is the same version; no pinned build; the run-tests procedure, step 5).
+- expect: `node scripts/run-tests.mjs --plugin` exits 0: it runs `plugin test .` on the desktop app's own `claude.exe` by path (the engine the mod runs on; the `claude` on PATH only when it is the same version; no pinned build) and takes its turn beside any other checkout's node run (the run-tests procedure, step 5).
 - expect: the last commit's subject is `release: <x.y.z>`.
 - expect: the board protocol matches what the release changed. `git diff <last release>..HEAD -- server/paths.mjs` moves `PROTOCOL` up one exactly when the release changes what a PC sends or what the board accepts (read `git diff --stat <last release>..HEAD -- server/ lib/board-call.mjs`); when it moved, the last release's CLI against a scratch board served from this release prints the refusal naming `claude plugin update askerdo@askerdo`.
 

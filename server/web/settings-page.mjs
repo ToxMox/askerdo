@@ -220,7 +220,7 @@ function lineRow(m, l, mine, back) {
   const t = mine ? 'Set on ' + l.profile + ', held at ' + recordName(m, l.layer, l.record) : 'Built in: every board carries it';
   const drop = mine ? ruleForm(back, { op: 'clear', name: l.profile, slug: l.slug }, 'Drop') : ruleForm(back, { op: 'drop', name: m.home, slug: l.slug }, 'Drop');
   return '<div class="lrow" data-key="rules.add"' + attr('data-find', (l.slug + ' ' + l.words + ' rule lines').toLowerCase()) + (mine ? ' data-changed="1"' : '') + '>'
-    + '<div class="ln"><b>' + esc(l.slug) + '</b><span class="dim">' + esc(AUDIENCE[l.audience] || AUDIENCE.both) + '</span></div><div class="lw">' + esc(l.words) + '</div>'
+    + '<div class="ln"><b>' + esc(l.slug) + '</b><span class="dim">' + esc(l.role ? 'for ' + l.role + ' agents' : AUDIENCE[l.audience] || AUDIENCE.both) + '</span></div><div class="lw">' + esc(l.words) + '</div>'
     + '<div class="lk"><span class="chip"' + attr('title', t) + '>' + esc(l.scope + (mine && l.profile ? ', on ' + l.profile : '')) + '</span>' + drop + '</div></div>';
 }
 function listHead(l, changed) {
@@ -245,6 +245,7 @@ function rulesBody(m, st, back) {
     + '<div class="addf"><input class="fld slug" name="slug" placeholder="name" aria-label="Name"' + attr('value', typed('slug')) + ' data-drawn="" autocomplete="off">'
     + '<input class="fld grow" name="text" placeholder="the rule in plain words" aria-label="The rule"' + attr('value', typed('text')) + ' data-drawn="" autocomplete="off"></div>'
     + '<div class="addf"><span class="seg" role="radiogroup" aria-label="For">' + ['session', 'agents', 'both'].map((a) => '<label><input type="radio" name="for"' + attr('value', a) + (a === aud ? ' checked' : '') + '>' + a + '</label>').join('') + '</span>'
+    + '<input class="fld role" name="role" placeholder="role, for agents" aria-label="Role (agents of one subagent type or task label)"' + attr('value', typed('role')) + ' data-drawn="" autocomplete="off">'
     + '<span class="dim">on ' + esc(m.home) + ', everywhere</span><button type="submit" class="gbtn">Add</button></div>'
     + (ref ? '<div class="note no" role="alert"><b>Not saved.</b> ' + esc(ref.why) + '</div>' : st.saved === 'rules' ? '<div class="note ok" role="status"><span class="tick" aria-hidden="true"></span><div><div>Saved on ' + esc(m.home) + '.</div><div class="dim">' + esc(add.takes || '') + '</div></div></div>' : '')
     + '</form>');

@@ -4,9 +4,10 @@
    the permanent identity URL, loopback bound and secret prefixed. */
 import { createServer, request as httpRequest } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, watch } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { dataDir, envSeam, pluginRoot, pluginVersion, seamRootProblem, storeRoot } from '../lib/node-helpers.mjs';
+import { dataDir, envSeam, loadConfig, pluginRoot, pluginVersion, seamRootProblem, storeRoot } from '../lib/node-helpers.mjs';
 import { renderRefView } from '../lib/viewer-page.mjs';
 import {
   ALERT_FILES_MAX, alertCard, alertFrame, alertGate, validateAlert,
@@ -19,7 +20,7 @@ import { renderAddPc } from '../lib/add-pc-page.mjs';
 import { atWords } from '../server/web/feed.mjs';
 import { OPEN_KINDS, checkTemplate, openFrame } from '../lib/open-in.mjs';
 import { rebasePath, sharedName } from '../lib/project-id.mjs';
-import { folderHere, readMap } from '../lib/project-map.mjs';
+import { folderHere, mapFile, readMap } from '../lib/project-map.mjs';
 import {
   RECENT_MENU, RECENT_NAME_MAX, loadRecent, noteOpen,
 } from '../lib/recent-opens.mjs';
@@ -29,12 +30,12 @@ import { CARD_ID, REC_ID, evidenceOf, filesOf, normDir, refShape } from '../lib/
 import { isFullStamp, stampNow } from '../lib/stamps.mjs';
 import { isKey } from '../lib/record-ids.mjs';
 import { answerToken } from '../lib/answer-token.mjs';
-import { BoardCallError, boardJoinCode, boardLoginLink, boardToken, boardUrl as boardServerUrl, joinLine, loginUrl, reachableUrl } from '../lib/board-call.mjs';
-import { boardIdentity, boardUrl, ensureRoot, probe } from '../lib/board-ensure.mjs';
-import { HOST_ONLY, hostedHere, readHost, superviseHost } from '../lib/board-host.mjs';
+import { BoardCallError, boardJoinCode, boardLoginLink, boardToken, boardUrl as boardServerUrl, joinLine, loginUrl, reachableUrl, useSavedOptions } from '../lib/board-call.mjs';
+import { boardIdentity, boardUrl, codeFresh, ensureRoot, isLiveRoot, mergeUnderway, probe } from '../lib/board-ensure.mjs';
+import { HOST_ONLY, codeLoads, hostedHere, readHost, restartLocalServer, superviseHost } from '../lib/board-host.mjs';
 import { WEB } from '../server/paths.mjs';
 import { BoardOffline, createLocalBoard } from '../lib/local-board.mjs';
-import { handleCli, handleLocal, localTimings } from '../lib/local-route.mjs';
+import { handleCli, handleLocal, localTimings, loopRan } from '../lib/local-route.mjs';
 import { appendLog, writeAtomic } from '../lib/store-io.mjs';
 
 /* A whitelist map rather than a directory read: there is no path to traverse
@@ -95,6 +96,9 @@ let trayOff = false;
 let waitingCache = 0;
 let cardsCache = [];
 let waitingCardsCache = [];
+/* the hover's asleep count and its first two named questions */
+let asleepCache = 0;
+let asleepCardsCache = [];
 /* the recent files' own cache, set by the one builder that re-resolves
    them, so a board gone offline answers the hello with the last list. */
 let recentCache = [];
@@ -125,7 +129,16 @@ let localTiming = () => {};
 /* the board this PC hosts, this server's child while it runs */
 let hostBoard = null;
 
-main();
+if (process.argv.includes('--check-load')) checkLoad();
+else main();
+
+/* The load check a restart runs before it stops the old server: this file's imports have
+   loaded by now, and the modules it loads later load here; a failure exits through node's own report. */
+async function checkLoad() {
+  await null;
+  await Promise.all([cliCommands(), modScripts(), import('../lib/mod-core.mjs')]);
+  process.exit(0);
+}
 
 async function main() {
   try {
@@ -196,14 +209,32 @@ function version() {
 /* One board per store, at the address every minted link already carries:
    adopted when the port holds our own current build, replaced when it holds our
    own stale one, refused otherwise. Moving port would orphan every link. */
-function listenWithHandshake() {
+/* Windows refuses a connect to a server that just closed a moment before it frees
+   the address (a TIME_WAIT left there, measured under load), so a bind that fails
+   with nothing answering is tried again until this passes */
+const FREEING_MS = 3000;
+
+function listenAgain(until) {
+  server.once('error', (e) => {
+    if (e && e.code === 'EADDRINUSE' && Date.now() < until) return void setTimeout(() => listenAgain(until), 100);
+    fatal(e);
+  });
+  /* NO callback here on purpose: the first listen's announce is still armed as a
+     once('listening') listener, so passing it again would register it twice and
+     start two trays and two watch timers on the replace path. */
+  server.listen(port, '127.0.0.1');
+}
+
+function listenWithHandshake(until = 0) {
   server.once('error', (e) => {
     if (!e || e.code !== 'EADDRINUSE') return fatal(e);
     probeBoard(port).then(async (p) => {
+      const by = until || Date.now() + FREEING_MS;
+      if (!p.listening && Date.now() < by) return void setTimeout(() => listenWithHandshake(by), 100);
       /* a newer build is adopted too, never replaced; no header reads as older.
          Loaded here only: the takeover is rare and mod-core is large */
       const newer = p.mine && p.version !== version() && (await import('../lib/mod-core.mjs')).versionBehind(version(), p.version);
-      if (p.mine && (p.version === version() || newer)) {
+      if (p.mine && ((p.version === version() && codeFresh(p.code)) || newer)) {
         if (newer) appendLog(root, 'board: a newer server (' + p.version + ') runs on port ' + port + '; this one (' + version() + ') left it running');
         process.stdout.write(boardUrl(root, 'root') + '\n');
         process.stdout.write('AskerDo board: adopted the instance already running on port ' + port + '\n');
@@ -214,11 +245,7 @@ function listenWithHandshake() {
            way a plugin update ever reaches a running board */
         await postStop(port);
         await waitForFree(port, 3000);
-        server.once('error', fatal);
-        /* NO callback here on purpose: the first listen's announce is still armed as a
-           once('listening') listener, so passing it again would register it twice and
-           start two trays and two watch timers on the replace path. */
-        server.listen(port, '127.0.0.1');
+        listenAgain(Date.now() + FREEING_MS);
         return;
       }
       if (p.busy) {
@@ -231,7 +258,8 @@ function listenWithHandshake() {
       process.exit(1);
     });
   });
-  server.listen(port, '127.0.0.1', announce);
+  if (until) server.listen(port, '127.0.0.1');
+  else server.listen(port, '127.0.0.1', announce);
 }
 
 /* The one place the server declares itself up. Idempotent by construction:
@@ -250,6 +278,7 @@ function announce() {
   /* the tray digest's baseline, so a first tick sends nothing */
   fanOut();
   localTiming = localTimings(join(root, 'board', 'timings-local.log'));
+  watchCode();
   /* the CLI's commands load once, warm before the first call */
   cliCommands().catch((e) => { cliModule = null; appendLog(root, 'board: the CLI commands did not load: ' + ((e && e.message) || e)); });
   const board = startLocalBoard();
@@ -258,6 +287,21 @@ function announce() {
   followHost();
   configTimer = setInterval(followConfig, WATCH_MS);
   if (configTimer.unref) configTimer.unref();
+  watchLag();
+}
+
+/* a `loop lag` row when a 100 ms tick of this loop ran over 50 ms late: the share of a slow
+   call that was this PC's own loop, beside the `board call` rows of the board's */
+let lagTimer = null;
+function watchLag() {
+  let due = performance.now() + 100;
+  lagTimer = setInterval(() => {
+    const t = performance.now();
+    /* `ran`: the marked steps since the last tick, or that none was */
+    if (t - due > 50) localTiming('loop lag', t - due, 200, '', { ran: loopRan(due - 100, t) });
+    due = t + 100;
+  }, 100);
+  if (lagTimer.unref) lagTimer.unref();
 }
 
 /* local.json, the file the launcher and boardCall find the local route by, board or none. */
@@ -274,9 +318,11 @@ let boardOn = { url: '', token: '' };
 let restarting = null;
 function followConfig() {
   followHost();
+  followPeers();
   if (stopping || restarting) return;
-  const url = boardServerUrl();
-  const token = boardToken();
+  readConfig();
+  const url = savedUrl();
+  const token = savedToken();
   const trim = (u) => String(u || '').replace(/\/+$/, '');
   if (trim(url) !== trim(boardOn.url)) {
     restarting = (async () => {
@@ -293,8 +339,46 @@ function followConfig() {
     boardOn.token = token;
     appendLog(root, 'board: the board token in the config changed: reconnecting');
     localBoard.retoken(token);
+    /* a new token can be a rejoin after a revoke, which dropped this PC's map: send it again */
+    peers = { at: 0, sent: '', stamp: '', places: peers.places, off: 0, busy: null };
   }
 }
+
+/* The saved options as last read: the follow tick stats the file and reads it again only when
+   it changed, so no call reads it; a process (a restart too) reads it afresh at its start. */
+let saved = { file: '', stamp: null, raw: null, full: null };
+let dirCheckedAt = 0;
+function readConfig() {
+  let file = saved.file;
+  let st = null;
+  /* the data dir move copies the file and leaves the old one: once a minute the folder is found again */
+  if (file && Date.now() - dirCheckedAt >= 60000) {
+    dirCheckedAt = Date.now();
+    const dir = dataDir();
+    if (dir && resolve(dir) !== resolve(dirname(file))) file = join(dir, 'config.json');
+  }
+  try { if (file) st = statSync(file); } catch {}
+  /* a file gone (the data folder moved) finds the folder again */
+  if (!st) {
+    dirCheckedAt = Date.now();
+    const dir = dataDir();
+    file = dir ? join(dir, 'config.json') : '';
+    try { if (file) st = statSync(file); } catch {}
+  }
+  const stamp = st ? st.mtimeMs + ':' + st.size + ':' + st.ino : '';
+  if (file === saved.file && stamp === saved.stamp) return;
+  let raw = null;
+  try { raw = st ? JSON.parse(readFileSync(file, 'utf8')) : null; } catch {}
+  saved = { file, stamp, raw, full: loadConfig() };
+}
+/* as lib/board-call.mjs reads them: the environment's value first, then the file's */
+const savedText = (envName, key) => {
+  const named = typeof process.env[envName] === 'string' ? process.env[envName].trim() : '';
+  const v = saved.raw && saved.raw[key];
+  return named || (typeof v === 'string' ? v.trim() : '');
+};
+const savedUrl = () => savedText('ASKERDO_BOARD_URL', 'boardUrl');
+const savedToken = () => savedText('ASKERDO_BOARD_TOKEN', 'boardToken');
 
 /* a board set up here while this runs (board here) starts within one tick */
 function followHost() {
@@ -311,37 +395,192 @@ const localFile = () => join(root, 'board', 'local.json');
 let cliModule = null;
 const cliCommands = () => (cliModule ||= import('../lib/cli-commands.mjs'));
 
+/* The modules a process loaded stay loaded, so once a file under its copy changes (a
+   merge onto the checkout, no version bump) this server's answers are the old code's:
+   current, stale, or unwatched where the platform gives no watch. */
+let codeState = 'current';
+let restartTimer = null;
+let restartAsked = false;
+/* a merge writes its files over a moment: the restart waits for them to settle */
+const RESTART_QUIET_MS = 2000;
+const RESTART_RETRY_MS = 60000;
+
+/* Windows also reports last-access updates, so an event counts only when the file is gone
+   or written after this process loaded its code; that also catches a write before the watch. */
+const codeLoadedAt = Date.now() - process.uptime() * 1000;
+const CODE_DIRS = ['hooks', 'lib', 'server'];
+/* the server loads no .json under hooks (hooks.json is the harness's) */
+const isCode = (dir, name) => /\.c?m?js$/i.test(name) || (dir === 'server' && /\.json$/i.test(name));
+
+function changedSinceLoad(file) {
+  try { return statSync(file).mtimeMs > codeLoadedAt; } catch { return true; }
+}
+
+function watchCode() {
+  for (const dir of CODE_DIRS) {
+    try {
+      const w = watch(join(pluginRoot, dir), { recursive: true, persistent: false }, (_kind, name) => {
+        if (!name) return codeChanged();
+        if (isCode(dir, String(name)) && changedSinceLoad(join(pluginRoot, dir, String(name)))) codeChanged(join(pluginRoot, dir, String(name)));
+      });
+      w.on('error', (e) => { codeState = codeState === 'stale' ? 'stale' : 'unwatched'; appendLog(root, 'board: the code watch failed: ' + ((e && e.message) || e)); });
+    } catch (e) {
+      if (codeState === 'current') codeState = 'unwatched';
+      appendLog(root, 'board: the code watch did not start: ' + ((e && e.message) || e));
+    }
+  }
+  for (const dir of CODE_DIRS) {
+    let names = [];
+    try { names = readdirSync(join(pluginRoot, dir), { recursive: true }); } catch {}
+    const changed = names.map((n) => join(pluginRoot, dir, String(n))).filter((f, i) => isCode(dir, String(names[i])) && changedSinceLoad(f));
+    if (changed.length) return changed.forEach(codeChanged);
+  }
+}
+
+/* held: the new code does not load (or a merge is under way), so this server keeps serving */
+let heldWhy = '';
+let heldSince = '';
+let checking = false;
+let checkAgain = false;
+const changedFiles = new Set();
+/* the load check and the merge look read the changed files, which Windows reports again */
+const seenStamp = new Map();
+
+function codeChanged(file) {
+  if (file) {
+    let at = -1;
+    try { at = statSync(file).mtimeMs; } catch {}
+    if (seenStamp.get(file) === at) return;
+    seenStamp.set(file, at);
+    changedFiles.add(file);
+  }
+  if (codeState !== 'stale' && codeState !== 'held') appendLog(root, 'board: the code under this server changed; CLI and mod calls run in their callers until it restarts');
+  if (codeState !== 'held') codeState = 'stale';
+  if (stopping) return;
+  clearTimeout(restartTimer);
+  restartTimer = setTimeout(codeSettled, RESTART_QUIET_MS);
+}
+
+function hold(why) {
+  if (why !== heldWhy) appendLog(root, 'board: this server stays on its old code and keeps serving: ' + why);
+  if (codeState !== 'held') heldSince = new Date().toISOString();
+  codeState = 'held';
+  heldWhy = why;
+}
+
+/* After the files settle: wait out a merge, keep serving while the new code does not load,
+   and move to it once it does; a further change while the check runs checks again. */
+async function codeSettled() {
+  if (stopping) return;
+  if (checking) { checkAgain = true; return; }
+  const merge = mergeUnderway(pluginRoot, [...changedFiles]);
+  if (merge) {
+    hold(merge + '; the restart follows once it is done');
+    /* finishing a merge may touch no watched file, so a merge is looked at again */
+    restartTimer = setTimeout(codeSettled, RESTART_QUIET_MS);
+    return;
+  }
+  checking = true;
+  const load = await codeLoads(root);
+  checking = false;
+  if (checkAgain) { checkAgain = false; return codeSettled(); }
+  if (!load.ok) return hold('the new code does not load: ' + load.why);
+  if (codeState === 'held') appendLog(root, 'board: the hold ends: the new code loads');
+  codeState = 'stale';
+  heldWhy = heldSince = '';
+  changedFiles.clear();
+  /* only the live store's server restarts itself, or a scratch one told to: a sandbox or test one just refuses */
+  if (restartAsked || stopping || !(isLiveRoot(root, homedir) || envSeam('RESTART_DETACHED'))) return;
+  askRestart();
+}
+
+/* a detached helper, since the restart stops this process */
+function askRestart() {
+  if (restartAsked || stopping) return;
+  restartAsked = true;
+  restartLocalServer(root);
+  /* still here a minute on, the restart failed: the next code change asks again */
+  setTimeout(() => { restartAsked = false; }, RESTART_RETRY_MS).unref();
+}
+
+/* A call already running finishes on the code it started with; a new one runs in its caller. */
+const staleRefusal = () => (codeState === 'stale' ? 'this local server runs code its copy has since replaced'
+  : stopping ? 'this local server is stopping' : '');
+
+/* the calls that may write: shutdown waits for them, so a stop never cuts one */
+let inFlight = 0;
+async function counted(work) {
+  inFlight++;
+  try { return await work(); } finally { inFlight--; }
+}
+
 /* every caller's CLI command runs here; a refusal sends it back to run in
    the caller's own process. */
 function cliRoute(req, res) {
-  return handleCli(req, res, {
+  return counted(() => handleCli(req, res, {
     run: async (call) => (await cliCommands()).runCommand(call),
-    refuse: async (b) => (await cliCommands()).routeRefusal(b, { root, own: process.env, version: version() }),
+    refuse: async (b) => {
+      const cli = await cliCommands();
+      return vouch(b.env, staleRefusal() || (b.version !== version() ? cli.routeRefusal(b, { root, own: process.env, version: version() })
+        : callerVerdict(b.env, () => cli.callerProblem(b.env, { root, own: process.env })) || cli.runsInCaller(b.argv)));
+    },
     timing: localTiming,
-  });
+  }));
 }
+
+/* a caller the refusal found on this server's data dir reads the board URL and token
+   from the saved copy (one stat to see the file is unchanged), not the file */
+const vouched = new WeakSet();
+/* the caller check's verdict by the env values it reads, kept while the saved config's
+   file is unchanged and for a minute at most: its folder lookups are not redone per call */
+const verdicts = new Map();
+const VERDICT_MS = 60000;
+const CALLER_KEYS = /^(ASKERDO_.*|HOME|USERPROFILE|CLAUDE_CONFIG_DIR|CLAUDE_PLUGIN_DATA)$/;
+function callerVerdict(env, check) {
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return check();
+  const key = JSON.stringify(Object.keys(env).filter((k) => CALLER_KEYS.test(k)).sort().map((k) => [k, String(env[k])]));
+  const v = verdicts.get(key);
+  if (v && v.file === saved.file && v.stamp === saved.stamp && Date.now() - v.at < VERDICT_MS) return v.why;
+  const why = check();
+  if (verdicts.size > 50) verdicts.clear();
+  verdicts.set(key, { why, file: saved.file, stamp: saved.stamp, at: Date.now() });
+  return why;
+}
+function vouch(env, why) {
+  if (!why && env && typeof env === 'object') vouched.add(env);
+  return why;
+}
+useSavedOptions((env) => {
+  if (env !== process.env && !vouched.has(env)) return undefined;
+  readConfig();
+  return saved.raw;
+});
 
 /* the mod's scripts (lib/mod-scripts.mjs) in process here; a caller whose
    environment is not this server's gets a refusal (409) and runs one itself. */
 let scriptsModule = null;
 const modScripts = () => (scriptsModule ||= import('../lib/mod-scripts.mjs'));
 function modRoute(req, res) {
-  return handleCli(req, res, {
+  return counted(() => handleCli(req, res, {
     kind: 'mod',
     run: async (call) => (await modScripts()).runScript(call),
     refuse: async (b) => {
+      const stale = staleRefusal();
+      if (stale) return stale;
       if (b.version !== version()) return 'this local server runs ' + version() + ' and the caller ' + (b.version || 'no version');
-      return (await cliCommands()).callerProblem(b.env, { root, own: process.env });
+      const cli = await cliCommands();
+      return vouch(b.env, callerVerdict(b.env, () => cli.callerProblem(b.env, { root, own: process.env })));
     },
     timing: localTiming,
-  });
+  }));
 }
 
 /* One stream to the board and the cache, when boardUrl names a board server;
    answers that URL, or '' when there is none. */
 function startLocalBoard() {
-  const url = boardServerUrl();
-  const token = boardToken();
+  readConfig();
+  const url = savedUrl();
+  const token = savedToken();
   boardOn = { url, token };
   if (!/^https?:/i.test(url)) return '';
   const base = localBase();
@@ -354,6 +593,7 @@ function startLocalBoard() {
     retract: retractTray,
     log: (s) => appendLog(root, s),
     timing: (...a) => localTiming(...a),
+    config: () => saved.full,
     local: base,
   });
   /* the tray's readings follow the cache: one tick per change */
@@ -365,6 +605,8 @@ function startLocalBoard() {
     kickTick();
   });
   localBoard.start();
+  peers = { at: 0, sent: '', stamp: '', places: [], off: 0, busy: null };
+  followPeers();
   return url;
 }
 
@@ -404,6 +646,8 @@ function syncTray() {
   waitingCache = t.waiting;
   cardsCache = t.cards;
   waitingCardsCache = t.waitingCards;
+  asleepCache = t.asleep;
+  asleepCardsCache = t.asleepCards;
 }
 
 /* Started only from announce(): an ADOPTED start exits long before this, which
@@ -508,6 +752,8 @@ function trayPayload() {
     waiting: waitingCache,
     questions: cardsCache,
     waitingQuestions: waitingCardsCache,
+    asleep: asleepCache,
+    asleepQuestions: asleepCardsCache,
     /* THE FILES THE OPENER TOUCHED, and NO ABSOLUTE PATH RIDES HERE:
        this payload goes to every consumer on every change, and a menu line needs
        a label and a way to ask, not a path. */
@@ -899,6 +1145,9 @@ function trayDigest(t) {
     t.waiting,
     t.questions.map((q) => q.id).join(','),
     t.waitingQuestions.map((q) => q.id).join(','),
+    /* the wake words move on their own once a day is reached */
+    t.asleep,
+    t.asleepQuestions.map((q) => q.id + ':' + q.wake).join(','),
     /* the eighth part: an open writes board/recent.json, which moves no
        record and no activity line, exactly as a notify.json write does not. */
     t.recent.map((r) => r.id + ':' + r.index).join(','),
@@ -1021,6 +1270,9 @@ function handle(req, res) {
   /* the mod's and the CLI's one route to the board's cache */
   if (rest === 'local/cli') return cliRoute(req, res);
   if (rest === 'local/mod') return modRoute(req, res);
+  /* a write arriving once the stop began would stretch the drain past the ensure's wait */
+  if (rest.startsWith('local/') && req.method !== 'GET' && stopping) return sendJson(res, 503, { ok: false, error: 'this local server is stopping; nothing was run' });
+  if (rest.startsWith('local/') && req.method !== 'GET') return counted(() => handleLocal(localBoard, req, res, rest.slice('local/'.length), localTiming));
   if (rest.startsWith('local/')) return handleLocal(localBoard, req, res, rest.slice('local/'.length), localTiming);
   if (req.method === 'POST' && rest === 'ping') return ping(res);
   /* the ensure's call at a session start, which brings back a tray the person closed */
@@ -1056,6 +1308,10 @@ function ping(res) {
   /* the tray exe's wire: its instance check and dot read these */
   res.writeHead(204, {
     'x-askerdo-board': version(),
+    /* a session start replaces a server whose code changed under it */
+    'x-askerdo-code': codeState,
+    /* why it stays on its old code, for askerdo status and the band's status row */
+    ...(codeState === 'held' ? { 'x-askerdo-held': heldWhy.replace(/[^\x20-\x7e]/g, '?').slice(0, 400), 'x-askerdo-held-since': heldSince } : {}),
     'x-askerdo-instance': instance,
     'x-askerdo-dot': dotCache,
     'x-askerdo-tray-state': trayState(),
@@ -1104,7 +1360,7 @@ function redirect(res, to) {
 /* the board's page a tray link names (the root the overview, q/, w/ and r/ a
    record by label or key, needs-you the open set, override/n a request), or null with no board server set. */
 function webPage(rest, rawUrl) {
-  if (!/^https?:/i.test(boardServerUrl())) return null;
+  if (!/^https?:/i.test(savedUrl())) return null;
   if (rest === '') return WEB.root();
   if (rest === 'needs-you') {
     let q = null;
@@ -1371,13 +1627,70 @@ function resolveAt(rec, n) {
   };
 }
 
-/* This PC's project map and the folders older questions named beside their
-   remote: a path named on another machine opens in this PC's checkout of it. */
+/* This PC's project map, the folders older questions named beside their
+   remote and every PC's map the board keeps: a path named on another machine
+   opens in this PC's checkout of it. */
 function placesOf() {
   const here = Object.entries(readMap(dataDir())).map(([repo, dir]) => ({ dir, repo }));
   return here.concat([...localBoard.cache.questions.values()]
     .filter((e) => e && typeof e.projectRepo === 'string' && e.projectRepo && typeof e.projectDir === 'string')
-    .map((e) => ({ dir: e.projectDir, repo: e.projectRepo })));
+    .map((e) => ({ dir: e.projectDir, repo: e.projectRepo })), peers.places);
+}
+
+/* Every PC's map off the board, this PC's sent at start and when its file changes.
+   Until the board answers, or on a board without the verb, links keep this PC's places. */
+let peers = { at: 0, sent: '', stamp: '', places: [], off: 0, busy: null };
+/* said once per run: the store log would otherwise repeat it every half hour */
+let peersOldSaid = false;
+const PEERS_MS = 60000;
+const PEERS_IDLE_MS = 10 * 60000;
+const PEERS_OFF_MS = 30 * 60000;
+
+/* the data dir the saved config was found in: each tick stats the map without finding the dir again */
+const savedDir = () => (saved.file ? dirname(saved.file) : dataDir());
+const mapStamp = () => {
+  const dir = savedDir();
+  try { const st = dir && statSync(mapFile(dir), { throwIfNoEntry: false }); return st ? String(st.mtimeMs) : ''; } catch { return ''; }
+};
+
+function syncPeers() {
+  if (!localBoard) return Promise.resolve();
+  if (peers.busy) return peers.busy;
+  const mine = peers;
+  const map = readMap(savedDir());
+  const text = JSON.stringify(map);
+  mine.stamp = mapStamp();
+  mine.at = Date.now();
+  mine.busy = localBoard.call('pcMap', text === mine.sent ? {} : { input: { map } }).then((out) => {
+    mine.sent = text;
+    mine.places = (out && Array.isArray(out.maps) ? out.maps : []).flatMap((m) => Object.entries((m && m.map) || {})
+      .filter(([repo, dir]) => repo && typeof dir === 'string').map(([repo, dir]) => ({ dir, repo })));
+  }, (e) => {
+    /* an older board has no such verb: asked again only after a long while */
+    if (e && e.status === 404) {
+      mine.off = Date.now();
+      if (!peersOldSaid) appendLog(root, 'board: this board keeps no project maps yet (an older board)');
+      peersOldSaid = true;
+      return;
+    }
+    if (!boardDown(e)) appendLog(root, 'board: the project maps were not read: ' + ((e && e.message) || e));
+  }).finally(() => { mine.busy = null; });
+  return mine.busy;
+}
+
+/* each tick: send when the map file changed, else read now and then */
+function followPeers() {
+  if (!localBoard || peers.busy) return;
+  const now = Date.now();
+  if (peers.off && now - peers.off < PEERS_OFF_MS) return;
+  if (!peers.at || mapStamp() !== peers.stamp || now - peers.at > PEERS_IDLE_MS) syncPeers();
+}
+
+/* a link waits briefly for a stale copy, never past PEERS_WAIT_MS */
+const PEERS_WAIT_MS = 1500;
+function freshPeers() {
+  if (!localBoard || (peers.off && Date.now() - peers.off < PEERS_OFF_MS) || Date.now() - peers.at < PEERS_MS) return null;
+  return Promise.race([syncPeers(), new Promise((r) => setTimeout(r, PEERS_WAIT_MS).unref())]);
 }
 
 /* The file an f/ id and position name, or null; a board this PC cannot read throws. */
@@ -1385,6 +1698,7 @@ async function resolveRef(rawId, rawIndex) {
   const addr = refAddress(rawId, rawIndex);
   if (!addr) return null;
   const rec = await recordAt(addr);
+  if (rec) await freshPeers();
   return rec ? resolveAt(rec, addr.n) : null;
 }
 
@@ -1800,13 +2114,10 @@ function joinCodeApi(res) {
     return sendJson(res, 409, { error: 'this PC is not on a board, so it has no join code to give: mint one on a PC that is' });
   }
   if (hostedHere(root, url)) return sendJson(res, 409, { error: HOST_ONLY });
-  return boardJoinCode(undefined, { url, token: boardToken() }).then((r) => sendJson(res, 200, {
-    code: r.code,
-    expires: r.expires,
-    until: atWords(r.expires, Date.now()),
-    board: reachableUrl(url),
-    line: joinLine(reachableUrl(url), r),
-  }), (e) => sendJson(res, e && e.status >= 400 && e.status < 500 ? e.status : 502, { error: (e && e.message) || String(e) }));
+  return boardJoinCode(undefined, { url, token: boardToken() }).then(async (r) => {
+    const board = await reachableUrl(url);
+    sendJson(res, 200, { code: r.code, expires: r.expires, until: atWords(r.expires, Date.now()), board, line: joinLine(board, r) });
+  }, (e) => sendJson(res, e && e.status >= 400 && e.status < 500 ? e.status : 502, { error: (e && e.message) || String(e) }));
 }
 
 /* WHAT A PAGE MAY EVER SEE OF notify.json, a WHITELIST so a key added to the file
@@ -2041,12 +2352,16 @@ function sendHtml(res, code, html) {
 }
 
 /* `log: false` for a store being deleted: a line there would land in a folder half gone */
+/* with the 500 ms close, under the ensure's 3000 ms wait, past which it ends this process by pid */
+const DRAIN_MS = 2000;
+
 function shutdown(why, { log = true } = {}) {
+  if (stopping) return;
   stopping = true;
+  clearTimeout(restartTimer);
   if (watchTimer) clearInterval(watchTimer);
   if (configTimer) clearInterval(configTimer);
-  if (localBoard) localBoard.stop();
-  if (hostBoard) hostBoard.stop();
+  if (lagTimer) clearInterval(lagTimer);
   /* only this server's file: a replacement may already have written its own */
   try { if (JSON.parse(readFileSync(localFile(), 'utf8')).pid === process.pid) rmSync(localFile(), { force: true }); } catch {}
   /* BEFORE THE STREAMS CLOSE, on every path that routes here: the tray is this
@@ -2057,8 +2372,16 @@ function shutdown(why, { log = true } = {}) {
      route, because SIGINT and SIGTERM reach this without going through it */
   endStreams();
   if (log) appendLog(root, 'board: shutting down (' + why + ')');
-  if (server.closeAllConnections) server.closeAllConnections();
-  server.close(() => process.exit(0));
-  /* a socket that somehow outlives close() must not keep this alive */
-  setTimeout(() => process.exit(0), 500).unref();
+  /* a call already running finishes first: its writes go through the boards stopped below */
+  const until = Date.now() + DRAIN_MS;
+  const close = () => {
+    if (inFlight > 0 && Date.now() < until) return void setTimeout(close, 25);
+    if (localBoard) localBoard.stop();
+    if (hostBoard) hostBoard.stop();
+    if (server.closeAllConnections) server.closeAllConnections();
+    server.close(() => process.exit(0));
+    /* a socket that somehow outlives close() must not keep this alive */
+    setTimeout(() => process.exit(0), 500).unref();
+  };
+  close();
 }

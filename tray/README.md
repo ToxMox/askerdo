@@ -1,7 +1,7 @@
 # AskerDo tray
 
 `askerdo-tray.exe` is the Windows tray application for the AskerDo
-board: one small native process that owns the tray icon and its six faces,
+board: one small native process that owns the tray icon and its ten faces,
 three states across two taskbar themes, carries the menu and the tooltip that
 says how many questions are blocking, draws every AskerDo alert as a card in
 its own popup by the tray corner (the popup is the one alert surface, 
@@ -75,7 +75,7 @@ notification-area icon and no menu. It is what `board/notify.json`'s
 different things and only one of them was ever the expensive one; the switch
 that starts no exe at all is `enabled: false`.
 
-## The six faces, and the taskbar theme that picks between them
+## The ten faces, and the taskbar theme that picks between them
 
 The art is not painted by this repo any more. (the icon package)
 every mark here is a delivered file committed as delivered, with its
@@ -85,7 +85,7 @@ provenance, its exact colours and its measured validation beside it in
 `package.json` are DOCUMENTATION of how the rasters were cut: they want a
 dependency this repo will never install, and nothing here ever runs them.
 
-SIX FACES, three states across two taskbar themes, because a single `.ico`
+TEN FACES, five across two taskbar themes, because a single `.ico`
 does not recolour itself with the Windows theme and the package draws the
 check in two colours:
 
@@ -93,18 +93,26 @@ check in two colours:
 assets/tray-waiting.ico     assets/tray-light-waiting.ico
 assets/tray-quiet.ico       assets/tray-light-quiet.ico
 assets/tray-blocking.ico    assets/tray-light-blocking.ico
+assets/tray-asleep.ico      assets/tray-light-asleep.ico
+assets/tray-waiting-asleep.ico  assets/tray-light-waiting-asleep.ico
   cream check, DARK taskbar orange check, LIGHT taskbar
 ```
 
-All six are compiled in by `include_bytes!` in `src/tray.rs` (`ART_DARK` and
-`ART_LIGHT`, each in the `Dot` order waiting, quiet, blocking), so an install
+All ten are compiled in by `include_bytes!` in `src/tray.rs` (`ART_DARK` and
+`ART_LIGHT`, each in the `Dot` order waiting, quiet, blocking, then asleep and waiting with asleep), so an install
 that lost an asset cannot leave this tray blank. Each file is five classic
 32 bit DIB frames, 16, 20, 24, 32 and 48 px, which is every size a Windows
 tray asks for from 100 to 300 per cent: `icon::face` finds an EXACT frame at
 all of them and resamples only above 48. The state is drawn as the mark's own
 status marker, the same three the browser tab wears: a blue marker while
 questions wait, an amber one while anything blocks work, and the hollow pink
-ring when nothing is open.
+ring when nothing is open. The asleep face, a moon yellow crescent in that
+ring's place, stands in for the quiet one while a question is snoozed; the
+same crescent in the waiting marker's sky stands in for the waiting face
+while a question waits and another is snoozed; blocking keeps its amber
+marker whatever is snoozed. The hover then adds the asleep count and names up
+to two snoozed questions with what wakes them, cut to the 127 characters the
+shell's tip holds.
 
 WHICH SET IS WORN is read from the SYSTEM personalization setting and never
 from the board's theme:
@@ -572,7 +580,7 @@ Claude's Windows job, and that job kept an old package alive through a Claude
 update. The task's action is this exe:
 
 ```
-askerdo-tray.exe --serve --root <store root> [--log <path>]
+askerdo-tray.exe --serve --root <store root> [--node <node.exe>] [--log <path>]
 ```
 
 WHY THE EXE AND NOT NODE. A task whose action is `node.exe` comes up with a real
@@ -584,8 +592,9 @@ all: it is windowless BY CONSTRUCTION rather than by suppression.
 
 WHAT IT DOES, ONCE. It resolves the server script from its own path (the exe
 ships in `assets/`, so `hooks/board-server.mjs` is two parents and two joins
-away), builds the command line `node.exe <script> --root <root>` with `node.exe`
-looked up on PATH exactly as every hook resolves it, creates that process with
+away), builds the command line `<node> <script> --root <root>`, where `<node>` is
+the full path `--node` names while that file exists and otherwise `node.exe`
+looked up on PATH, creates that process with
 `CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` (detached is
 what leaves the server no console and no `conhost.exe` beside it, which is what
 node's own `detached: true` set before this cut; `CREATE_NO_WINDOW` is
@@ -601,6 +610,14 @@ one file, so a task left over from an older release is stale by the exe path
 alone and `lib/board-ensure.mjs` re-registers it. The exe honours NO environment
 seam, `ASKERDO_ROOT` included, so the node side's seam is not a second way in
 here: `--root` stays the only one.
+
+`--node` is the `node.exe` the registering ensure ran on, saved by its full path
+(resolved through links) because the PATH a logon task gets can lack a Node that
+a version manager or a per-user installer added. The ensure compares the whole
+argument string, so a node that moved makes the action stale and the next ensure
+that registers saves the new path. The journal line says which node ran: the
+saved one, or `node.exe` from PATH with the reason (none saved, or the saved one
+is gone).
 
 IT DOES NOTHING OF THE RESIDENT RUN: no key removal, no Start Menu shortcut, no
 icon, no tray window, no events stream, and no store read. It starts one process
@@ -651,7 +668,7 @@ pick and the frame the tray wears). They touch no network and no registry.
 
 - `src/main.rs` argv, the exit codes, and the three threads: the message loop,
   the network, and the blocking stdin read that is the control channel.
-- `src/tray.rs` the window, the notify icon, the six faces compiled in, the
+- `src/tray.rs` the window, the notify icon, the ten faces compiled in, the
   taskbar theme read at start and again on the shell's colour broadcast, the
   double click, and THE MENU: a pure model (`menu_model`) holding every word,
   every command id and every URL, and a thin walker that only appends it. The

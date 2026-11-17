@@ -2,7 +2,7 @@
  * by its key, and when this session was told that label as another record the
  * mod asks first; the same token typed again answers the live holder. */
 import { describe, expect, test } from 'claude-code/testing'
-import { start, world } from './world.ts'
+import { COLD_START, start, world } from './world.ts'
 
 const run = ($: any, args = '') => $.command.run({ command: 'askerdo', args }).then((r: any) => r.text)
 
@@ -13,7 +13,7 @@ function keyed(on: any, told: Record<string, any> = {}) {
 }
 
 describe('a typed token resolves to the live holder', () => {
-  test('no clash: the answer goes by key and the echo names the label and the name', async ($: any, on: any) => {
+  test('no clash: the answer goes by key and the echo names the label and the name', COLD_START, async ($: any, on: any) => {
     const w = keyed(on, { u1: { id: 'Q106', key: 'k7m2q9xa', name: 'store shape', session: 'sess-1' } })
     await start($, w)
     expect(await run($, '106b')).toContain('Answered Q106 (store shape): 106b.')

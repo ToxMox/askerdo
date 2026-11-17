@@ -3,7 +3,7 @@
  * whenever it differs and no backup is kept. A SessionStart hook must never
  * break session start, so every error logs and the exit stays 0. */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, statSync, readdirSync, cpSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildOutputStyle, buildChatPreferences, STYLE_NAME } from '../lib/builder.js';
 import {
@@ -165,7 +165,9 @@ async function main() {
     const cli = join(storeRoot(), 'cli.mjs').replace(/\\/g, '/');
     o.launcher = 'node ' + (/\s/.test(cli) ? '"' + cli + '"' : cli);
   }
-  writeStyle(buildOutputStyle(o), version);
+  const style = buildOutputStyle(o);
+  writeStyle(style, version);
+  if (sandbox && sandbox.home) projectStyle(style, version);
   await writeCommand();
   await keepPluginUpdates(cfg);
   if (args.has('--install')) selectStyle();
@@ -228,6 +230,35 @@ function writeStyle(content, version) {
   writeFileSync(p, content);
   process.stdout.write('AskerDo: output style regenerated at rev ' + version + '. It takes effect in the next session or after /clear.\n');
   log((current ? 'rewrote' : 'created') + ' output style rev ' + version);
+}
+
+/* the app reads no style under a sandbox home, so a project whose settings name
+   this sandbox gets it as askerdo-sandbox, the style those settings pick. A file of that
+   name the sync did not write is left alone, and no other project is touched. */
+function projectStyle(content, version) {
+  const SANDBOX_STYLE = 'askerdo-sandbox';
+  try {
+    const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    if (!isAbsolute(dir)) return;
+    const same = (a, b) => typeof a === 'string' && isAbsolute(a) && resolve(a).toLowerCase() === resolve(b).toLowerCase();
+    const names = ['settings.local.json', 'settings.json'].some((f) => {
+      try {
+        const env = JSON.parse(readFileSync(join(dir, '.claude', f), 'utf8')).env || {};
+        return same(env.ASKERDO_ROOT, storeRoot()) || same(env.ASKERDO_SANDBOX_HOME, sandbox.home);
+      } catch { return false; }
+    });
+    if (!names) return;
+    const p = join(dir, '.claude', 'output-styles', SANDBOX_STYLE + '.md');
+    const text = content.replace(/^name: .*$/m, 'name: ' + SANDBOX_STYLE);
+    const current = read(p);
+    if (current === text) return;
+    if (current && !new RegExp('^name: ' + SANDBOX_STYLE + '$', 'm').test(current)) return log('left ' + p + ': a style this sync did not write');
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, text);
+    log((current ? 'rewrote' : 'created') + ' the project style ' + p + ' rev ' + version);
+  } catch (e) {
+    log('project style failed: ' + ((e && e.message) || e));
+  }
 }
 
 /* the app checks its command list before the mod registers /askerdo, so a
@@ -364,7 +395,8 @@ async function hubMain() {
     refreshLauncher(root, own);
     if (cfg.queue !== 'hub') return;
     await learnProject();
-    /* the ensure points the one machine-wide scheduled task, so a sandbox never runs it */
+    /* a sandbox's server starts at the mod's first call (the board verb, detached), so a
+       sync run with a seam, as every test's is, never leaves a server behind */
     if (sandbox) appendLog(root, 'board ensure skipped: sandbox seam (' + sandbox.from + ')');
     else await ensureBoard(root);
     /* a sandbox's rules are not the project's, so it never writes into one */
@@ -401,7 +433,7 @@ async function agentsOverride() {
     if (!r) log('AGENTS.override.md: no board answer in ' + PULL_MS / 1000 + ' s; left as it was');
     else if (r.did === 'left') log('left ' + r.path + ' alone: AskerDo did not write it');
     else if (r.did === 'wrote') {
-      log((r.created ? 'created ' : 'rewrote ') + r.path + (r.left ? ', ' + r.left + " rules or decisions left out for Codex's 32 KiB limit" : '')
+      log((r.created ? 'created ' : 'rewrote ') + r.path + (r.left ? ', ' + r.leftBy + ' moved to ' + r.rest + " for Codex's size limit" : '')
         + (r.excluded ? "; added to the repo's info/exclude" : ''));
     }
   } catch (e) {

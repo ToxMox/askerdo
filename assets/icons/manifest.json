@@ -138,7 +138,11 @@
       "dark": "#FFB300",
       "light": "#E68A00"
     },
-    "quiet": null
+    "quiet": null,
+    "asleep": {
+      "dark": "#FFE08A",
+      "light": "#9E7C00"
+    }
   },
   "sources": [
     "mark-quiet.svg",
@@ -159,7 +163,9 @@
     "tray-dark-source-16-blocking.svg",
     "tray-dark-source-20-quiet.svg",
     "tray-dark-source-20-waiting.svg",
-    "tray-dark-source-20-blocking.svg"
+    "tray-dark-source-20-blocking.svg",
+    "favicon-asleep.svg",
+    "favicon-waiting-asleep.svg"
   ],
   "exports": [
     {
@@ -349,6 +355,130 @@
       ]
     },
     {
+      "file": "tray-asleep.ico",
+      "type": "ico",
+      "frames": [
+        {
+          "size": 16,
+          "source": "favicon-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 20,
+          "source": "favicon-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 24,
+          "source": "favicon-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 32,
+          "source": "favicon-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 48,
+          "source": "favicon-asleep.svg",
+          "encoding": "dib"
+        }
+      ]
+    },
+    {
+      "file": "tray-light-asleep.ico",
+      "type": "ico",
+      "frames": [
+        {
+          "size": 16,
+          "source": "favicon-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 20,
+          "source": "favicon-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 24,
+          "source": "favicon-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 32,
+          "source": "favicon-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 48,
+          "source": "favicon-asleep.svg",
+          "encoding": "dib"
+        }
+      ]
+    },
+    {
+      "file": "tray-waiting-asleep.ico",
+      "type": "ico",
+      "frames": [
+        {
+          "size": 16,
+          "source": "favicon-waiting-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 20,
+          "source": "favicon-waiting-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 24,
+          "source": "favicon-waiting-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 32,
+          "source": "favicon-waiting-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 48,
+          "source": "favicon-waiting-asleep.svg",
+          "encoding": "dib"
+        }
+      ]
+    },
+    {
+      "file": "tray-light-waiting-asleep.ico",
+      "type": "ico",
+      "frames": [
+        {
+          "size": 16,
+          "source": "favicon-waiting-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 20,
+          "source": "favicon-waiting-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 24,
+          "source": "favicon-waiting-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 32,
+          "source": "favicon-waiting-asleep.svg",
+          "encoding": "dib"
+        },
+        {
+          "size": 48,
+          "source": "favicon-waiting-asleep.svg",
+          "encoding": "dib"
+        }
+      ]
+    },
+    {
       "file": "app.ico",
       "type": "ico",
       "frames": [
@@ -436,6 +566,18 @@
       "type": "png",
       "size": 32,
       "source": "favicon-blocking.svg"
+    },
+    {
+      "file": "favicon-asleep-32.png",
+      "type": "png",
+      "size": 32,
+      "source": "favicon-asleep.svg"
+    },
+    {
+      "file": "favicon-waiting-asleep-32.png",
+      "type": "png",
+      "size": 32,
+      "source": "favicon-waiting-asleep.svg"
     }
   ]
 }

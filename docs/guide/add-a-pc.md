@@ -10,7 +10,7 @@ This is configure's **Join a board I have** answer ([Pick a board](getting-start
 |-|-|
 |Claude Code, signed in|The plugin, its hooks, skills and mod load in its sessions.|
 |git, and a network path to GitHub|The plugin marketplace is a git clone of the public AskerDo repository, `ToxMox/askerdo`.|
-|Node on the plain `PATH` (any recent LTS)|Hooks and the CLI run with `node`; only a PC that hosts a board needs Node 24. On Windows the local server is started by a logon task, which sees only the system `PATH`: a Node that only a shell profile or a version manager adds never reaches it. `where.exe node` should name the installer's `node.exe`.|
+|Node on the plain `PATH` (any recent LTS)|Hooks and the CLI run with `node`; only a PC that hosts a board needs Node 24. On Windows the local server is started by a logon task, which runs the `node.exe` your sessions ran when they registered it, saved by its full path, so a Node that a version manager or a per-user installer adds starts it too. When that `node.exe` is gone (a version removed), the task runs the `node.exe` on the `PATH` a logon sees instead, and the next session start that finds the local server down saves its own.|
 |The board's address|`http://<server>:17480`, or whatever the board's admin published. `curl -s http://<server>:17480/health` from the new PC should answer `{"ok":true,...}`.|
 
 ## Join
@@ -81,7 +81,7 @@ On a PC that hosts its board ([A board on this PC](board-setup.md#a-board-on-thi
 |Pause notifications|For an hour, until tomorrow morning, or until you resume; the line reads `Paused until 15:40` while a pause holds.|
 |Exit|Closes the tray until the local server next starts.|
 
-Alerts draw as cards in the tray's own popup by the tray corner: a blocking question, a new open question, a question closed or woken, a task completed or dropped, a plan or workstream closed, and one summary card when many arrive at once. Each kind can be switched off on the Notification settings page. The tray is also the one program that opens the files and folders a record links. A Start Menu entry named AskerDo opens the board.
+Alerts draw as cards in the tray's own popup by the tray corner: a blocking question, a new open question, a question closed or woken, a task done or dropped, a plan or workstream closed, and one summary card when many arrive at once. Each kind can be switched off on the Notification settings page. The tray is also the one program that opens the files and folders a record links. A Start Menu entry named AskerDo opens the board.
 
 ![A tray popup for a blocking question: Header row on the tide table, its project, workstream and track, the session's pick and an Answer button](../img/readme/tray-popup.png)
 

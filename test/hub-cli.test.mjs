@@ -41,6 +41,10 @@ test('through the local route: two folders at once each see their own, a git-rea
     /* a scan reads each repo's git log, which would hold the server's loop */
     const scan = await route.post({ argv: ['proc', 'scan'], cwd: dirA, env });
     assert.equal(scan.status, 409, JSON.stringify(scan.body));
+    /* the launcher never posts what the server is bound to refuse */
+    const posted = route.answered.length;
+    await runCli(['proc', 'scan'], { env, cwd: dirA });
+    assert.equal(route.answered.length, posted, 'a run-in-caller command runs in the caller with no post');
 
     /* the server reads neither its own cwd nor the other call's */
     const names = ['list', '--names-line'];
@@ -50,7 +54,9 @@ test('through the local route: two folders at once each see their own, a git-rea
       assert.equal(r.body.code, 0, r.body.stderr);
       assert.ok(r.body.stdout.includes(mine) && !r.body.stdout.includes(other), r.body.stdout);
     }
-    const read = await runCli(names, { env, cwd: dirA });
+    /* a session's shell carries its engine process's mark (the mod's ASKERDO_PROC), which no command reads;
+       a sandbox's restart seam is the server's alone */
+    const read = await runCli(names, { env: { ...env, ASKERDO_PROC: 'mark1', ASKERDO_RESTART_DETACHED: '1' }, cwd: dirA });
     assert.ok(read.code === 0 && read.out.includes('in folder a'), read.err);
     assert.equal(route.answered.at(-1).status, 200, 'a read through the launcher runs in the server');
 

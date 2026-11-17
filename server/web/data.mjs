@@ -3,20 +3,22 @@
 import { readTx } from '../db.mjs';
 import { WEB } from '../paths.mjs';
 import { graphOf, shortTitle } from './graph.mjs';
-import { clockOf, isKey, labelOf } from '../records.mjs';
+import { clockOf, dayOf, isKey, labelOf, unguardHeadings } from '../records.mjs';
 import {
-  canonLabel, loadEntry, parseLegacyToken, resolveLabel, resolveLegacy, resolveRecord, shownFront,
+  canonLabel, labelGates, loadEntry, parseLegacyToken, resolveLabel, resolveLegacy, resolveRecord, shownFront,
 } from '../verbs/labels.mjs';
-import { readiness } from '../verbs/graph.mjs';
+import { readiness, shownWorkers } from '../verbs/graph.mjs';
 import { growthLines } from '../verbs/kickoff.mjs';
 import { waitingOf } from '../handoff-text.mjs';
-import { procedureCards } from '../verbs/procedures.mjs';
+import { cardsCited, procedureCards, tasksCiting } from '../verbs/procedures.mjs';
 import { answeredPick, parseOptions, questionSections } from '../verbs/questions.mjs';
 import { lastSeq } from '../verbs/snapshot.mjs';
-import { NEWEST_FIRST, listTracks, stallDays, trackView, workstreamView } from '../verbs/tracks.mjs';
-import { bandCalls, closeText, unparkWords, whenText } from '../verbs/upkeep.mjs';
-import { inboxDueOf, pictureOverview, pictureView } from '../verbs/picture-view.mjs';
+import { NEWEST_FIRST, stallDays, trackView, workstreamView } from '../verbs/tracks.mjs';
+import { closeText, unparkWords, whenText } from '../verbs/upkeep.mjs';
+import { inboxDueOf, overviewParts, pictureView } from '../verbs/picture-view.mjs';
+import { asleepQuestions, gatedBy, waitingItems } from '../verbs/waiting.mjs';
 import { pictureOf } from './picture-model.mjs';
+import { withWorkers } from '../verbs/runs.mjs';
 
 const DAY = 86400000;
 const LIVE_HANDOFF = ['waiting', 'parked'];
@@ -42,10 +44,11 @@ function lastMoved(db, key, fields) {
 function gatesOf(db, keys) {
   const out = new Map();
   if (!keys.length) return out;
-  for (const q of db.stmt(`SELECT t.value AS task, q.label FROM json_each(?) t
-      JOIN links l ON l.type = 'gates' AND (l."to" = t.value OR l."to" IN (SELECT label FROM labels WHERE key = t.value))
-      JOIN records q ON q.key = l."from" AND q.kind = 'question'
-      WHERE coalesce(q.status, '') NOT IN ('answered', 'dropped')`).all(JSON.stringify(keys))) {
+  for (const q of db.stmt(`SELECT x.task, q.label FROM (SELECT t.value AS task, l."from" AS q FROM json_each(?) t
+      JOIN links l ON l.type = 'gates' AND l."to" = t.value
+      UNION SELECT json_extract(o.value, '$.task'), json_extract(o.value, '$.from') FROM json_each(?) o) x
+      JOIN records q ON q.key = x.q AND q.kind = 'question'
+      WHERE coalesce(q.status, '') NOT IN ('answered', 'dropped')`).all(JSON.stringify(keys), JSON.stringify(labelGates(db, keys)))) {
     const list = out.get(q.task) || [];
     if (!list.includes(q.label)) list.push(q.label);
     out.set(q.task, list);
@@ -59,7 +62,7 @@ const PLACE = `LEFT JOIN track_items ti ON ti.task = t.key LEFT JOIN records tr 
 const placeOf = (r, home) => ({ track: r.track || 'the inbox', ws: r.wsKey && r.wsKey !== home ? r.ws : '' });
 function openPlace(db, id, home) {
   const r = db.stmt(`SELECT tr.label AS track, w.key AS wsKey, w.label AS ws FROM records t ${PLACE}
-    WHERE t.kind = 'task' AND t.label = ? AND coalesce(t.status, '') NOT IN ('completed', 'dropped')`).get(id);
+    WHERE t.kind = 'task' AND t.label = ? AND coalesce(t.status, '') NOT IN ('done', 'dropped')`).get(id);
   return r ? placeOf(r, home) : { track: 'the inbox', ws: '' };
 }
 
@@ -70,7 +73,7 @@ function neededOf(db, keys, home) {
   if (!keys.length) return out;
   for (const r of db.stmt(`SELECT d."on" AS onKey, t.key, t.label AS id, t.title AS name, t.status, tr.label AS track, w.key AS wsKey, w.label AS ws
       FROM json_each(?) j CROSS JOIN depends d ON d."on" = j.value CROSS JOIN records t ON t.key = d.task ${PLACE}
-      WHERE t.kind = 'task' AND coalesce(t.status, '') NOT IN ('completed', 'dropped') ORDER BY t.label`).all(JSON.stringify(keys))) {
+      WHERE t.kind = 'task' AND coalesce(t.status, '') NOT IN ('done', 'dropped') ORDER BY t.label`).all(JSON.stringify(keys))) {
     const list = out.get(r.onKey) || [];
     list.push({ id: r.id, key: r.key, name: r.name, status: r.status, ...placeOf(r, home) });
     out.set(r.onKey, list);
@@ -113,18 +116,7 @@ export function graphFrom(db, views, now) {
   return G;
 }
 
-/* ---- what waits on the user: one reading every view counts from ------------- */
-
-function openQuestions(db) {
-  return db.stmt(`SELECT key, label, title, json_extract(fields, '$.blocking') AS blocking, workstream,
-      json_extract(fields, '$.project') AS project, json_extract(fields, '$.projectRepo') AS projectRepo,
-      json_extract(fields, '$.projectDir') AS projectDir, json_extract(fields, '$.created') AS created
-      FROM records WHERE kind = 'question' AND status = 'open' ORDER BY id`).all()
-    .map((q) => ({ ...q, blocking: q.blocking === 1 || q.blocking === true || q.blocking === 'true' }));
-}
-
-const gatedBy = (db, qKey) => db.stmt(`SELECT coalesce(r.label, l."to") AS label FROM links l LEFT JOIN records r ON r.key = l."to"
-  WHERE l."from" = ? AND l.type = 'gates'`).all(qKey).map((r) => r.label);
+/* ---- what waits on the user: the reading is server/verbs/waiting.mjs ------- */
 
 /* The live handoff of each track and what it says waits on the user. */
 function liveHandoff(db, trackKey) {
@@ -132,52 +124,6 @@ function liveHandoff(db, trackKey) {
   if (!h || !LIVE_HANDOFF.includes(h.status)) return null;
   const f = parse(h.fields) || {};
   return { id: h.label, key: h.key, status: h.status, created: h.created, focus: f.focus || '', waitingOnUser: waitingOf(f) };
-}
-
-/* The workstream a record sits in: a workstream itself, else its own or its track's. */
-function wsOfKey(db, key) {
-  const r = db.stmt(`SELECT r.kind, coalesce(r.workstream, tr.workstream) AS ws FROM records r LEFT JOIN track_items ti ON ti.task = r.key
-    LEFT JOIN records tr ON tr.key = ti.track WHERE r.key = ?`).get(key);
-  if (r) return r.kind === 'workstream' ? key : r.ws || null;
-  const h = db.stmt('SELECT t.workstream FROM handoffs h JOIN records t ON t.key = h.track WHERE h.key = ?').get(key);
-  return h ? h.workstream : null;
-}
-
-/* A gate names its task by key, or by a label from before the cutover. */
-function gatedKeys(db, qKey) {
-  return db.stmt(`SELECT l."to" AS t, r.key FROM links l LEFT JOIN records r ON r.key = l."to" WHERE l."from" = ? AND l.type = 'gates'`).all(qKey)
-    .map((x) => x.key || (resolveRecord(db, x.t, { kinds: ['task'] }) || {}).key).filter(Boolean);
-}
-
-const SESSION_ID = /\bsession [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
-/* the web names a session as "a session", never by its raw id */
-export const withoutSessionIds = (s) => String(s || '').replace(SESSION_ID, 'a session');
-
-/* Everything waiting on the user, each item with the workstreams it belongs to (wss): open
-   questions, blocking first; the live handoffs' waiting-on-user lines; then the band's
-   calls as bandCalls reads them, override requests apart from upkeep's own. */
-export function waitingItems(db, now) {
-  const uniq = (xs) => [...new Set(xs.filter(Boolean))];
-  const qs = openQuestions(db).map((q) => ({
-    kind: 'question', id: q.label, key: q.key, text: q.title, blocking: q.blocking, created: q.created,
-    project: q.project || '', projectRepo: q.projectRepo || '', projectDir: q.projectDir || '', ws: q.workstream ? labelOf(db, q.workstream) : '',
-    gates: gatedBy(db, q.key), wss: uniq([q.workstream, ...gatedKeys(db, q.key).map((k) => wsOfKey(db, k))]),
-  }));
-  qs.sort((a, b) => (b.blocking - a.blocking) || String(a.created).localeCompare(String(b.created)));
-  const read = bandCalls(db, {}, null, { now });
-  const asks = read.asks.map((a) => ({ kind: 'handoff', id: a.track, key: a.trackKey, handoff: a.handoff, handoffKey: a.handoffKey, text: a.text, at: a.at, wss: uniq([a.workstream]) }));
-  const calls = [];
-  for (const row of read.rows) {
-    const presses = row.presses.map((p) => ({ label: p.label, url: p.url || '' }));
-    if (row.kind === 'override') {
-      const keys = db.stmt('SELECT record FROM override_items WHERE request = ?').all(row.request).map((x) => x.record);
-      calls.push({ kind: 'override', request: row.request, count: row.count, text: row.text, presses, at: row.since, wss: uniq(keys.map((k) => wsOfKey(db, k))) });
-    } else {
-      calls.push({ kind: 'call', call: row.kind, id: row.id || '', key: row.record, text: withoutSessionIds(row.text), presses, at: row.since, wss: uniq([row.record && wsOfKey(db, row.record)]) });
-    }
-  }
-  calls.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'override' ? -1 : 1));
-  return qs.concat(asks, calls).map((i) => ({ ...i, wsIds: i.wss.map((k) => labelOf(db, k)) }));
 }
 
 const faceOfItems = (items) => (items.some((i) => i.blocking) ? 'blocking' : items.length ? 'waiting' : 'quiet');
@@ -194,22 +140,22 @@ const wsRow = (db, key) => db.stmt("SELECT key, label, title, status FROM record
 export function overviewModel(db, opts = {}) {
   return readTx(db, () => {
     const now = nowOf(opts);
-    const all = waitingItems(db, now);
+    /* the redrawn picture's data, P, its Overview level; the cards reuse what it read */
+    const ov = overviewParts(db, now);
+    const all = ov.items;
     const cards = [];
     const quiet = [];
     for (const w of db.stmt("SELECT key, label, title FROM records WHERE kind = 'workstream' AND status = 'open' ORDER BY id").all()) {
-      const ls = listTracks(db, { workstream: w.key }, { now });
+      const { ls, views } = ov.lists.get(w.key);
       if (!ls.tracks.length) {
         quiet.push({ id: w.label, name: w.title, inbox: ls.inbox, inboxStalled: ls.inboxStalled, inboxDue: ls.inbox ? inboxDueOf(db, w, now) : 0, needs: needsIn(all, w.key).count });
         continue;
       }
-      const views = ls.tracks.map((t) => trackView(db, { track: t.key }, { now }));
       /* the stats strip counts from each workstream's g and D */
       cards.push({ ws: { id: w.label, key: w.key, name: w.title }, ...graphFrom(db, views, now), needs: needsIn(all, w.key) });
     }
     const needs = needsFrom(all);
-    /* the redrawn picture's data, P, its Overview level */
-    const picture = pictureOf({ overview: pictureOverview(db, {}, null, { now }), at: new Date(now).toISOString() });
+    const picture = pictureOf({ overview: ov.overview, at: new Date(now).toISOString() });
     return { now, seq: lastSeq(db), cards, quiet, stallDays: stallDays(db), procedures: proceduresOf(db), needs, face: needs.face, picture };
   });
 }
@@ -280,9 +226,16 @@ function trackQuestions(db, trackKey, taskKeys) {
   }
   for (const r of db.stmt("SELECT key FROM records WHERE kind = 'question' AND (track = ? OR json_extract(fields, '$.track') = ?)").all(trackKey, trackKey)) keys.add(r.key);
   return [...keys].map((k) => loadEntry(db, k)).filter(Boolean)
-    .map((e) => ({ id: e.label, key: e.key, name: e.front.name, status: e.front.status, pick: e.front.pick || '', created: e.front.created,
+    .map((e) => ({ id: e.label, key: e.key, name: e.front.name, status: e.front.status, chosen: chosenOf(db, e), created: e.front.created,
       gates: gatedBy(db, e.key) }))
     .sort((a, b) => (b.status === 'open') - (a.status === 'open') || String(b.created).localeCompare(String(a.created)));
+}
+
+/* the option an answered question's Answer names; the stored pick is only the asker's recommendation. */
+function chosenOf(db, e) {
+  if (e.front.status !== 'answered') return '';
+  const said = db.stmt('SELECT body FROM notes WHERE record = ? ORDER BY position').all(e.key).map((n) => n.body).join('\n\n');
+  return answeredPick({ id: e.label, answer: said, options: parseOptions(questionSections(e.body || '', '').sections['Options']) }) || '';
 }
 
 function handoffsOf(db, trackKey, before) {
@@ -296,9 +249,6 @@ function handoffsOf(db, trackKey, before) {
   });
 }
 
-/* When each running task started: its last move to in progress. */
-const startedAt = (db, key) => (db.stmt(`SELECT at FROM activity WHERE record = ?
-  AND json_extract(line, '$.changes.status[1]') = 'in_progress' ORDER BY seq DESC LIMIT 1`).get(key) || {}).at || null;
 
 export function trackModel(db, trackKey, opts = {}) {
   return readTx(db, () => {
@@ -311,18 +261,19 @@ export function trackModel(db, trackKey, opts = {}) {
     /* every line of the workstream, so a critical path through another line names it */
     const G = graphFrom(db, all, now);
     const done = db.stmt(`SELECT r.key, r.label AS id, r.title AS name, r.status FROM track_items ti JOIN records r ON r.key = ti.task
-      WHERE ti.track = ? AND r.status IN ('completed', 'dropped') ORDER BY ti.position`).all(trackKey);
+      WHERE ti.track = ? AND r.status IN ('done', 'dropped') ORDER BY ti.position`).all(trackKey);
     const since = {};
-    for (const t of tv.tasks) if (t.status === 'in_progress') since[t.id] = startedAt(db, t.key);
+    /* since its word began: a running task's start, an unconfirmed one's last heard, a ready one's opening */
+    for (const t of tv.tasks) if (t.word && t.word.since) since[t.id] = t.word.since;
     const j = tv.junction || {};
     const parent = j.track ? { id: j.track.id, key: j.track.key, name: (loadEntry(db, j.track.key) || { front: {} }).front.name, state: j.track.state } : null;
     const jtask = j.task ? { id: j.task.id, key: j.task.key, name: (loadEntry(db, j.task.key) || { front: {} }).front.name } : null;
     const sides = tv.sideTracks.map((s) => {
       const e = loadEntry(db, s.key);
-      const c = db.stmt(`SELECT count(*) AS total, sum(r.status = 'completed') AS done FROM track_items ti JOIN records r ON r.key = ti.task
+      const c = db.stmt(`SELECT count(*) AS total, sum(r.status = 'done') AS done FROM track_items ti JOIN records r ON r.key = ti.task
         WHERE ti.track = ? AND r.status <> 'dropped'`).get(s.key);
       const at = db.stmt(`SELECT r.key, r.label FROM links l JOIN records r ON r.key = l."to" AND r.kind = 'task' WHERE l."from" = ? AND l.type = 'junction'`).get(s.key);
-      return { id: s.id, key: s.key, name: e.front.name, state: s.state, promoted: e.front.origin === 'promote', at: at ? at.label : '', atKey: at ? at.key : null, done: c.done || 0, total: c.total };
+      return { id: s.id, key: s.key, name: e.front.name, state: s.state, at: at ? at.label : '', atKey: at ? at.key : null, done: c.done || 0, total: c.total };
     });
     const pickList = db.stmt(`SELECT t.key, t.label AS id, t.title AS name, w.label AS ws FROM records t LEFT JOIN records w ON w.key = t.workstream
       WHERE t.kind = 'track' AND (coalesce(t.status, '') NOT IN ('done', 'dropped', 'folded') OR t.key = ?) ORDER BY w.id, t.id`).all(trackKey);
@@ -331,7 +282,7 @@ export function trackModel(db, trackKey, opts = {}) {
       done, since, handoffs: handoffsOf(db, trackKey),
       before: parent ? handoffsOf(db, parent.key, rec.front.created) : [],
       questions: trackQuestions(db, trackKey, tv.tasks.map((t) => t.key)),
-      parent, jtask, promoted: rec.front.origin === 'promote', sides, pickList,
+      parent, jtask, sides, pickList,
       picture: ws ? pictureFor(db, ws.key, ws.label, all, now) : null,
     };
   });
@@ -394,28 +345,30 @@ export function recordModel(db, key) {
         verify: verifyRows(h.verify), growth: growthOf(db, f.growth), notes: [],
       };
     }
-    const front = shownFront(db, e.front);
+    const front = e.kind === 'task' ? withWorkers(shownFront(db, e.front), shownWorkers(db, [e.key], Date.now()).get(e.key)) : shownFront(db, e.front);
     /* a close or unpark condition reads in words, its record a link */
     if (e.front.close) front.close = closeText(db, e.front.close);
     if (e.front.unparkWhen) front.unparkWhen = unparkWords(db, e.front.unparkWhen) || whenText(db, e.front.unparkWhen);
-    const notes = db.stmt('SELECT at, actor, body FROM notes WHERE record = ? ORDER BY position').all(e.key);
+    /* notes and the body are stored with a guard space before a # line; notes read as written,
+       the body keeps its guard so the page parses only its own sections, and md draws a guarded line */
+    const notes = db.stmt('SELECT at, actor, body FROM notes WHERE record = ? ORDER BY position').all(e.key).map((n) => ({ ...n, body: unguardHeadings(n.body) }));
     /* each field's reference by the key it holds, so an ended one opens its own record */
     const refs = {};
     for (const v of Object.values(e.front)) for (const x of [].concat(v && typeof v === 'object' && !Array.isArray(v) ? v.on : v)) if (isKey(x)) refs[labelOf(db, x)] = x;
     const out = { kind: e.kind, key: e.key, label: e.label, status: front.status || '', title: front.name || front.focus || '', front, refs, body: e.body || '', notes };
     /* the record's old texts, and an override waiting on it */
     out.history = db.stmt('SELECT id, at, actor, field, old, new, why FROM history WHERE record = ? ORDER BY id').all(e.key);
-    const pending = db.stmt('SELECT request FROM override_items WHERE record = ?').get(e.key);
-    if (pending) out.override = pending.request;
+    const pending = db.stmt('SELECT i.request, o.kind FROM override_items i LEFT JOIN overrides o ON o.id = i.request WHERE i.record = ?').get(e.key);
+    if (pending) { out.override = pending.request; out.overrideKind = pending.kind || ''; }
     if (e.kind === 'task') {
       const tr = db.stmt('SELECT r.key, r.label FROM track_items ti JOIN records r ON r.key = ti.track WHERE ti.task = ?').get(e.key);
       out.track = tr ? tr.label : '';
       out.trackKey = tr ? tr.key : null;
-      out.checklist = db.stmt('SELECT text, done FROM checklist WHERE task = ? ORDER BY position').all(e.key);
+      out.checklist = db.stmt("SELECT n, text, state <> 'open' AS done FROM steps WHERE task = ? ORDER BY position, n").all(e.key);
       /* a claimant shows only while a live hand backs it, the task in its hand or its track's lease */
       if (Array.isArray(front.claimants)) {
         const lease = out.trackKey ? db.stmt('SELECT session FROM leases WHERE track = ?').get(out.trackKey) : null;
-        out.front = { ...front, claimants: front.claimants.filter((s) => s === e.front.inHand || (lease && lease.session === s)) };
+        out.front = { ...front, claimants: front.claimants.filter((s) => s === front.inHand || (lease && lease.session === s)) };
       }
       /* where it stands: ready or what holds it, what waits on it, the questions gating it */
       const home = (out.trackKey && wsOfRecord(db, out.trackKey)) || wsOfRecord(db, e.key);
@@ -423,17 +376,19 @@ export function recordModel(db, key) {
         FROM depends d CROSS JOIN records t ON t.key = d."on" ${PLACE} WHERE d.task = ? ORDER BY t.label`).all(e.key)
         .map((d) => ({ key: d.key, label: d.label, title: d.title, status: d.status, ...placeOf(d, home) }));
       out.neededBy = neededOf(db, [e.key], home).get(e.key) || [];
-      /* a gate names the task by key, or by a label from before the cutover: two index lookups */
+      /* a gate names the task by key, or by a label from before the cutover that meant this task */
       out.gatedBy = db.stmt(`SELECT DISTINCT q.key, q.label, q.title, json_extract(q.fields, '$.blocking') AS blocking FROM
-        (SELECT "from" AS f FROM links WHERE "to" = ? AND type = 'gates'
-          UNION SELECT l."from" FROM labels lb CROSS JOIN links l ON l."to" = lb.label AND l.type = 'gates' WHERE lb.key = ?) x
-        CROSS JOIN records q ON q.key = x.f WHERE q.kind = 'question' AND coalesce(q.status, '') NOT IN ('answered', 'dropped') ORDER BY q.label`).all(e.key, e.key)
+        (SELECT "from" AS f FROM links WHERE "to" = ? AND type = 'gates' UNION SELECT value FROM json_each(?)) x
+        CROSS JOIN records q ON q.key = x.f WHERE q.kind = 'question' AND coalesce(q.status, '') NOT IN ('answered', 'dropped') ORDER BY q.label`)
+        .all(e.key, JSON.stringify(labelGates(db, [e.key]).map((x) => x.from)))
         .map((q) => ({ ...q, blocking: q.blocking === 1 || q.blocking === true || q.blocking === 'true' }));
-      if (!['completed', 'dropped'].includes(front.status)) {
+      out.procedures = cardsCited(db, e.front.refs);
+      if (!['done', 'dropped'].includes(front.status)) {
         const r = readiness(db, e.key);
-        out.readiness = { ready: r.ready, side: r.pointer };
+        out.readiness = { ready: r.ready, word: r.word };
       }
     }
+    if (e.kind === 'procedure') out.citedBy = tasksCiting(db, e);
     if (e.kind === 'question') {
       /* the option slots (headline, why pick, why not, undo), read from the stored table */
       out.options = parseOptions(questionSections(e.body || '', '').sections['Options']);
@@ -486,7 +441,8 @@ export function needsYouModel(db, { repo, project } = {}, opts = {}) {
       return i.wss.some((k) => namesOf(k).some((n) => (r ? norm(n) === r : last(n) === p)));
     };
     const needs = needsFrom(waitingItems(db, nowOf(opts)).filter(mine));
-    return { seq: lastSeq(db), project: r ? r.split('/').filter(Boolean).pop() : p, ...needs };
+    /* asleep beside the needs, never in them, so count and face stay what waits on the user */
+    return { seq: lastSeq(db), project: r ? r.split('/').filter(Boolean).pop() : p, ...needs, asleep: asleepQuestions(db).filter(mine), today: dayOf(clockOf(opts)) };
   });
 }
 

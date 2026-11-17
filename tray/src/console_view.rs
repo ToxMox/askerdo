@@ -50,7 +50,7 @@ pub struct Entry {
     pub status: String,
     /* an override's act, worded from its changes; empty for every other line */
     pub word: String,
-    /* an edit that moved the hand: "taken in hand", "taken over" or "let go" */
+    /* a session run or an old edit that moved the hand: "taken in hand", "taken over" or "let go" */
     pub hand: String,
 }
 
@@ -77,7 +77,11 @@ pub fn entry_from(v: &Value) -> Option<Entry> {
     } else {
         String::new()
     };
-    let hand = if s("verb") == "edit" { hand_word(v.get("changes"), &status) } else { "" };
+    let hand = match s("verb").as_str() {
+        "edit" => hand_word(v.get("changes"), &status),
+        "run" => run_word(v.get("changes")),
+        _ => "",
+    };
     let at = s("at");
     /* a thread's old lines read as the track it became */
     let kind = if s("kind") == "thread" { "track".to_string() } else { s("kind") };
@@ -108,7 +112,26 @@ fn hand_word(changes: Option<&Value>, status: &str) -> &'static str {
     match (held(0), held(1)) {
         (true, true) => "taken over",
         (false, true) => "taken in hand",
-        (true, false) if status != "completed" && status != "dropped" => "let go",
+        (true, false) if !["done", "completed", "dropped"].contains(&status) => "let go",
+        _ => "",
+    }
+}
+
+/* the feed's runWord: a session run's open is a take, its end handed on a let go,
+   taken over a take-over; a close's end is no hand move */
+fn run_word(changes: Option<&Value>) -> &'static str {
+    let at = |k: &str, i: usize| changes?.get(k)?.get(i).filter(|x| !x.is_null());
+    let worker = at("worker", 0).or_else(|| at("worker", 1)).and_then(|x| x.as_str());
+    if worker != Some("session") || !changes.and_then(|c| c.get("run")).is_some_and(|r| r.is_array()) {
+        return "";
+    }
+    if at("run", 1).is_some() {
+        return "taken in hand";
+    }
+    match at("how", 1).and_then(|x| x.as_str()) {
+        Some("taken_over") => "taken over",
+        Some("handed_on") => "let go",
+        Some("closed_idle") => "let go, closed by the app",
         _ => "",
     }
 }
@@ -117,7 +140,7 @@ fn hand_word(changes: Option<&Value>, status: &str) -> &'static str {
 fn hand_status(hand: &str) -> &'static str {
     match hand {
         "taken in hand" | "taken over" => "in progress",
-        "let go" => "open",
+        "let go" | "let go, closed by the app" => "open",
         _ => "",
     }
 }
@@ -280,12 +303,27 @@ fn follows(plain: &Entry, hand: &Entry) -> bool {
 pub fn rows(entries: &[Entry], filter: &str, today: &str) -> Vec<Row> {
     let mut kept: Vec<(usize, u32)> = Vec::new();
     let mut last: HashMap<String, usize> = HashMap::new();
+    let mut folded: Option<usize> = None;
     for (n, e) in entries.iter().enumerate() {
         if !matches(e, filter) {
             continue;
         }
+        /* a take-over is two run lines, the old run's end and the new one's open: one row */
+        if let Some(&(pn, _)) = kept.last().filter(|_| folded != Some(kept.len() - 1)) {
+            let p = &entries[pn];
+            let mut pair = [p.hand.as_str(), e.hand.as_str()];
+            pair.sort_unstable();
+            if pair == ["taken in hand", "taken over"] && p.key == e.key && p.id == e.id && p.ts[..16] == e.ts[..16] {
+                let i = kept.len() - 1;
+                kept[i] = (if e.hand == "taken over" { n } else { pn }, 1);
+                folded = Some(i);
+                continue;
+            }
+        }
         let rec = if e.key.is_empty() { &e.kind } else { &e.key };
-        let k = format!("{rec}\n{}\n{}\n{}", e.id, e.verb, &e.ts[..16]);
+        /* a run's hand move merges with the upkeep status that follows it, as an edit's did */
+        let verb = if e.hand.is_empty() { e.verb.as_str() } else { "edit" };
+        let k = format!("{rec}\n{}\n{verb}\n{}", e.id, &e.ts[..16]);
         if let Some(&i) = last.get(&k).filter(|&&i| entries[kept[i].0].hand.is_empty() || e.hand.is_empty()) {
             let p = &entries[kept[i].0];
             if follows(e, p) {
@@ -696,7 +734,7 @@ mod tests {
         assert!(joined.contains("joined") && joined.contains("home-pc") && !joined.contains("device join "), "{joined}");
         /* a profile's rows in words, its name once; the feed words them the same */
         let line = |verb: &str, id: &str, name: &str, changes: Value, n: u32| {
-            let v = serde_json::json!({ "ts": "2026-10-29T10:06:00-08:00", "verb": verb, "kind": if verb == "edit" { "task" } else { "profile" },
+            let v = serde_json::json!({ "ts": "2026-10-29T10:06:00-08:00", "verb": verb, "kind": if verb == "edit" || verb == "run" { "task" } else { "profile" },
                 "id": id, "key": id, "name": name, "changes": changes, "at": format!("2026-10#{n}") });
             entry_from(&v).unwrap()
         };
@@ -710,11 +748,13 @@ mod tests {
         /* a take, a take-over and a let-go in one minute stay three rows in the hand's words; upkeep's status lines fold in */
         let mut hands = Vec::new();
         merge(&mut hands, vec![
-            line("edit", "T-81", "", serde_json::json!({ "status": ["in_progress", "open"] }), 15),
-            line("edit", "T-81", "", serde_json::json!({ "inHand": ["s2", null] }), 14),
-            line("edit", "T-81", "", serde_json::json!({ "inHand": ["s1", "s2"] }), 13),
+            line("edit", "T-81", "", serde_json::json!({ "status": ["in_progress", "open"] }), 16),
+            line("run", "T-81", "", serde_json::json!({ "run": [9, null], "worker": ["session", null], "how": [null, "handed_on"] }), 15),
+            /* the take-over's two run lines, the new run's open and the old one's end, are one row */
+            line("run", "T-81", "", serde_json::json!({ "run": [null, 9], "worker": [null, "session"] }), 14),
+            line("run", "T-81", "", serde_json::json!({ "run": [8, null], "worker": ["session", null], "how": [null, "taken_over"], "session": ["s1", null] }), 13),
             line("edit", "T-81", "", serde_json::json!({ "status": ["open", "in_progress"] }), 12),
-            line("edit", "T-81", "", serde_json::json!({ "inHand": [null, "s1"] }), 11),
+            line("run", "T-81", "", serde_json::json!({ "run": [null, 8], "worker": [null, "session"] }), 11),
         ], &HashMap::new(), 100);
         let acts: Vec<String> = rows(&hands, "", "2026-10-29").iter()
             .filter_map(|r| if let Row::Line(n, c) = r { Some(format!("{} x{c}", act(&hands[*n]))) } else { None })

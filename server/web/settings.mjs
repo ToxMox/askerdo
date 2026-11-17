@@ -2,7 +2,7 @@
    chooser names, the PCs joined to the board, and the writes a form posts, each one the
    verb's own call made as the user from the signed-in device. */
 import { readTx } from '../db.mjs';
-import { UsageError, lookupFor } from '../verbs/labels.mjs';
+import { UsageError, lookupFor, resolveRecord } from '../verbs/labels.mjs';
 import { loadProfiles, settings } from '../verbs/profiles.mjs';
 import { REPO_KEY, TAKES_EFFECT, normProjectDir, parseRecordWith, sameDir, tabsOf } from '../verbs/profile-rules.mjs';
 import { runVerb } from '../verbs/index.mjs';
@@ -18,10 +18,10 @@ export const lastPart = (p) => String(p || '').replace(/\\/g, '/').split('/').fi
 const wsRow = (db, where, v) => db.stmt("SELECT key, label, title, fields FROM records WHERE kind = 'workstream' AND " + where).get(v);
 /* the line a session is on, else the newest open track's: the nav's own pick */
 function currentWs(db) {
-  const r = db.stmt(`SELECT w.label AS ws FROM leases l JOIN records t ON t.key = l.track JOIN records w ON w.key = t.workstream ORDER BY l.seen DESC LIMIT 1`).get()
-    || db.stmt(`SELECT w.label AS ws FROM records t JOIN records w ON w.key = t.workstream
+  const r = db.stmt(`SELECT w.key AS ws FROM leases l JOIN records t ON t.key = l.track JOIN records w ON w.key = t.workstream ORDER BY l.seen DESC LIMIT 1`).get()
+    || db.stmt(`SELECT w.key AS ws FROM records t JOIN records w ON w.key = t.workstream
       WHERE t.kind = 'track' AND coalesce(t.status, '') NOT IN ${DONE} ORDER BY t.updated DESC LIMIT 1`).get()
-    || db.stmt("SELECT label AS ws FROM records WHERE kind = 'workstream' AND status = 'open' ORDER BY id LIMIT 1").get();
+    || db.stmt("SELECT key AS ws FROM records WHERE kind = 'workstream' AND status = 'open' ORDER BY id LIMIT 1").get();
   return r ? r.ws : null;
 }
 
@@ -45,7 +45,11 @@ export function settingsModel(db, q, { device, origin, tokens = [] } = {}) {
       rec = parseRecordWith(lookup, q.record || '');
       if (rec.level !== scope) throw new UsageError(q.record + ' is not a ' + scope);
       ws = scope === 'workstream' ? wsRow(db, 'key = ?', rec.ref) : wsRow(db, 'key = ?', rec.row.fields.workstream);
-    } else ws = (q.ws && wsRow(db, 'label = ?', String(q.ws).toUpperCase())) || wsRow(db, 'label = ?', currentWs(db));
+    } else {
+      /* by key, so a reused WS-n names its live holder */
+      const named = q.ws ? resolveRecord(db, String(q.ws), { kinds: ['workstream'] }) : null;
+      ws = (named && wsRow(db, 'key = ?', named.key)) || wsRow(db, 'key = ?', currentWs(db));
+    }
     const wsFields = ws ? JSON.parse(ws.fields) : {};
     const project = ws ? projectOf(data, wsFields) : null;
     let read;
@@ -108,7 +112,10 @@ export function settingsWrite(db, what, f, device) {
   if (what === 'set') return runVerb(db, 'settingsSet', { key: field(f, 'key'), value: field(f, 'value'), ...where }, actor);
   if (what === 'unset') return runVerb(db, 'settingsUnset', { key: field(f, 'key'), ...where }, actor);
   if (what === 'rule') {
-    return runVerb(db, 'settingsRule', { profile: opt(field(f, 'name')), op: field(f, 'op'), slug: field(f, 'slug'), text: opt(field(f, 'text')), for: opt(field(f, 'for')) }, actor);
+    /* a role names one kind of agent, so it rides agents: the default both takes it as agents, and session is refused */
+    const role = field(f, 'role').trim();
+    const aud = role ? (field(f, 'for') === 'session' ? 'session' : 'agents') + ':' + role : opt(field(f, 'for'));
+    return runVerb(db, 'settingsRule', { profile: opt(field(f, 'name')), op: field(f, 'op'), slug: field(f, 'slug'), text: opt(field(f, 'text')), for: aud }, actor);
   }
   throw new UsageError('the settings page has no write named ' + what);
 }

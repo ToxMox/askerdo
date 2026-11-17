@@ -226,21 +226,20 @@ export function labelText(db, s, memo) {
 export const KEY_ORDERS = Object.freeze({
   question: ['id', 'key', 'name', 'ask', 'topic', 'status', 'blocking', 'created', 'updated', 'asked', 'pick', 'crux',
     'project', 'projectDir', 'projectRepo', 'workstream', 'track', 'gates', 'revisits', 'cites', 'labels', 'refs', 'mission', 'session',
-    'pc', 'subscribers', 'snooze', 'wokeBy', 'legacy', 'evidence', 'answered', 'legacyId', 'labelHistory'],
+    'pc', 'placement', 'subscribers', 'snooze', 'wokeBy', 'legacy', 'evidence', 'answered', 'legacyId', 'labelHistory'],
   workstream: ['id', 'key', 'name', 'status', 'outcome', 'projects', 'projectRepos', 'created', 'updated', 'closed', 'labels', 'refs',
     'profiles', 'profileDrops', 'outcomes', 'handoff', 'subscribers', 'legacyId', 'labelHistory'],
   /* plans, threads and a task's plan and ordinal: the raw import reads them until the track merge */
   plan: ['id', 'key', 'name', 'workstream', 'status', 'outcome', 'created', 'updated', 'closed', 'labels', 'refs', 'origin', 'profiles',
     'profileDrops', 'steps', 'stepTasks', 'stepCloses', 'subscribers', 'legacyId', 'labelHistory'],
-  /* `inHandSince`, when the session took it (newest first), and `agent`, the now set's tag, after inHand;
-     `agentEnd` { job, how, at } once that agent stopped; `reviewScope` (project; track is the default, no key) is what a review reads */
+  /* who is on a task is its runs (runs.mjs), never a field; `reviewScope` (project; track is the default, no key) is what a review reads */
   task: ['id', 'key', 'name', 'workstream', 'plan', 'status', 'priority', 'ordinal', 'labels', 'refs', 'created', 'updated', 'closed',
-    'origin', 'profiles', 'profileDrops', 'serves', 'subscribers', 'claimants', 'inHand', 'inHandSince', 'agent', 'agentEnd', 'reviewScope', 'legacyId', 'labelHistory'],
+    'origin', 'profiles', 'profileDrops', 'serves', 'subscribers', 'claimants', 'reviewScope', 'legacyId', 'labelHistory'],
   thread: ['id', 'key', 'name', 'status', 'goal', 'links', 'session', 'step', 'created', 'updated', 'closed', 'labels', 'refs',
     'profiles', 'profileDrops', 'subscribers', 'legacyId', 'labelHistory'],
   /* a decision's links (the work it governs, the user's words, the question it answers) after refs */
   knowledge: ['id', 'key', 'name', 'type', 'status', 'supersededBy', 'amended', 'corrected', 'scope', 'projects', 'projectRepos', 'labels', 'refs',
-    'workstreams', 'tracks', 'tasks', 'question', 'words', 'files', 'commands', 'legacy', 'source',
+    'workstreams', 'tracks', 'tasks', 'question', 'words', 'confirmed', 'files', 'commands', 'legacy', 'source',
     'created', 'updated', 'closed', 'legacyId', 'labelHistory'],
   procedure: ['id', 'key', 'name', 'status', 'slug', 'project', 'projectRepo', 'doc', 'summary', 'words', 'commands', 'files', 'repos',
     'paths', 'stale', 'flag', 'verified', 'verifiedAt', 'runs', 'cleanRuns', 'lastRun', 'created', 'updated', 'closed',
@@ -289,8 +288,11 @@ export function kebab(name, fallback) {
   return s || fallback;
 }
 
-/* A line starting with # gets one leading space, so it never reads as a section. */
-export const guardHeadings = (text) => String(text).split('\n').map((l) => (/^#/.test(l) ? ' ' + l : l)).join('\n');
+/* A line starting with # gets one leading space, so it never reads as a section; a line already
+   spaced before its # gets one too, so the read side can tell it from a guarded one. */
+export const guardHeadings = (text) => String(text).split('\n').map((l) => (/^ *#/.test(l) ? ' ' + l : l)).join('\n');
+/* The read side: every guarded line drops its one space, so a field reads back as written. */
+export const unguardHeadings = (text) => String(text).split('\n').map((l) => (/^ +#/.test(l) ? l.slice(1) : l)).join('\n');
 
 /* the old activity log's excerpt: a note is cut at 200 characters. */
 export function excerpt(text) {
@@ -300,8 +302,8 @@ export function excerpt(text) {
 
 /* ---- the activity row ---- */
 
-/* inHandSince moves with inHand, whose change carries the event */
-const CHANGE_SKIP = ['id', 'key', 'name', 'updated', 'answered', 'closed', 'subscribers', 'claimants', 'evidence', 'legacyId', 'labelHistory', 'inHandSince'];
+/* a placement question's draft is the filing itself: its answer's row says what came of it */
+const CHANGE_SKIP = ['id', 'key', 'name', 'updated', 'answered', 'closed', 'subscribers', 'claimants', 'evidence', 'legacyId', 'labelHistory', 'placement'];
 
 export function snoozeFlat(v) {
   if (!v || typeof v !== 'object') return null;

@@ -132,7 +132,7 @@ curl -s http://<server>:17480/health
 ```
 
 ```json
-{"ok":true,"protocol":2,"seq":0,"version":"0.8.16"}
+{"ok":true,"protocol":3,"seq":0,"version":"0.8.16"}
 ```
 
 `seq` is the number of the last change on the board; it grows with every write. `version` is the AskerDo release the board runs. The image's own health check calls the same route every minute, so `docker ps` shows the container as `healthy`.
@@ -319,7 +319,7 @@ Every PC picks the board up again on its own: its local server sees the board be
 
 ## Upgrade
 
-The board and the plugin on your PCs speak a protocol version, which a release moves when it changes what a PC sends or what the board accepts. A board refuses a PC on another protocol, never half serving it: that PC's Needs you band shows one row naming the side to update and how (`Update the board server: it speaks protocol 1 and this PC 2, so it refuses this PC`), `askerdo status` lists the same, and each call says it. PCs on a release with the same protocol work with the board whatever their versions. Upgrade the board when a release says its server changed, and update the PCs in the same sitting when it says the protocol moved. A board on this PC needs nothing: the local server runs it from the plugin folder an update installs, and `askerdo board --restart` starts it from the new one when an older local server still runs.
+The board and the plugin on your PCs speak a protocol version, which a release moves when it changes what a PC sends or what the board accepts. A board refuses a PC on another protocol, never half serving it: that PC's status row shows an amber chip, and Home a row, naming the side to update and how (`Update the board server: it speaks protocol 1 and this PC 2, so it refuses this PC`), `askerdo status` lists the same, and each call says it. PCs on a release with the same protocol work with the board whatever their versions. Upgrade the board when a release says its server changed, and update the PCs in the same sitting when it says the protocol moved. A board on this PC needs nothing: the local server runs it from the plugin folder an update installs, and `askerdo board --restart` starts it from the new one when an older local server still runs.
 
 1. Take a backup: `docker exec askerdo node /app/server/cli.mjs backup`.
 2. Rebuild from the new release:
@@ -376,7 +376,7 @@ What the script sets up:
 
 Keep the data folder on a pool path such as `/mnt/cache/...`, never under `/mnt/user`: SQLite on Unraid's FUSE layer is not safe. Without `--new`, the script stops when the data folder holds no `askerdo.db`, so a mistyped path never starts an empty board beside your real one. A restore mounts the two folders in the table, and uses the image the script built (`docker images askerdo-board` lists it).
 
-**Upgrade on Unraid.** Copy the new release's `server/` folder over the source folder's and run the script again with no flags. A rerun keeps the port, folders and time zone the app's template holds (a variable you set wins), replaces the container and leaves the data alone. The Docker tab's own update check reads "not available" because the image is built locally; the script is the update.
+**Upgrade on Unraid.** Copy the new release's `server/` folder over the source folder's and run the script again with no flags. A rerun keeps the port, folders and time zone the app's template holds (a variable you set wins), replaces the container and leaves the data alone. The Docker tab's own update check reads "not available" because the image is built locally; the script is the update. A tag ending in the commit the `server/` folder came from (`bash server/unraid/install.sh 0.8.16-<commit>`), or `ASKERDO_COMMIT=<commit>` before the command, stamps that commit into the image: the board's `/health` reports it and `askerdo board` prints it beside the version. Any other tag builds a board that reports its server commit as unknown.
 
 **A staging board.** `bash server/unraid/install.sh --staging` makes a second app, `AskerDo-staging`, on port `17481` with its own folders (`/mnt/cache/appdata/askerdo-staging` by default) and autostart off. Copy a backup into its data folder as `askerdo.db` first, or pass `--new` as well for an empty one.
 

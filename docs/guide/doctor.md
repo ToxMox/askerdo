@@ -23,7 +23,8 @@ When a board read fails, the checks it feeds show as not read and the run stops 
 |Check|What it finds|The fix|
 |-|-|-|
 |Rule lines in force|A line over 400 characters or cut short; a line citing a path the repo no longer has or a folder an earlier run deleted or moved; a line a built-in line already covers; a line that differs from a decision|New words for the line (Claude gives them, the whole text kept in a record the line points at, or the new place when the conversion map names one); the line cleared; the decision's words. A line on a profile other projects hold, or one that came from a ruling, is a call you settle where it lives|
-|Board shape|An open task on no track; a task in progress with nobody on it since before the project's recent work; a parked track nothing will reopen; a project whose only workstream is an inbox; no profile while the repo holds rules; a question asleep for long with nothing to wake it|The task onto the track that shares its words (else you pick one); back to open with a note; an unpark condition from what its reason names, while that record is still open; the rest are calls. The tracks an import parked itself are left alone|
+|Board shape|An open task on no track; a parked track nothing will reopen; a project whose only workstream is an inbox; no profile while the repo holds rules; a question asleep for long with nothing to wake it|The task onto the track that shares its words (else you pick one); an unpark condition from what its reason names, while that record is still open; the rest are calls. The tracks an import parked itself are left alone|
+|Task shape|Open steps naming you, a look, real use or a later session, which the task's worker may not do; an old look close or close on a fact; a task once blocked or deferred on nothing named; no done clause in its description, or its job moved into its notes; a run unconfirmed for over a day; an inbox task with nothing to wake it|Each step its worker does stays; the rest move onto the track's look or review task, into a new task, or into a question for you. A look close becomes the `look` label; a fact becomes the description's done clause; a wait becomes an edge, a gate or a wake; a rewrite in Claude's words; a wake 14 days out. An unconfirmed run is only named: taking it over is your word|
 |Knowledge records|A record whose source file is gone or is an import's pointer now; one whose source says more than it does; two records on the same subject; a record with no project that names a path of this repo (`tools/`, never the bare word) or the project by name. Records the pass itself wrote are its output and never come back as findings|An amend saying where the source is now, or with the clauses it lacks; the older superseded by the newer when the newer holds all of it; the project added|
 |Procedure cards|Each error or lint the card check reports|An edit to the card file|
 |The repo|CLAUDE.md or AGENTS.md citing a file that is gone; the Project instructions setting changed since the last run, so Claude reads other instruction files|A one-line repoint, or the line dropped when all it cites is gone; after a setting change, each file Claude reads is judged again|
@@ -49,9 +50,8 @@ The manifest keeps each fix with what it changed, and the undo takes it back:
 |-|-|
 |A reworded or cleared rule line|Puts its old words back|
 |A task put on a track|Back on no track in the workstream it left, or on its old track|
-|A task set back to open|Back to in progress|
-|A ref or project added to a record|Removed|
-|An amend, a supersede, an unpark condition, a line reworded from a ruling|Stay, and the undo says so: no command takes one back, and a line from a ruling changes only with a newer ruling|
+|A ref, project, label, gate or edge added|Removed|
+|An amend, a moved step, a description amend, a cleared close, a supersede, an unpark condition, a line reworded from a ruling|Stay, and the undo says so: no command takes one back, and a line from a ruling changes only with a newer ruling|
 
 Everything else undoes as onboarding's does ([Undo](onboarding.md#undo)).
 

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
-import { check, committedPath, readIco, readPng, FAVICONS, FIT, VIEWBOX } from '../scripts/check-icons.mjs';
+import { check, committedPath, readIco, readPng, DRAWINGS, FAVICONS, FIT, VIEWBOX } from '../scripts/check-icons.mjs';
 import { pluginRoot } from '../lib/node-helpers.mjs';
 import { ASSETS } from '../lib/board-assets.mjs';
 import { tempDir } from './helpers/sandbox.mjs';
@@ -14,10 +14,16 @@ import { tempDir } from './helpers/sandbox.mjs';
 test('the checker is green over every committed icon, and names what it read', () => {
   const { problems, seen } = check(pluginRoot);
   assert.deepEqual(problems, []);
-  /* fifteen exports in the manifest plus the three favicon SVGs */
-  assert.equal(seen.length, 18);
+  /* twenty one exports in the manifest plus the five favicon SVGs */
+  assert.equal(seen.length, 26);
   for (const line of ['tray-waiting.ico 16:dib 20:dib 24:dib 32:dib 48:dib',
     'tray-light-blocking.ico 16:dib 20:dib 24:dib 32:dib 48:dib',
+    'tray-asleep.ico 16:dib 20:dib 24:dib 32:dib 48:dib',
+    'tray-light-asleep.ico 16:dib 20:dib 24:dib 32:dib 48:dib',
+    'favicon-asleep-32.png 32x32 rgba8',
+    'favicon-asleep.svg viewBox ' + VIEWBOX,
+    'tray-light-waiting-asleep.ico 16:dib 20:dib 24:dib 32:dib 48:dib',
+    'favicon-waiting-asleep.svg viewBox ' + VIEWBOX,
     'app.ico 16:dib 24:dib 32:dib 48:dib 64:dib 128:dib 256:png',
     'favicon-32.png 32x32 rgba8',
     'favicon.svg viewBox ' + VIEWBOX]) {
@@ -88,7 +94,7 @@ function plant(root) {
   for (const want of manifest.exports) {
     copyFileSync(committedPath(pluginRoot, want.file), committedPath(root, want.file));
   }
-  for (const name of FAVICONS) {
+  for (const name of DRAWINGS) {
     copyFileSync(join(pluginRoot, 'assets', name), join(root, 'assets', name));
   }
   return root;
@@ -233,7 +239,8 @@ test('the three favicons are the mark alone, at the fit the app identity wears',
    SVGs, so the alpha is read out of the committed bytes rather than trusted (a tiled
    32 px face paints nearly all of its 1024 pixels). */
 test('the 32 px favicon rasters are the tile-less drawing, edge to edge', () => {
-  const want = { 'favicon-32.png': 546, 'favicon-quiet-32.png': 534, 'favicon-blocking-32.png': 546 };
+  const want = { 'favicon-32.png': 546, 'favicon-quiet-32.png': 534, 'favicon-blocking-32.png': 546,
+    'favicon-asleep-32.png': 506, 'favicon-waiting-asleep-32.png': 506 };
   for (const name of Object.keys(want)) {
     const { width, height, rgba } = decodeRgba(readFileSync(join(pluginRoot, 'assets', name)));
     assert.deepEqual([width, height], [32, 32], name);

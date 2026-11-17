@@ -4,7 +4,7 @@
 
 <table>
 <tr>
-<td valign="top" width="40%"><img src="docs/guide/img/pane-home.png" alt="The AskerDo pane on Home: the band's copy, two agents running, and the held track's tasks drawn top to bottom on a white spine, the finished ones folded into one bead, the running task lit, the ready ones on side lines that join the spine where they are needed, the review still to do as an outlined diamond, and the legend naming the marks"></td>
+<td valign="top" width="40%"><img src="docs/guide/img/pane-home.png" alt="The AskerDo pane on Home: the band's copy, two agents running, and the held track's tasks drawn top to bottom on a white spine, the finished ones folded into one bead, the running task lit, the work that may go in any order boxed before the task that needs it, the review still to do as an outlined diamond, and the legend naming the marks"></td>
 <td valign="top"><img src="docs/img/readme/reply-card.png" alt="A reply in the AskerDo style: three anchor emoji and a bold bottom line, a Needs you footer, and under it the question's card with its options, the pick starred"><br><br><img src="docs/guide/img/band.png" alt="The band above the prompt: question Q617 with its answer chips, the status line with the context and weekly rings and the held track"></td>
 </tr>
 <tr>
@@ -19,7 +19,7 @@ AskerDo runs inside the Claude desktop app and Claude Code. Its board runs on yo
 
 A plugin adds skills, hooks and an output style. A mod changes the app itself, and AskerDo is both: most of what you see of it is drawn into the Claude desktop app's own window:
 
-- **The Needs you band** above the prompt box: each open question with its answer chips, the calls only you can close (a look, an override), answers waiting, and a row naming what to fix when AskerDo on this PC needs it.
+- **The Needs you band** above the prompt box: each open question with its answer chips, answers waiting and answers queued; the calls only you can close (a stalled track, a review due, an override) wait on Home in the AskerDo pane, and the status row's amber chip names what to fix when AskerDo on this PC needs it.
 - **The status row** on the band's last line: the context and usage rings, the agents running and their depth, the agent guard, the track and task this session holds, and the shelf.
 - **Question cards** under the reply that asked, answered with one press, with the reply's Needs you footer drawn under the last card.
 - **The AskerDo pane** beside the conversation, with **Home**, **Questions**, **Tracks**, **Settings** and **Guide** tabs.
@@ -49,13 +49,13 @@ The AskerDo mark on the status row shows what waits elsewhere; hover it for the 
 
 **Tracks and handoffs.** Work is laid out as tracks of tasks with what each depends on. A session holds one track, and when its context runs deep it writes a handoff on the board; the next session resumes from it with one command and starts from the kickoff: where it stands, what is ready, what is in flight.
 
-![A new session after /askerdo resume TR-29: the kickoff with the track, its focus and where it stands, the session's plan, and the status row naming the held track](docs/img/readme/kickoff.png)
+![A new session after /askerdo resume TR-1: the kickoff with the track, its focus, where it stands and its tasks to settle, to continue and ready to start, and the status row naming the held track](docs/img/readme/kickoff.png)
 
 The track on the status row opens its card: progress, what is ready next, the longest chain, the question holding it and the last handoff.
 
 ![The track's hover card: 4 of 6 done, the task ready next, the longest chain, a blocking question and the last handoff](docs/img/readme/hover-track.png)
 
-**Reviews on the board.** Each commit is linked to the task it finished, and a review task records the code tasks it read. Once a track's unreviewed code tasks reach the review size (5 by default), the Tracks tab, the kickoff and the handoff say a review is due. The picture on Home and the board draws each review station as a diamond, and a pressed track's strip says "Review due"; the track's board page lists what the last finished review covered. At the full review depth, a review reopens when work it read changes, and a track finishes only once a review has read its code.
+**Reviews on the board.** Each commit is linked to the task it finished, and a review task records the code tasks it read. Once a track's unreviewed code tasks reach the review size (5 by default), the Tracks tab, the kickoff and the handoff say a review is due. The picture on Home and the board draws each review station as a diamond, and a pressed track's strip says "Review due"; the track's board page lists what the last finished review covered. A commit after a done review counts as unreviewed work for the next review, and the done review stays done. At the full review depth, a track finishes only once a review has read its code.
 
 **Tray popups.** On Windows, a tray icon shows whether anything is blocking and pops up a card when a question arrives, so a question reaches you while the app is in the background.
 
@@ -63,7 +63,7 @@ The track on the status row opens its card: progress, what is ready next, the lo
 
 **The AskerDo pane.** A pane beside the conversation has Home, Questions, Tracks, Settings and Guide tabs; the Guide tab lists these docs, each opening on GitHub at the version you run. `/askerdo` drives it all.
 
-![The AskerDo pane on Home: the band's copy, two agents running, and the held track's tasks drawn top to bottom on a white spine, the finished ones folded into one bead, the running task lit, the ready ones on side lines that join the spine where they are needed, the review still to do as an outlined diamond, and the legend naming the marks](docs/guide/img/pane-home.png)
+![The AskerDo pane on Home: the band's copy, two agents running, and the held track's tasks drawn top to bottom on a white spine, the finished ones folded into one bead, the running task lit, the work that may go in any order boxed before the task that needs it, the review still to do as an outlined diamond, and the legend naming the marks](docs/guide/img/pane-home.png)
 
 Home holds a copy of the band, the agents this session has running, where the held track stands drawn as lines of its tasks, and the project's activity, newest first.
 
@@ -133,7 +133,7 @@ The [docs index](docs/README.md) also lists the reference Claude reads and the b
 
 Every option lives in the Settings tab of the AskerDo pane (`/askerdo pane`, then Settings): each setting with what it does, an example, where its value comes from, and a chip to choose where a board user sets it. On a PC on a board, in a terminal, `node ~/.claude/askerdo/cli.mjs settings` lists the same rows and `settings set <key> <value>` changes one (`settings unset <key>` puts it back): `contract.<option>` for a contract option, `on` or `off` for a toggle, a JSON list for `contract.custom`. In text mode there is no launcher, so use the Settings tab (where `queue` switches between `text` and `off`), and a write lands in `config.json`; for a board user a contract option lands on their profile on the board first, and a refused or unreachable board writes nothing. Each write regenerates the output style on the spot; it never touches `settings.json`, which stays the configure skill's job. A refused value says why in the setting's own words and writes nothing.
 
-## The five skills
+## The six skills
 
 |Skill|What it does|
 |-|-|
@@ -142,6 +142,7 @@ Every option lives in the Settings tab of the AskerDo pane (`/askerdo pane`, the
 |`/askerdo:measure`|Re-run the display-capability test cards and report deltas against the shipped docs|
 |`/askerdo:onboard`|Convert one project's old workflow: its live state (session rules, the work in flight, rulings in force, facts, how-tos) onto the board, its history out of the tree by folder; a read-only survey gathers the facts and Claude writes the project's plan from them, then your few calls on the band and a rehearsal on a scratch board, on one go; a manifest undoes the import|
 |`/askerdo:doctor`|Check a project already on the board and fix what drifted (rule lines, tasks and tracks, knowledge records, procedure cards, guides and what an earlier run left), reconciling the board's records before anything is created; Claude judges each finding and keeps the fixes it agrees with, rehearsed and applied on one go; the same manifest undoes the fixes|
+|`/askerdo:sweep`|Sweep earlier sessions for anything left behind, a track's sessions (offered when a track finishes or drops) or the project's since the last sweep: `askerdo sweep` digests this PC's transcripts and scans the board, one reader agent checks each item against the board and the repo, and each lost or stale one gets the nearest home that comes back on its own|
 
 ## What it writes, and where
 
@@ -153,15 +154,16 @@ Every option lives in the Settings tab of the AskerDo pane (`/askerdo pane`, the
 |`~/.claude/settings.json.bak` (then `.bak1`, ...)|copy taken before that key is written, which normally happens once|
 |`<data>/config.json`|your saved options, custom rules included|
 |`.claude/questions/<session-id>/` (in each project)|the session's question queue in text queue mode: one markdown file per registered question plus its index. Untracked working state the model never stages; add `.claude/questions/` to your repo's ignore rules if the git-status noise bothers you|
-|`AGENTS.override.md` (in a project that keeps an `AGENTS.md`)|on a board PC, for Codex, which reads it in place of `AGENTS.md` while Claude Code never reads it: `AGENTS.md`'s text, then the rules in force on the board for the project's agents and each decision governing the project's files or commands ("When editing `src/gen/**`: ..."), cut to fit Codex's 32 KiB limit. Each Claude session start in a repo with an `AGENTS.md` at its top rewrites it when that changed, so an `AGENTS.md` edit reaches Codex at the next Claude session there, and its line in the repo's `.git/info/exclude` keeps it out of git; outside git it is not written. AskerDo never creates an `AGENTS.md`, and an `AGENTS.override.md` it did not write is left alone|
+|`AGENTS.override.md` (in a project that keeps an `AGENTS.md`)|on a board PC, for Codex, which reads it in place of `AGENTS.md` while Claude Code never reads it: `AGENTS.md`'s text, then the rules in force on the board for the project's agents each procedure card that binds the project (what sets it off and the file holding its steps), and each decision governing the project's files or commands ("When editing `src/gen/**`: ..."), within the project instruction budget Codex reads (`project_doc_max_bytes`, 32 KiB unless the project's or the user's Codex config sets it). What does not fit goes to `AGENTS.override.rest.md` beside it, which the override names with a count of what it holds. Each Claude session start in a repo with an `AGENTS.md` at its top rewrites it when that changed, so an `AGENTS.md` edit reaches Codex at the next Claude session there, and its lines in the repo's `.git/info/exclude` keep both files out of git; outside git it is not written. AskerDo never creates an `AGENTS.md`, and an `AGENTS.override.md` it did not write is left alone|
 |`~/.claude/askerdo/`|a board PC's folder, outside every repo: the CLI launcher, the local server's state, the answer inboxes and the log ([what each holds](docs/guide/architecture.md#files-on-disk))|
 |`~/.claude/askerdo/board-host/`|on a PC that hosts its board: the board's database, its daily copies (unless the `boardBackups` setting names another folder), `host.json` and `board.log` ([a board on this PC](docs/guide/board-setup.md#a-board-on-this-pc))|
-|`<data>/handoffs/`, `<data>/kept/`|the loose-file lists of each handoff written on this PC and the dispositions kept per repo; they stay on this PC, and the board holds only each repo's pass-or-fail summary|
+|`<data>/handoffs/`, `<data>/kept/`|the loose-file, worktree and branch lists of each handoff written on this PC and the dispositions kept per repo; they stay on this PC, and the board holds only each repo's pass-or-fail summary|
 |`<data>/queued-answers.json`|answers you queued on a question card until **Send**, by session; they stay on this PC|
 |`<data>/onboard/<project>/`|the onboard and doctor work folder: `facts.json`, the doctor's `checkup.json`, `proposal.json`, `plan.json`, the rehearsal report and `manifest.json`, which the undo reads; it stays on this PC|
+|`<data>/sweeps/`|each sweep's folder (the session digests, the filtered candidates, the board scan and the reader's brief), the newest five kept, and `last.json`, the time of this PC's last sweep of each project; read from the app's transcripts, which the sweep never writes|
 |`<data>/claude-chat-preferences.md`|the claude.ai text as last exported|
 |`<data>/sync.log`|one line per state change, warning, or error; a run that changes nothing logs nothing|
-|`<data>/commit-links.log`|a line for each time a handoff, a resume or `coverage --scan` could not link the commits whose messages name a task|
+|`<data>/commit-links.log`|a line for each time a handoff, a resume or `coverage --scan` could not link the commits whose subjects lead with a task id|
 |`<data>/last-sync`|zero-byte stamp, touched by every flagless sync run, that collapses the harness's duplicate hook spawns to one set of messages|
 
 `<data>` is this PC's folder, `~/.claude/askerdo/pc/`. It sits outside the plugin's own data directory and outside the versioned plugin cache, like the rest of `~/.claude/askerdo/`, so a plugin update, an uninstall or a marketplace remove never deletes your options, the launcher path or the inboxes; the records live on the board server. Where this PC's files are still in the plugin data directory (`~/.claude/plugins/data/askerdo-askerdo/` or a sibling holding `config.json`), they are read there until the next session start copies them into `pc/`, which leaves the old folder as it was.

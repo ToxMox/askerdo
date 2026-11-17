@@ -23,13 +23,15 @@ export const READS_SINCE = 'reads.since';
 /* the commits each task finished with and the reviews' covers, one row per line */
 export const COMMITS_FILE = 'coverage/commits.jsonl';
 export const COVERS_FILE = 'coverage/covers.jsonl';
+/* the task shape's runs, one per line with the tasks it served; leases stay out */
+export const RUNS_FILE = 'runs/runs.jsonl';
 /* each project's conversion map, one row per line */
 export const CONVERSION_FILE = 'conversion/map.jsonl';
 /* the override requests waiting at the export, one per line; a scrub's seal never leaves the database */
 export const OVERRIDES_FILE = 'overrides/pending.jsonl';
 /* the board's settings (meta rows), so automatic upkeep stays on through an export and import */
 export const SETTINGS_FILE = 'board/settings.json';
-export const SETTINGS = Object.freeze(['upkeep', 'tracks.stallDays', 'tracks.quietHours', 'tracks.foldMax']);
+export const SETTINGS = Object.freeze(['upkeep', 'tracks.stallDays', 'tracks.quietHours']);
 
 /* One row per line inside a JSON object, so a diff of two exports reads by row. */
 export const readsText = (since, rows) => '{"since":' + JSON.stringify(since ?? null) + ',"rows":['
@@ -55,8 +57,9 @@ function graphRows(db, items, taskSql, args, extra) {
   return {
     ...(items ? { items } : {}),
     depends: db.prepare(`SELECT task, "on", reason, added, actor FROM depends WHERE task IN (${taskSql}) ORDER BY task, "on"`).all(...args),
-    checklist: db.prepare(`SELECT task, position, text, done, done_at AS doneAt FROM checklist WHERE task IN (${taskSql}) ORDER BY task, position`).all(...args)
-      .map((c) => ({ ...c, done: c.done === 1 })),
+    steps: db.prepare(`SELECT task, n, position, text, state, word, at FROM steps WHERE task IN (${taskSql}) ORDER BY task, n`).all(...args),
+    /* the highest number each task has given, so an import never reuses a spent one */
+    stepTops: db.prepare(`SELECT task, top FROM step_tops WHERE task IN (${taskSql}) ORDER BY task`).all(...args),
     ...extra,
   };
 }
@@ -99,7 +102,7 @@ export function* storeFiles(db) {
     yield { path: dir + '/' + fileName(rec.key, rec.slug), text: renderRecord(rec, notes.get(rec.key) || [], graph) };
   }
   const loose = graphRows(db, null, `SELECT key FROM records WHERE kind = 'task' AND key NOT IN (SELECT task FROM track_items)`, [], {});
-  if (loose.depends.length || loose.checklist.length) yield { path: INBOX_FILE, text: JSON.stringify(loose, null, 2) + '\n' };
+  if (loose.depends.length || loose.steps.length || loose.stepTops.length) yield { path: INBOX_FILE, text: JSON.stringify(loose, null, 2) + '\n' };
   /* today's writer sorts profiles by name */
   const profiles = Object.fromEntries(named.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)));
   const anyProfile = named.length > 0;
@@ -139,6 +142,9 @@ export function* storeFiles(db) {
   const covers = db.prepare('SELECT review, task, at, through, through_at, given FROM covers ORDER BY review, task').all()
     .map(({ given, ...r }) => (given === null ? { ...r } : { ...r, given: given === 1 }));
   if (covers.length) yield { path: COVERS_FILE, text: covers.map((r) => JSON.stringify(r)).join('\n') + '\n' };
+  const runs = db.prepare(`SELECT r.*, (SELECT json_group_array(task) FROM (SELECT task FROM run_tasks WHERE run = r.id ORDER BY task)) AS tasks
+    FROM runs r ORDER BY r.id`).all();
+  if (runs.length) yield { path: RUNS_FILE, text: runs.map((r) => JSON.stringify({ ...r, tasks: JSON.parse(r.tasks) })).join('\n') + '\n' };
   const conv = db.prepare('SELECT project, source, kind, hash, sha, records, fate, why, answer, detail, run, at FROM conversion ORDER BY project, source').all();
   if (conv.length) yield { path: CONVERSION_FILE, text: conv.map((r) => JSON.stringify({ ...r, records: JSON.parse(r.records), detail: JSON.parse(r.detail) })).join('\n') + '\n' };
   const set = db.prepare(`SELECT name, value FROM meta WHERE name IN (${SETTINGS.map(() => '?').join(', ')}) ORDER BY name`).all(...SETTINGS);

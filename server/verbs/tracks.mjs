@@ -1,23 +1,26 @@
 /* Tracks: a named line of work
    in a workstream, its tasks in track_items, leases (one session per track, one
-   track per session), junctions, promote and fold back. A track's state is
-   derived when read, never stored: only park, finish, drop and fold are written. */
+   track per session) and junctions. A track's state is derived when read, never
+   stored: only park, finish and drop are written (folded stays on old tracks). */
 import { tx } from '../db.mjs';
-import { KEY_ORDERS, actorOf, addNote, clockOf, dayOf, getMeta, kebab, labelOf, logVerb, mintKey, pcOfCall, putHandoff, putRecord, sessionWords } from '../records.mjs';
-import { namedLabel, pickLabel, refsFor, strList } from './labels.mjs';
+import { KEY_ORDERS, actorOf, addNote, clockOf, dayOf, getMeta, kebab, labelOf, logVerb, mintKey, pcOfCall, putHandoff, putRecord, sessionWords, unguardHeadings } from '../records.mjs';
+import { namedLabel, pickLabel, refsFor, resolveRecord, strList } from './labels.mjs';
 import { sharesProject, wakeLinked } from './questions.mjs';
 import { createRecord, editRecord } from './work.mjs';
-import { CLI, RUN_BY_HINT, inboxRefusal, runByOf, stepAt } from '../handoff-text.mjs';
+import { CLI, RUN_BY_HINT, WAKE_FORMS, inboxRefusal, offerLines, runByOf, stepAt } from '../handoff-text.mjs';
 import { holderWords } from '../web/feed.mjs';
-import { foundSummary, isReview, placeRefusal, suggestTrack } from './found.mjs';
-import { afterTask, finishGate, reviewHead, trackReview } from './coverage.mjs';
-import { countsText, nowCounts } from '../web/draw.mjs';
-import { BY as UPKEEP, WAKE_ASK, afterLeaseDrop, settleWakeAsk, thirdWake, unparkWhenOf, unparkWords, wakeOf, wakeState, wakeWords, whenText } from './upkeep.mjs';
+import { foundSummary, heldOffers, inboxOffers, isReview, offerOf, offersOfHint, placeRefusal, suggestTrack, withOffers, wordsOf } from './found.mjs';
+import { finishGate, reviewHead, trackReview } from './coverage.mjs';
+import { countsText, holdOn } from '../web/draw.mjs';
+import { BY as UPKEEP, NEXT_SESSION, enteredInbox, isNextSession, nextSessionWake, settleWakeAsk, thirdWake, unparkWhenOf, unparkWords, wakeOf, wakeState, wakeWords, whenText } from './upkeep.mjs';
 import {
-  ENDED_TASK, TASK_KEYS, TrackRefusal, addEdge, bumpVersion, checkVersion, headOf, itemsOf, keyOf,
-  loadRecord, logLine, needText, pathBetween, readTx, recordOf, sideOf, trackGraph, writeFront,
-  writeItems,
+  ENDED_TASK, TASK_KEYS, TrackRefusal, addEdge, bumpVersion, checkVersion, headOf, keyOf,
+  loadRecord, logLine, needText, pathBetween, readTx, recordOf, trackGraph, writeFront,
 } from './graph.mjs';
+import { endTask, openSteps, runsHolding } from './ending.mjs';
+import { endSessionRuns, heldWords, openRunSql, renewRuns } from './runs.mjs';
+import { APPROVED, PLACEMENT_LABEL } from './placement-seam.mjs';
+import { askPlacement, draftOf, placementLacks } from './placement-ask.mjs';
 
 /* A new kind: its own key order, written by these verbs alone. */
 export const TRACK_KEYS = KEY_ORDERS.track;
@@ -34,7 +37,6 @@ const setting = (db, name, dflt) => {
   return Number.isFinite(n) && n > 0 ? n : dflt;
 };
 export const stallDays = (db) => setting(db, 'tracks.stallDays', 3);
-export const foldMax = (db) => setting(db, 'tracks.foldMax', 10);
 export const quietHours = (db) => setting(db, 'tracks.quietHours', 12);
 
 const trackRec = (db, ref) => recordOf(db, ref, 'track');
@@ -63,6 +65,128 @@ const junctionRow = (db, side, to, at) => db.stmt('INSERT OR IGNORE INTO links (
 
 const leaseOf = (db, trackKey) => db.stmt('SELECT track, session, pc, since, seen FROM leases WHERE track = ?').get(trackKey);
 const leaseOfSession = (db, session) => (session ? db.stmt('SELECT track, session, pc, since, seen FROM leases WHERE session = ?').get(session) : null);
+
+/* ---- the placement rule: found work is free only at a real place on the held track ---- */
+
+/* The user's own command (--user) is never asked. */
+export const isUserCall = (c) => /^user(?::|$)/.test(String((c && c.by) || ''));
+/* The lease the rule polices a session by: the one it holds, else (an implementation choice) the
+   newest track it held that is still open, so parking or handing the track on is no way round; null if none is open. */
+function policedLease(db, session) {
+  const l = leaseOfSession(db, session);
+  if (l || !session) return l;
+  /* a fresh track taken and finished frees nothing */
+  const row = db.stmt(`SELECT a.record FROM activity a JOIN records r ON r.key = a.record WHERE r.kind = 'track'
+    AND coalesce(r.status, '') NOT IN (${CLOSED.map(() => '?').join(', ')}) AND json_extract(a.diff, '$.session[1]') = ? ORDER BY a.seq DESC LIMIT 1`).get(...CLOSED, session);
+  return row ? { track: row.record, session, released: true } : null;
+}
+/* The track a session's own call is policed against; null for the user, no session or no track held. */
+export function policedHeld(db, c) {
+  if (!c || !c.session || isUserCall(c)) return null;
+  const l = policedLease(db, c.session);
+  return l ? lastHeld(loadRecord(db, l.track), l) : null;
+}
+/* a track the session let go is marked, so a refusal names it as the one it last held */
+const lastHeld = (rec, lease) => (rec && lease && lease.released ? Object.defineProperty(rec, 'released', { value: true }) : rec);
+const youHold = (held) => (held && held.released ? 'the track you last held' : 'the track you hold');
+const openOn = (db, trackKey) => db.stmt(`SELECT ti.task AS key, r.label AS id, r.fields FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ?
+  AND coalesce(r.status, '') NOT IN ('done', 'dropped') ORDER BY ti.position`).all(trackKey).map((r) => ({ key: r.key, id: r.id, f: JSON.parse(r.fields) }));
+/* the closing review: an open review no other open review waits on */
+function closingKeys(db, open) {
+  const reviews = open.filter((r) => isReview(r.f));
+  return new Set(reviews.filter((r) => !reviews.some((o) => o !== r && pathBetween(db, o.key, r.key))).map((r) => r.key));
+}
+/* Nothing else open: no open task on the track but those skipped (the one closing, the call's own) and the closing review. */
+export function nothingElseOpen(db, trackKey, skip = new Set()) {
+  const open = openOn(db, trackKey);
+  const closing = closingKeys(db, open);
+  return !open.some((r) => !closing.has(r.key) && !skip.has(r.key));
+}
+/* Before names an open task on the held track other than its closing review; a wrong id is refused by name. */
+export function realBefore(db, heldRec, before, after, strict = true) {
+  const open = openOn(db, heldRec.key);
+  const closing = closingKeys(db, open);
+  let real = false;
+  for (const id of [].concat(before ?? []).map((s) => String(s).trim()).filter(Boolean)) {
+    const hit = open.find((r) => r.id === id);
+    if (!hit) {
+      if (strict) throw new TrackRefusal('before names ' + id + ', which is not an open task on ' + heldRec.fields.id + ', ' + youHold(heldRec));
+      continue;
+    }
+    if (!closing.has(hit.key)) real = true;
+  }
+  if (strict) {
+    for (const id of [].concat(after ?? []).filter((a) => typeof a === 'string').map((s) => s.trim()).filter(Boolean)) {
+      if (!resolveRecord(db, id, { kinds: ['task'] })) throw new TrackRefusal('after names ' + id + ', and no task ' + id + ' exists');
+    }
+  }
+  return real;
+}
+/* `here` checked as a real place on the held track (an end only when nothing else is open there). */
+function hereOf(db, here, heldRec, skip) {
+  const list = (v, what) => {
+    if (v === undefined || v === null) return [];
+    const l = (Array.isArray(v) ? v : [v]).map((s) => String(s ?? '').trim()).filter(Boolean);
+    for (const s of l) if (!TASK_ID.test(s)) throw new TrackRefusal('here.' + what + ' names T-n ids: ' + s);
+    return l;
+  };
+  const out = { after: list(here.after, 'after'), before: list(here.before, 'before') };
+  const id = heldRec.fields.id;
+  try {
+    if (realBefore(db, heldRec, out.before, out.after) || nothingElseOpen(db, heldRec.key, skip)) return out;
+  } catch (e) {
+    if (e instanceof TrackRefusal) throw new TrackRefusal('here: ' + e.message);
+    throw e;
+  }
+  throw new TrackRefusal('here is the real place on ' + id + ' the work would otherwise take: its before names an open task on ' + id + ' other than the closing review');
+}
+const ASKED_KEYS = ['tier', 'track', 'workstream', 'newTrack', 'unparkWhen', 'wake', 'unplaced', 'last', 'whyElsewhere', 'after', 'before', 'onto'];
+/* An asked filing: the place asked, `here` and the item registered as the placement question; nothing is created.
+   `item`: { draft } or { task: 'T-n' }; `from`: via, task, step; `skip`: what nothing-else-open leaves out. */
+export function askFiling(db, f, c, item, from, skip = new Set()) {
+  const heldRec = policedHeld(db, c);
+  const asked = {};
+  for (const k of ASKED_KEYS) if (isGiven(f[k])) asked[k] = f[k];
+  if (Number(asked.tier) === 2 && !asked.track && !asked.onto) asked.track = heldRec.fields.id;
+  /* the answer files as a session that may hold no track by then, so a new parked track keeps the held one's workstream */
+  if (asked.unparkWhen && !asked.workstream) asked.workstream = labelOf(db, heldRec.fields.workstream);
+  const lacks = placementLacks(f.here, asked, heldRec.fields.id, item.task ? null : item.draft || {});
+  if (lacks) throw new TrackRefusal(lacks + '. Nothing was filed.');
+  const here = hereOf(db, f.here, heldRec, skip);
+  return askPlacement(db, { track: heldRec.fields.id, ...(item.task ? { task: item.task } : { draft: draftOf(item.draft) }), here, asked, from }, c);
+}
+/* The talk filing: a filing naming a placement question settled in talk, with the user's words, is let
+   through once; null when none is named. Refused for any other question. */
+export function talkOf(db, question, words, c) {
+  if (question === undefined || question === null || question === '') return null;
+  const q = resolveRecord(db, String(question).trim(), { kinds: ['question'] });
+  if (!q) throw new TrackRefusal('question names ' + question + ', and no such question exists');
+  const p = q.front.placement;
+  if (!(q.front.labels || []).includes(PLACEMENT_LABEL) || !p) throw new TrackRefusal(q.label + ' is not a placement question, so it lets no filing through');
+  /* the talk was with the session that asked, or with whoever holds (or last held) the question's track */
+  const filer = c && c.session && !isUserCall(c) ? c.session : null;
+  const lease = filer ? policedLease(db, filer) : null;
+  if (!isUserCall(c) && !(filer && (filer === p.session || (lease && lease.track === q.front.track)))) {
+    throw new TrackRefusal(q.label + ' was asked by another session on ' + labelOf(db, q.front.track) + ': only that session, or the one holding ' + labelOf(db, q.front.track) + ', files what the talk settled');
+  }
+  if (typeof words !== 'string' || !words.trim()) throw new TrackRefusal('a filing settled in talk carries the user\'s settling words (words, or --words)');
+  if (q.front.status !== 'answered') throw new TrackRefusal(q.label + ' is ' + q.front.status + ': only an answer to talk lets a filing through');
+  if (p.created) throw new TrackRefusal(q.label + ' already created ' + p.created + ': move or drop that task instead');
+  const chosen = (db.stmt(`SELECT json_extract(diff, '$.chosen[1]') AS pick FROM activity WHERE record = ? AND verb IN ('answer', 'amend') ORDER BY seq DESC LIMIT 1`).get(q.key) || {}).pick || null;
+  const talked = ['talk', 'stale'].includes(p.outcome) || (!p.outcome && (chosen === null || chosen === 'c'));
+  if (!talked) throw new TrackRefusal(q.label + ' was answered ' + (p.outcome || chosen) + ', not talk: it lets no filing through');
+  return { key: q.key, id: q.label, words: words.trim() };
+}
+/* After the talk filing lands: created set on its question, and the task's journal names both. */
+export function settleTalk(db, talk, taskKey, c) {
+  const q = loadRecord(db, talk.key);
+  const task = loadRecord(db, taskKey);
+  writeFront(db, q, { placement: { ...q.fields.placement, created: task.fields.id } }, KEY_ORDERS.question);
+  addNote(db, taskKey, { at: c.at, actor: c.by, body: 'Filed as settled in talk on ' + talk.id + ': "' + talk.words + '"' });
+}
+/* Open placement questions of a track, which stop its finish or drop. */
+const placementsOpen = (db, trackKey) => db.stmt(`SELECT label FROM records WHERE kind = 'question' AND status IN ('open', 'snoozed')
+  AND json_extract(fields, '$.track') = ? AND EXISTS (SELECT 1 FROM json_each(fields, '$.labels') WHERE value = ?) ORDER BY label`).all(trackKey, PLACEMENT_LABEL).map((r) => r.label);
 
 const everHeld = (db, key) => Boolean(db.stmt(`SELECT 1 FROM activity WHERE record = ?
   AND json_extract(line, '$.changes.session') IS NOT NULL LIMIT 1`).get(key));
@@ -102,7 +226,7 @@ export function isStalled(db, rec, state, nowMs) {
    board's own upkeep are no movement. */
 export function trackMoved(db, rec) {
   const open = db.stmt(`SELECT count(*) AS n FROM track_items ti JOIN records r ON r.key = ti.task
-    WHERE ti.track = ? AND coalesce(r.status, '') NOT IN ('completed', 'dropped')`).get(rec.key).n;
+    WHERE ti.track = ? AND coalesce(r.status, '') NOT IN ('done', 'dropped')`).get(rec.key).n;
   if (!open) return null;
   const last = db.stmt(`SELECT at FROM activity WHERE record IN (SELECT ? UNION ALL SELECT task FROM track_items WHERE track = ?)
     AND json_extract(line, '$.changes.kept') IS NULL AND actor IS NOT ? ORDER BY seq DESC LIMIT 1`).get(rec.key, rec.key, UPKEEP);
@@ -119,7 +243,7 @@ export function quietSince(db, trackKey, nowMs) {
 }
 
 /* The inbox turns amber as a track stalls: open tasks and no activity for the stall setting's days. */
-const INBOX = `r.kind = 'task' AND r.workstream = ? AND coalesce(r.status, '') NOT IN ('completed', 'dropped')
+const INBOX = `r.kind = 'task' AND r.workstream = ? AND coalesce(r.status, '') NOT IN ('done', 'dropped')
   AND NOT EXISTS (SELECT 1 FROM track_items ti WHERE ti.task = r.key)`;
 export function inboxStalled(db, wsKey, nowMs) {
   const moved = inboxMoved(db, wsKey);
@@ -135,7 +259,7 @@ export function inboxMoved(db, wsKey) {
   return Math.max(last ? Date.parse(last.at) || 0 : 0, ...open.map((t) => Date.parse(t.updated) || 0));
 }
 
-/* The parent track and the task a side track left from (or was promoted from). */
+/* The parent track and the task a side track left from. */
 export function junctionOf(db, key) {
   let track = null;
   let task = null;
@@ -192,12 +316,22 @@ function needSession(input, actor, what) {
   return s;
 }
 
-function dropLease(db, lease, c, note) {
+/* The session lets go of the track, so its own runs on the track's tasks (or on
+   `tasks`, read before a close moved them) end handed on with the drop's note; its agents' end
+   with the agent. */
+function dropLease(db, lease, c, note, tasks) {
+  endLeaseRuns(db, lease, c, 'handed_on', note, tasks);
   db.stmt('DELETE FROM leases WHERE track = ?').run(lease.track);
   const rec = loadRecord(db, lease.track);
   logLine(db, { at: c.at, verb: 'edit', kind: 'track', rec: headOf(rec), changes: { session: [lease.session, null] }, by: c.by, pc: c.pc, note });
-  afterLeaseDrop(db, lease.track, lease.session, c, note);
   return rec.fields.id;
+}
+
+const trackTasks = (db, track) => db.stmt('SELECT task FROM track_items WHERE track = ?').all(track).map((r) => r.task);
+
+function endLeaseRuns(db, lease, c, how, note, tasks) {
+  const keys = tasks || trackTasks(db, lease.track);
+  if (keys.length) endSessionRuns(db, { session: lease.session, tasks: keys, how, note: note || undefined }, { by: c.by, session: lease.session, pc: c.pc, now: c.date });
 }
 
 export function setStatus(db, rec, status, extra, c, verb, note) {
@@ -262,14 +396,18 @@ export function acquireLease(db, input, actor) {
   });
 }
 
-/* Last seen, no activity row; a session that lost its lease learns it here. */
+/* Last seen, no activity row, on the lease, the session's own runs and the agent runs whose
+   engine ids the input lists, so a dead agent's run goes unheard; a session that
+   lost its lease learns it here, with its open runs. */
 export function renewLease(db, input, actor) {
   const session = needSession(input, actor, 'renewing a lease');
   return tx(db, () => {
-    const at = actorOf(actor).at;
+    const c = actorOf(actor);
+    const at = c.at;
+    const { runs, at: heard } = renewRuns(db, { sessionRuns: true, agentIds: input && input.agentIds }, { by: c.by, session, pc: c.pc, now: c.date });
     const r = db.stmt('UPDATE leases SET seen = ? WHERE session = ?').run(at, session);
     const l = r.changes ? leaseOfSession(db, session) : null;
-    return { held: Boolean(l), track: l ? labelOf(db, l.track) : null };
+    return { held: Boolean(l), track: l ? labelOf(db, l.track) : null, runs, at: heard };
   });
 }
 
@@ -297,10 +435,16 @@ export function takeOver(db, input, actor) {
     const mine = leaseOfSession(db, session);
     const released = mine ? dropLease(db, mine, c, 'moved to ' + rec.fields.id) : null;
     const was = sessionWords(db, held.session);
-    db.stmt('UPDATE leases SET session = ?, pc = ?, since = ?, seen = ? WHERE track = ?').run(session, pcOf(input, actor), c.at, c.at, rec.key);
-    logLine(db, { at: c.at, verb: 'edit', kind: 'track', rec: headOf(rec), changes: { session: [held.session, session] }, by: c.by, pc: c.pc,
-      note: 'taken over from ' + was + (input.reason ? ': ' + input.reason : '') });
-    return { track: rec.fields.id, key: rec.key, from: holderOf(held), released, unparked: false };
+    /* the resume's take-over is the user's word: the old holder's own runs here end taken over */
+    endLeaseRuns(db, held, c, 'taken_over', 'taken over with ' + rec.fields.id + (input.reason ? ': ' + input.reason : ''));
+    /* a /clear goes on as the same session: a take that continues the holder's own earlier id keeps
+       the lease's since, so a hold made before the /clear still counts */
+    const goesOn = typeof input.continues === 'string' && input.continues.trim() === held.session;
+    db.stmt('UPDATE leases SET session = ?, pc = ?, since = ?, seen = ? WHERE track = ?').run(session, pcOf(input, actor), goesOn ? held.since : c.at, c.at, rec.key);
+    /* `continues` on the row says the new id goes on from the old one, so a next-session wait reads it as the same session */
+    logLine(db, { at: c.at, verb: 'edit', kind: 'track', rec: headOf(rec), changes: { session: [held.session, session], ...(goesOn ? { continues: [null, held.session] } : {}) }, by: c.by, pc: c.pc,
+      note: (goesOn ? 'the same session goes on from its earlier id' : 'taken over from ' + was) + (input.reason ? ': ' + input.reason : '') });
+    return { track: rec.fields.id, key: rec.key, from: holderOf(held), released, unparked: false, ...(goesOn ? { continued: true } : {}) };
   });
 }
 
@@ -316,11 +460,6 @@ const endOf = (db, trackKey) => (db.stmt('SELECT max(position) AS p FROM track_i
 export function putOnTrack(db, task, trackRec_, c, note) {
   const was = db.stmt('SELECT track FROM track_items WHERE task = ?').get(task.key);
   if (was && was.track === trackRec_.key) return false;
-  if (trackRec_.fields.origin === 'promote' && !CLOSED.includes(trackRec_.fields.status)) {
-    const pointer = junctionOf(db, trackRec_.key);
-    const loop = pointer && pointer.task ? pathBetween(db, task.key, pointer.task.key) : null;
-    if (loop) throw new TrackRefusal(task.fields.id + ' waits on ' + pointer.task.id + ', whose done waits on ' + trackRec_.fields.id + '; it cannot go there');
-  }
   db.stmt('DELETE FROM track_items WHERE task = ?').run(task.key);
   db.stmt('INSERT INTO track_items (track, task, position) VALUES (?, ?, ?)').run(trackRec_.key, task.key, endOf(db, trackRec_.key));
   bumpVersion(db, trackRec_.key);
@@ -378,9 +517,34 @@ export function inboxLacks(why, wake, at = {}) {
   if (said && saysNoTrack(said)) {
     return inboxRefusal({ ...at, cause: 'unplaced "' + said + '" says no track carries this work, and work that starts later goes on a parked track that opens on its own event' });
   }
-  if (wake === undefined || wake === null || wake === '') return inboxRefusal({ ...at, cause: (at.task || 'this task') + ' goes to the inbox with no wake' });
+  if (wake === undefined || wake === null || wake === '') return inboxRefusal({ ...at, cause: (at.task || (at.via === 'leftover' ? 'the step' : 'this task')) + ' goes to the inbox with no wake' });
   return null;
 }
+
+/* Work that waits for the end of the track the filing session holds is a step on that
+   track, never an inbox task; null for no session, no track held, or another track's end. */
+export function ownTrackLacks(db, wake, session, at = {}) {
+  const id = ownEndOf(db, wake, session);
+  if (!id) return null;
+  const way = at.via === 'leftover'
+    ? (at.track === id ? 'leave out unplaced and wake, and the step goes on ' + id + ' (after or before names the step it follows)'
+      : 'file it on ' + id + ' itself (`' + CLI + ' task create --track ' + id + '`, with --after or --before the step it follows) and leave it out of these leftovers')
+    : at.task ? 'place it there with `' + CLI + ' task edit ' + at.task + ' --track ' + id + '`, and --after or --before the step it follows'
+      : at.via === 'capture' ? 'capture it again with --track ' + id + ' in place of --workstream, --unplaced and --wake'
+        : at.open ? 'move ' + at.open.join(', ') + ' onto ' + id + ' first (`' + CLI + ' task edit ' + (at.open.length === 1 ? at.open[0] : '<T-n>') + ' --track ' + id
+          + '`, with --after or --before the step it follows), then ' + at.via + ' ' + at.track + ' again'
+        : 'file it again with --track ' + id + ' and --after or --before the step it follows, in place of the unplaced reason and the wake';
+  return ownEndCause(id) + ': ' + way + '.';
+}
+/* the held track's id when `wake` is its end */
+function ownEndOf(db, wake, session) {
+  const held = leaseOfSession(db, session);
+  const m = typeof wake === 'string' ? /^\s*track-ends\s+(\S+)\s*$/i.exec(wake) : null;
+  const ref = m ? m[1] : wake && typeof wake === 'object' && wake.kind === 'track-ends' ? wake.on : null;
+  const e = held && ref ? resolveRecord(db, String(ref).trim(), { kinds: ['track'] }) : null;
+  return e && e.key === held.track ? e.label : null;
+}
+const ownEndCause = (id) => id + ' is the track you hold, so work that waits for its end is a step on it, not an inbox task';
 
 /* a task's place as its filer judged it: a track, with the steps it comes before or
    after laid as track layout lays them, or unplaced with the reason the found list shows.
@@ -399,7 +563,8 @@ export function placeTask(db, taskKey, place, actor) {
     const was = row();
     if (!hasWhy && was) throw new TrackRefusal(task.fields.id + ' is on ' + labelOf(db, was.track) + ': a wake is for a task on no track, so name --unplaced "<why>" with it');
     const why = hasWhy ? needText(place.unplaced, 'unplaced', 'reason') : task.fields.unplaced;
-    const no = inboxLacks(hasWhy ? why : '', place.wake, { via: 'edit', task: task.fields.id, workstream: task.fields.workstream ? labelOf(db, task.fields.workstream) : null });
+    const at = { via: 'edit', task: task.fields.id, workstream: task.fields.workstream ? labelOf(db, task.fields.workstream) : null };
+    const no = inboxLacks(hasWhy ? why : '', place.wake, at) || ownTrackLacks(db, place.wake, c.session, at);
     if (no) throw new TrackRefusal(no);
     const wake = wakeOf(db, place.wake, c.day, task.fields.id);
     /* a third wake this inbox stay is stored as none: the user is asked where it goes */
@@ -426,10 +591,493 @@ export function placeTask(db, taskKey, place, actor) {
   return { ...(on ? { track: labelOf(db, on.track) } : {}), ...(before.length ? { before } : {}), ...(after.length ? { after } : {}) };
 }
 
+/* ---- the tier ladder --------------------------------------------------- */
+
+/* A filing names the nearest tier that holds the work and that tier's answer; the board fills what it
+   can compute and refuses a tier that does not fit with the call that does, as data. Nothing lands by default. */
+const TIER_CALL = {
+  0: ['fix', 'tier 0 is a plain defect in the work in hand with one right fix: fix it this turn and file nothing'],
+  1: ['check', 'tier 1 is a step on the task whose worker will do it, in hand or not (`' + CLI + ' check add T-n --text "<the step>"`)'],
+  5: ['ask', "tier 5 is the user's call: a question (ask, with gates naming the task when one exists), and the turn that gets the answer places the work"],
+};
+const TIER_RUNGS = '2 the track you hold, 3 another track in the workstream or a parked one an event opens, 4 another workstream or project';
+const DAY_WAKE = /^\s*\d{4}-\d{2}-\d{2}\s*$/;
+const UNPARK_FORMS = '<track-ends TR-n | task-completes T-n | question-answered Q-n>';
+const isGiven = (v) => v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && !v.length);
+const oneLineOf = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
+/* an offer names only what its verb takes: words that are no park event (next-session, a day) offer the event forms */
+const PARK_EVENT = /^(?:track-ends|task-completes|question-answered) \S+$/i;
+const eventLine = (v) => (typeof v === 'string' && PARK_EVENT.test(oneLineOf(v)) ? oneLineOf(v) : UNPARK_FORMS);
+const inboxWakeLine = (v) => (typeof v === 'string' && DAY_WAKE.test(v) ? v.trim() : eventLine(v) !== UNPARK_FORMS ? oneLineOf(v) : '<' + WAKE_FORMS + '>');
+/* next-session waits on a track: the held one at tier 2, another at tier 3 */
+/* the held track's pair for a next-session filing keeps the wake, so the offer sent as printed still waits */
+const heldNext = (id, wake) => heldOffers(id).map((o) => (isNextSession(wake) ? { ...o, wake: NEXT_SESSION } : o));
+const nextOffers = (heldRec) => [...(heldRec ? heldOffers(heldRec.fields.id).map((o) => ({ ...o, wake: NEXT_SESSION })) : []), { call: 'place', tier: 3, track: 'TR-n', wake: NEXT_SESSION }];
+/* an offer's line sent as written still holds its <...> template, which says nothing about the work */
+const unfilled = (line) => line.split(';').some((s) => /^<[^<>]*>$/.test(s.trim()));
+const TEMPLATE_WORDS = "; the line you sent is the offer's template in angle brackets, so say it in your own words";
+
+/* a leftover or a layout step sends the offer as its own fields, never as flags */
+const fieldWords = (o) => ['tier ' + o.tier, ...['track', 'workstream', 'unparkWhen', 'wake'].filter((k) => o[k]).map((k) => k + ' "' + o[k] + '"'),
+  ...(o.before ? ['before ["' + o.before + '"]'] : []), ...(o.last ? ['last "' + o.last + '"'] : []), ...(o.whyElsewhere ? ['whyElsewhere "' + o.whyElsewhere + '"'] : [])].join(', ');
+const offerWords = (o) => (o.call === 'ask' ? "ask the user, since no open track here shares the work's words"
+  : 'tier ' + o.tier + (o.track ? ' with track ' + o.track : '') + (o.workstream && !o.track ? ' in ' + o.workstream : '') + (o.unparkWhen ? ' with unparkWhen ' + o.unparkWhen : '')
+    + (o.wake ? ' with wake ' + o.wake : '') + (o.before ? ' with before ' + o.before : '') + (o.last ? ' with last, a last resort' : '') + (o.whyElsewhere ? ' with the line on why the held track does not cover it' : '') + ' (' + (o.step ? "the step's fields: " + fieldWords(o) : o.flags) + ')');
+function ladderRefusal(cause, offers, step = false) {
+  const list = offers.map((o) => offerOf(step && o.call === 'place' ? { ...o, step: true } : o));
+  return new TrackRefusal(cause + ". The board's answer: " + list.map(offerWords).join('; or ') + '.', { offer: list[0], offers: list });
+}
+
+/* The board's hint as the call that fits (found.mjs offersOfHint). */
+function hintOffers(db, f, c, heldRec, wsKey) {
+  const s = suggestTrack(db, { name: f.name, description: f.description, intent: f.intent, labels: f.labels, workstream: wsKey || null }, c.session);
+  const offers = offersOfHint(db, s, { held: heldRec ? heldRec.key : null, ownWs: heldRec ? heldRec.fields.workstream : null });
+  /* a parked track goes in a workstream: name the one known, else the offer is only ask */
+  return offers.flatMap((o) => (heldRec || o.call !== 'place' || o.track || o.workstream || !o.unparkWhen ? [o] : wsKey ? [{ ...o, workstream: labelOf(db, wsKey) }] : []));
+}
+
+/* The tier a filing's own answer points at, for the refusal of a session's filing that names none. */
+function answerOffers(db, f, c, heldRec, wsKey) {
+  if (isGiven(f.track)) {
+    const t = recordOf(db, String(f.track).trim(), 'track');
+    const next = isNextSession(f.wake) ? { wake: NEXT_SESSION } : {};
+    if (heldRec && t.key === heldRec.key) return heldOffers(heldRec.fields.id).map((o) => ({ ...o, ...next }));
+    const away = heldRec && t.fields.workstream !== heldRec.fields.workstream;
+    return [{ call: 'place', tier: away ? 4 : 3, track: t.fields.id, ...(away ? { workstream: labelOf(db, t.fields.workstream) } : {}), ...next }];
+  }
+  if (isGiven(f.unparkWhen)) return [{ call: 'place', tier: 3, unparkWhen: eventLine(f.unparkWhen) }];
+  if (isGiven(f.wake)) {
+    const own = heldRec && (!wsKey || wsKey === heldRec.fields.workstream);
+    if (isNextSession(f.wake)) return nextOffers(own ? heldRec : null);
+    if (own && DAY_WAKE.test(String(f.wake))) return [{ call: 'place', tier: 2, wake: String(f.wake).trim() }];
+    /* in the held track's workstream an event is a parked track it opens, or a step on the held track it ends */
+    if (own) return ownTrackLacks(db, f.wake, c.session) ? heldOffers(heldRec.fields.id) : [{ call: 'place', tier: 3, unparkWhen: eventLine(f.wake) }];
+    return [{ call: 'place', tier: 4, workstream: wsKey ? labelOf(db, wsKey) : 'WS-n', wake: inboxWakeLine(f.wake) }];
+  }
+  return heldRec ? heldOffers(heldRec.fields.id) : hintOffers(db, f, c, heldRec, wsKey);
+}
+
+/* An inbox filing that lacks its reason or wake: the ladder's calls, the held pair first, each line past the held track asked for */
+function inboxWays(db, heldRec, wsKey, wake, at) {
+  const why = heldRec ? { whyElsewhere: '<why ' + heldRec.fields.id + ' does not cover it>' } : {};
+  const given = typeof wake === 'string' && wake ? wake : null;
+  /* the held track's own workstream takes inbox work at tier 2, with a date wake only */
+  const inbox = heldRec && heldRec.fields.workstream === wsKey ? { call: 'place', tier: 2, wake: given && DAY_WAKE.test(given) ? given.trim() : '<YYYY-MM-DD>' }
+    : { call: 'place', tier: 4, workstream: labelOf(db, wsKey), wake: inboxWakeLine(given), ...why };
+  return [...(heldRec ? heldOffers(heldRec.fields.id) : []), { call: 'place', tier: 3, track: 'TR-n', ...why }, { call: 'place', tier: 3, unparkWhen: UNPARK_FORMS, ...why }, inbox];
+}
+
+/* The ladder's place for a filing `f`(tier and its answer: track, workstream, before, after, unplaced, wake, newTrack,
+   unparkWhen; name and words for the hint). `at`: via, task (an existing T-n), taskWs, unplaced (an inbox task's reason), marked (a filing
+   that names its tier or is refused), free (let through: the talk filing), skip (keys nothing-else-open leaves out), laterReal (a later
+   step of the same call with a real place waits on it).
+   Null when no tier is named and none is owed; else { tier, track | inbox | park, before, after, filled, tell, whyElsewhere, ask }.
+   `ask` marks a filing the board asks the user about rather than files ({ reason }). */
+export function ladderPlace(db, f, c, at = {}) {
+  const lad = ladderRung(db, f, c, at);
+  const heldRec = lad ? policedHeld(db, c) : null;
+  if (!lad || !heldRec) return lad;
+  const id = heldRec.fields.id;
+  const given = isGiven(f.whyElsewhere) ? oneLineOf(f.whyElsewhere) : '';
+  const stub = Boolean(given) && unfilled(given);
+  const line = stub ? '' : given;
+  const free = Boolean(f[APPROVED]) || Boolean(at.free);
+  const onHeld = lad.track && lad.track.key === heldRec.key && !lad.nextSession;
+  /* a move inside the held track is no filing */
+  if (onHeld && at.task) {
+    const e = resolveRecord(db, String(at.task).trim(), { kinds: ['task'] });
+    if (e && db.stmt('SELECT 1 FROM track_items WHERE track = ? AND task = ?').get(heldRec.key, e.key)) return lad;
+  }
+  if (onHeld) {
+    const real = realBefore(db, heldRec, f.before, f.after) || Boolean(at.laterReal);
+    if (free) return { ...lad, approved: true };
+    if (real || nothingElseOpen(db, heldRec.key, at.skip)) return lad;
+    const said = typeof f.last === 'string' ? oneLineOf(f.last) : '';
+    if (said && !unfilled(said)) return { ...lad, ask: { reason: said } };
+    /* a blank before and blank last stays refused; a before of the closing review alone is last */
+    throw ladderRefusal((isGiven(f.last) ? 'last says in one line why nothing on ' + id + ' needs the task sooner' + (said ? TEMPLATE_WORDS : '')
+      : isGiven(f.before) ? 'before names only the closing review of ' + id + ', which is last: say last with why nothing on ' + id + ' needs it sooner'
+        : 'A step on ' + id + ', ' + youHold(heldRec) + ', names before: the tasks on it that must not finish without this one')
+      + '. Only when nothing on ' + id + ' needs it sooner does it say last, with that line, and last is asked of the user with here, the real place it would otherwise take',
+    heldNext(id, undefined), at.via === 'leftover');
+  }
+  if (free) return { ...lad, approved: true, ...(line ? { whyElsewhere: line } : {}) };
+  /* a later session on the held track is asked; its reason is last's line or the why line, and a blank keeps the pair */
+  if (lad.nextSession && lad.track && lad.track.key === heldRec.key) {
+    const said = typeof f.last === 'string' ? oneLineOf(f.last) : '';
+    const reason = said && !unfilled(said) ? said : line;
+    if (reason) return { ...lad, ...(line ? { whyElsewhere: line } : {}), ask: { reason } };
+    throw ladderRefusal('A step for a later session on ' + id + ', ' + youHold(heldRec) + ', says last with why nothing on ' + id + ' needs it sooner' + (said || stub ? TEMPLATE_WORDS : '')
+      + ', and it is asked of the user with here, the real place it would otherwise take', heldNext(id, f.wake), at.via === 'leftover');
+  }
+  /* the same filing sent again with its line, beside the held track's pair; each surface words it */
+  const again = (why) => ({ call: 'place', tier: lad.tier, ...Object.fromEntries(['track', 'workstream', 'unparkWhen', 'wake'].filter((k) => isGiven(f[k])).map((k) => [k, oneLineOf(f[k])])), whyElsewhere: why });
+  const fits = (why) => [...heldNext(id, f.wake), again(why)];
+  /* work put past the held track says why that track does not cover it; the reason the question shows */
+  const reason = line || (lad.inbox && lad.tier === 2 ? oneLineOf(lad.inbox.unplaced) : '');
+  if (!reason) {
+    throw ladderRefusal(id + ' is ' + youHold(heldRec) + ', and a filing past it' + (lad.tier >= 3 ? ' at tier ' + lad.tier : '') + ' says in one line why ' + id
+      + ' does not cover the work' + (stub ? TEMPLATE_WORDS : '') + '; work ' + id + ' covers goes on it', fits('<why ' + id + ' does not cover it>'), at.via === 'leftover');
+  }
+  const when = lad.park ? lad.park.when : lad.inbox && !DAY_WAKE.test(String(lad.inbox.wake)) ? lad.inbox.wake : null;
+  const own = when ? ownEvent(db, when, heldRec, at) : null;
+  /* the second part follows a semicolon, so one stored line carries both */
+  if (own && line.split(';').map((s) => s.trim()).filter(Boolean).length < 2) {
+    throw ladderRefusal('This waits on ' + own + ', so its line also says why the work cannot start sooner, after a semicolon; work that can start now goes on ' + id,
+      fits('<why ' + id + ' does not cover it>; <why it cannot start sooner>'), at.via === 'leftover');
+  }
+  return { ...lad, ...(line ? { whyElsewhere: line } : {}), ask: { reason } };
+}
+
+/* The held track's own event a filing waits on, in words: its end, one of its tasks done, one of its questions
+   answered (its track, or a task of it gated). A leftover's "task-completes 2" is its step 2, own at tier 2. */
+function ownEvent(db, when, heldRec, at) {
+  const m = /^\s*(track-ends|task-completes|question-answered)\s+(\S+)\s*$/i.exec(String(typeof when === 'object' && when ? when.kind + ' ' + when.on : when));
+  if (!m) return null;
+  const kind = m[1].toLowerCase();
+  const id = heldRec.fields.id;
+  if (kind === 'task-completes' && /^\d+$/.test(m[2])) {
+    const s = Array.isArray(at.steps) ? at.steps[Number(m[2]) - 1] : null;
+    return s && Number(s.tier) === 2 && !isGiven(s.wake) ? 'step ' + m[2] + ' of these leftovers, on ' + id : null;
+  }
+  const e = resolveRecord(db, m[2].trim(), { kinds: [{ 'track-ends': 'track', 'task-completes': 'task', 'question-answered': 'question' }[kind]] });
+  if (!e) return null;
+  if (kind === 'track-ends') return e.key === heldRec.key ? 'the end of ' + id : null;
+  const onHeld = (k) => Boolean(db.stmt('SELECT 1 FROM track_items WHERE track = ? AND task = ?').get(heldRec.key, k));
+  if (kind === 'task-completes') return onHeld(e.key) ? e.label + ', a task of ' + id : null;
+  const gates = Array.isArray(e.front.gates) ? e.front.gates : [];
+  return e.front.track === heldRec.key || gates.some(onHeld) ? e.label + ', a question of ' + id : null;
+}
+
+function ladderRung(db, f, c, at = {}) {
+  const heldLease = c.session ? policedLease(db, c.session) : null;
+  const heldRec = heldLease ? lastHeld(loadRecord(db, heldLease.track), heldLease) : null;
+  /* an offer past the held track carries its why line (the filing's own, else the template), so it costs no extra round */
+  const sent = isGiven(f.whyElsewhere) ? oneLineOf(f.whyElsewhere) : '';
+  const whyLine = heldRec && !isUserCall(c) ? (sent && !unfilled(sent) ? sent : '<why ' + heldRec.fields.id + ' does not cover it>') : '';
+  const past = (o) => (whyLine && o.call === 'place' && o.tier >= 3 && !o.whyElsewhere ? { ...o, whyElsewhere: whyLine } : o);
+  const refuse = (cause, offers) => ladderRefusal(cause, offers.map(past), at.via === 'leftover');
+  /* a next-session filing's offers keep its wake on the track they name */
+  const nextOn = (o) => (isNextSession(f.wake) && o.call === 'place' && o.track ? { ...o, wake: NEXT_SESSION } : o);
+  const wsRef = isGiven(f.workstream) ? resolveRecord(db, String(f.workstream).trim(), { kinds: ['workstream'] }) : null;
+  if (isGiven(f.workstream) && !wsRef) throw new TrackRefusal('no workstream ' + f.workstream);
+  const wsKey = wsRef ? wsRef.key : at.taskWs || null;
+  if (!isGiven(f.tier)) {
+    if (!(at.marked && c.session) || isUserCall(c)) return null;
+    /* a named track is a place call's tier: the held one 2, another 3, another workstream's 4 */
+    const named = heldRec && isGiven(f.track) ? openTrack(db, String(f.track).trim()) : null;
+    if (named) return ladderRung(db, { ...f, tier: named.key === heldRec.key ? 2 : named.fields.workstream === heldRec.fields.workstream ? 3 : 4 }, c, at);
+    throw refuse("A session's filing names its tier, the nearest rung of the ladder that holds the work (" + TIER_RUNGS
+      + '); work for a task\'s own worker is a step on that task, and what only the user can decide or do is a question', answerOffers(db, f, c, heldRec, wsKey));
+  }
+  const tier = Number(f.tier);
+  if (!Number.isInteger(tier) || tier < 0 || tier > 5) throw new TrackRefusal('tier is a rung of the ladder: ' + TIER_RUNGS);
+  if (TIER_CALL[tier]) throw new TrackRefusal(TIER_CALL[tier][1], { tier, offer: { call: TIER_CALL[tier][0] }, offers: [{ call: TIER_CALL[tier][0] }] });
+  const T = isGiven(f.track) ? openTrack(db, String(f.track).trim()) : null;
+  const wake = isGiven(f.wake) ? (typeof f.wake === 'string' ? f.wake.trim() : f.wake) : undefined;
+  const dated = wake !== undefined && DAY_WAKE.test(String(wake));
+  /* an inbox task's wake edit keeps the reason it holds (`at.unplaced`) when the call names none */
+  const why = isGiven(f.unplaced) ? oneLineOf(f.unplaced) : wake !== undefined && isGiven(at.unplaced) ? oneLineOf(at.unplaced) : undefined;
+  const edges = isGiven(f.before) || isGiven(f.after);
+  const later = isGiven(f.newTrack) || isGiven(f.unparkWhen);
+  const out = { tier, named: true, existing: isGiven(at.task), before: f.before, after: f.after, last: f.last, filled: [] };
+  const own = heldRec ? heldRec.fields.workstream : null;
+  const inbox = (ws) => {
+    if (edges) throw new TrackRefusal('before and after order steps on a track, and an inbox task has none around it');
+    const ways = (keep = true) => inboxWays(db, heldRec, ws, keep ? wake : undefined, at);
+    if (dated && !why) throw refuse('A date wake says why that day in unplaced; work that waits on an event names the event instead', ways());
+    const where = { via: at.via, task: at.task || null, workstream: labelOf(db, ws), tier };
+    const lacks = inboxLacks(why || 'filed at tier ' + tier, wake, where);
+    if (lacks) throw refuse(lacks, ways());
+    const end = ownEndOf(db, wake, c.session);
+    if (end) throw refuse(ownEndCause(end), heldOffers(end));
+    /* a wake that has fired or names nothing is refused here, so its way out rides the offers */
+    try { wakeOf(db, wake, c.day, null, 'ladder'); } catch (e) {
+      if (e instanceof TrackRefusal) throw refuse(e.message.replace(/[.\s]+$/, ''), ways(false));
+      throw e;
+    }
+    return { ...out, inbox: { ws, unplaced: why, wake } };
+  };
+  if (tier === 2) {
+    if (later) throw refuse('newTrack and unparkWhen make a parked track, which is tier 3', [{ call: 'place', tier: 3, unparkWhen: eventLine(f.unparkWhen) }]);
+    /* an approved placement names the track it was asked for, which the filing session may hold no more */
+    if (!heldRec && c.session && !(f[APPROVED] && T)) {
+      const hints = hintOffers(db, f, c, null, wsKey);
+      /* a next-session step keeps its wake on the track it goes to */
+      const offers = !isNextSession(wake) ? hints : [...hints.filter((o) => o.tier === 3 && o.track).map((o) => ({ ...o, wake: NEXT_SESSION })), ...nextOffers(null)];
+      throw refuse('Tier 2 is a step on the track you hold, and this session holds none', offers);
+    }
+    if (heldRec && T && T.key !== heldRec.key) {
+      throw refuse(T.fields.id + ' is not ' + youHold(heldRec) + ' (' + heldRec.fields.id + ')', [nextOn({ call: 'place', tier: T.fields.workstream === own ? 3 : 4, track: T.fields.id }), ...heldNext(heldRec.fields.id, wake)]);
+    }
+    const home = heldRec || T;
+    /* a step that waits for the next session stays on the track, waiting until another session takes it */
+    if (isNextSession(wake)) {
+      if (!c.session) throw new TrackRefusal('wake next-session waits for a session other than the one that files it, and this call names no session: file it with --session <own id>, or with no wake');
+      if (why) throw new TrackRefusal('wake next-session keeps the step on ' + (home ? home.fields.id : 'its track') + ', and unplaced is for the inbox: leave out unplaced');
+      return { ...out, track: home, filled: T ? [] : ['track'], nextSession: true };
+    }
+    if (wake !== undefined) {
+      if (!dated) {
+        throw refuse('Tier 2 is a step on ' + youHold(heldRec) + ', and an event is no place on it: the step waits on the event\'s task with after, or work that starts after the event is tier 3',
+          [{ call: 'place', tier: 3, unparkWhen: eventLine(wake) }, ...(heldRec ? heldOffers(heldRec.fields.id) : [{ call: 'place', tier: 2 }])]);
+      }
+      const ws = home ? home.fields.workstream : wsKey;
+      if (!ws) throw new TrackRefusal('a tier 2 inbox task goes in the workstream of ' + youHold(heldRec) + ', and this call names none');
+      return inbox(ws);
+    }
+    if (why) throw new TrackRefusal('unplaced goes with a date wake on tier 2 (the inbox, due on that day); with no wake the step goes on the track' + (home ? ' ' + home.fields.id : ''));
+    if (!home) throw new TrackRefusal('tier 2 is a step on the track the filing session holds, and this call carries no session: name the track it goes on (--track TR-n)');
+    return { ...out, track: home, filled: T ? [] : ['track'] };
+  }
+  if (tier === 3) {
+    /* next-session onto another track waits there as on the held one, due at another session's take */
+    const next = isNextSession(wake);
+    if (next && why) throw new TrackRefusal('wake next-session keeps the step on its track, and unplaced is for the inbox: leave out unplaced');
+    if ((wake !== undefined && !next) || why) {
+      throw refuse('Tier 3 goes on a track or on a parked one an event opens, never the inbox', [{ call: 'place', tier: 3, unparkWhen: eventLine(wake) }]);
+    }
+    if (next && later) {
+      throw refuse('A parked track waits on its own event (unparkWhen) and opens when it comes, so it takes no wake: leave out wake, or put the work on an open track with wake next-session',
+        [{ call: 'place', tier: 3, unparkWhen: eventLine(f.unparkWhen) }, ...nextOffers(heldRec)]);
+    }
+    if (next && !T) throw refuse('wake next-session waits on a track, and this filing names none', nextOffers(heldRec));
+    if (T) {
+      if (later) throw new TrackRefusal('tier 3 names a track or the event that opens a parked one, not both');
+      if (heldRec && T.key === heldRec.key) throw refuse(T.fields.id + ' is ' + youHold(heldRec) + ', so the step is tier 2', next ? nextOffers(heldRec).filter((o) => o.tier === 2) : heldOffers(T.fields.id));
+      const mine = own || (wsRef && wsRef.key);
+      if (mine && T.fields.workstream !== mine) {
+        throw refuse(T.fields.id + ' is in ' + labelOf(db, T.fields.workstream) + ', another workstream, so it is tier 4', [nextOn({ call: 'place', tier: 4, track: T.fields.id, workstream: labelOf(db, T.fields.workstream) })]);
+      }
+      if (next && !c.session) throw new TrackRefusal('wake next-session waits for a session other than the one that files it, and this call names no session: file it with --session <own id>, or with no wake');
+      return { ...out, track: T, tell: true, ...(next ? { nextSession: true } : {}) };
+    }
+    if (isGiven(f.unparkWhen)) {
+      if (edges) throw new TrackRefusal('before and after order steps on a track: a new parked track holds this step alone');
+      const ws = own || wsKey;
+      const when = typeof f.unparkWhen === 'string' ? f.unparkWhen.trim() : f.unparkWhen;
+      if (!ws) throw refuse('A parked track goes in a workstream, and this filing names none', [{ call: 'place', tier: 3, unparkWhen: eventLine(when), workstream: 'WS-n' }]);
+      /* a leftover's "task-completes 2" names a step of its own call, read once every step is laid */
+      if (!(at.via === 'leftover' && /^\s*task-completes\s+\d+\s*$/i.test(String(when)))) unparkWhenOf(db, when);
+      return { ...out, park: { ws, name: isGiven(f.newTrack) ? oneLineOf(f.newTrack) : null, when }, filled: isGiven(f.newTrack) ? [] : ['newTrack'] };
+    }
+    if (isGiven(f.newTrack)) throw new TrackRefusal('newTrack names a parked track, and unparkWhen is the event that opens it: name both');
+    throw refuse('Tier 3 names the track (track) or the event that opens a parked one (unparkWhen), and this filing names neither', hintOffers(db, f, c, heldRec, own || wsKey));
+  }
+  /* tier 4 */
+  const W = wsRef || (T ? resolveRecord(db, T.fields.workstream, { kinds: ['workstream'] }) : null);
+  if (!W) throw refuse('Tier 4 names the workstream the work goes to', hintOffers(db, f, c, heldRec, null));
+  if (T && T.fields.workstream !== W.key) throw new TrackRefusal(T.fields.id + ' is in ' + labelOf(db, T.fields.workstream) + ', not ' + W.label);
+  if (W.front.status !== 'open') throw refuse(W.label + ' is ' + W.front.status + ', and no kickoff lists a closed workstream\'s inbox', [{ call: 'ask' }]);
+  if (own && W.key === own) {
+    const held = isNextSession(wake) ? nextOffers(heldRec).filter((o) => o.tier === 2) : heldOffers(heldRec.fields.id);
+    throw refuse(W.label + ' is the workstream of ' + youHold(heldRec) + ', so the work is tier 2 or 3', [...held, ...(T ? [nextOn({ call: 'place', tier: 3, track: T.fields.id })] : [])]);
+  }
+  if (later) throw refuse('A parked track for another workstream is filed there; from here tier 4 names its track or the event that wakes it in its inbox', [{ call: 'place', tier: 4, workstream: W.label, wake: eventLine(f.unparkWhen) }]);
+  /* next-session waits on another workstream's track as at tiers 2 and 3 (an implementation choice, no ruling); the inbox still refuses it */
+  const next = isNextSession(wake);
+  if (next && why) throw new TrackRefusal('wake next-session keeps the step on its track, and unplaced is for the inbox: leave out unplaced');
+  if (T && ((wake !== undefined && !next) || why)) throw new TrackRefusal('tier 4 names a track in ' + W.label + ' or the wake for its inbox, not both');
+  if (T) {
+    if (next && !c.session) throw new TrackRefusal('wake next-session waits for a session other than the one that files it, and this call names no session: file it with --session <own id>, or with no wake');
+    return { ...out, track: T, tell: true, ...(next ? { nextSession: true } : {}) };
+  }
+  if (next) {
+    throw refuse('wake next-session waits on a track, and this filing names none in ' + W.label,
+      [...hintOffers(db, f, c, heldRec, W.key).filter((o) => o.track).map(nextOn), { call: 'place', tier: 4, workstream: W.label, track: 'TR-n', wake: NEXT_SESSION }]);
+  }
+  if (wake !== undefined) return inbox(W.key);
+  throw refuse('Tier 4 names a track in ' + W.label + ' or the event that wakes the work in its inbox (wake), and this filing names neither',
+    [...hintOffers(db, f, c, heldRec, W.key).filter((o) => o.track), { call: 'place', tier: 4, workstream: W.label, wake: UNPARK_FORMS }]);
+}
+
+/* The tier a filing that named none took, from where it landed: the held track 2, another track 3 (4 in
+   another workstream than the held track's), the inbox 2 in the held track's workstream and 4 elsewhere. */
+export function landedTier(db, taskKey, session) {
+  const held = session ? policedLease(db, session) : null;
+  const heldWs = held ? (loadRecord(db, held.track) || { fields: {} }).fields.workstream : null;
+  const row = db.stmt('SELECT track FROM track_items WHERE task = ?').get(taskKey);
+  if (row && held && row.track === held.track) return 2;
+  const ws = row ? (loadRecord(db, row.track) || { fields: {} }).fields.workstream : (loadRecord(db, taskKey) || { fields: {} }).fields.workstream;
+  if (row) return heldWs && ws !== heldWs ? 4 : 3;
+  return heldWs && ws === heldWs ? 2 : 4;
+}
+
+/* The ladder's place onto a task that exists: a track with its edges, a workstream's inbox with its wake,
+   or a new track parked until its event. */
+export function landPlace(db, taskKey, lad, actor) {
+  const c = ctx(actor);
+  if (lad.track) return placeTask(db, taskKey, { track: lad.track.fields.id, before: lad.before, after: lad.after }, actor);
+  let task = loadRecord(db, taskKey);
+  if (lad.inbox) {
+    if (task.fields.workstream !== lad.inbox.ws) {
+      const diff = writeFront(db, task, { workstream: lad.inbox.ws, updated: c.at }, TASK_KEYS);
+      logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: diff, by: c.by, pc: c.pc, note: 'to the inbox of ' + labelOf(db, lad.inbox.ws) + ' at tier ' + lad.tier });
+    }
+    const onTrack = db.stmt('SELECT 1 FROM track_items WHERE task = ?').get(taskKey);
+    /* a task leaving a track takes a reason with its wake; tier 4 asks none, so the board says what it is */
+    const why = lad.inbox.unplaced || (onTrack || !task.fields.unplaced ? 'filed at tier ' + lad.tier + ' into the inbox of ' + labelOf(db, lad.inbox.ws) + ' until its wake' : undefined);
+    return placeTask(db, taskKey, { ...(why ? { unplaced: why } : {}), wake: lad.inbox.wake }, actor);
+  }
+  const rec = makeTrack(db, { name: lad.park.name || task.fields.name, workstream: lad.park.ws }, c);
+  putOnTrack(db, task, rec, c);
+  const r = parkTrack(db, { track: rec.key, reason: 'work that starts later, filed at tier ' + lad.tier, unparkWhen: lad.park.when }, actor);
+  return { track: rec.fields.id, parked: true, unpark: r.unpark || r.unparkWhen || null };
+}
+
+/* The new track a leftover names, made once per name in the workstream it was left in; made
+   with no lease, so the session keeps the track it holds. */
+export function laterTrack(db, workstream, fresh, named, when, at, actor) {
+  if (typeof named !== 'string' || !named.trim() || /[\r\n]/.test(named)) throw new TrackRefusal(at + 'newTrack is the new track\'s name, one line');
+  const k = named.replace(/\s+/g, ' ').trim().toLowerCase();
+  const had = fresh.get(k);
+  const said = typeof when === 'string' && when.trim() ? when.trim() : null;
+  if (had) {
+    if (said && said !== had.when) throw new TrackRefusal(at + 'unparkWhen differs from the one ' + had.rec.fields.id + ' takes (' + had.when + ')');
+    return had.rec;
+  }
+  if (!said) throw new TrackRefusal(at + 'a new parked track needs its unparkWhen: "track-ends TR-n", "task-completes T-n" (or a leftover\'s number) or "question-answered Q-n"');
+  if (!workstream) throw new TrackRefusal(at + 'a new track goes in a workstream, and this one names none');
+  const rec = makeTrack(db, { name: named.replace(/\s+/g, ' ').trim(), workstream }, actorOf(actor));
+  fresh.set(k, { rec, when: said, at });
+  return rec;
+}
+
+/* a session's filing onto the track it holds names its before, or says last with why nothing on
+   the track needs it sooner, so a blank never parks work behind everything else. The line, or null when not asked. */
+function lastLine(db, trackKey, ask, actor, taskKey) {
+  const c = ctx(actor);
+  const line = typeof ask.last === 'string' ? oneLineOf(ask.last) : '';
+  /* an approved placement or a talk filing was asked already: the user chose its place, and its line is kept */
+  if (ask.approved) return line && !unfilled(line) ? line : null;
+  const held = c.session && !isUserCall(c) ? policedLease(db, c.session) : null;
+  if (!held || held.track !== trackKey) return null;
+  if (line && !unfilled(line)) return line;
+  /* with nothing else open there is no order to be last in */
+  if (!isGiven(ask.last) && nothingElseOpen(db, trackKey, new Set([taskKey, ...(ask.skip || [])]))) return null;
+  const id = labelOf(db, trackKey);
+  throw ladderRefusal((isGiven(ask.last) ? 'last says in one line why nothing on ' + id + ' needs the task sooner' + (line ? TEMPLATE_WORDS : '') : 'A step on ' + id + ', ' + youHold(held) + ', names before: the tasks on it that must not finish without this one')
+    + '. Only when nothing on ' + id + ' needs it sooner does it say last, with that line; last is a last resort, since a task filed last waits until the track runs out of other work',
+  heldNext(id, ask.nextSession ? NEXT_SESSION : undefined), ask.step);
+}
+
+/* The default before (tier 2's answer is at least the closing review): the open review no other
+   open review waits on, or once it has started or the step waits on it, the first open step after it. A wave's
+   review holds it up like any step. None for a step an open task already waits on; `end` when nothing is left.
+   `ask`: last (its line) and nextSession, which lastLine reads. */
+export function defaultBefore(db, trackKey, taskKey, actor, ask = {}) {
+  const task = loadRecord(db, taskKey);
+  if (db.stmt(`SELECT 1 FROM depends d JOIN records r ON r.key = d.task WHERE d."on" = ? AND coalesce(r.status, '') NOT IN ('done', 'dropped') LIMIT 1`).get(taskKey)) return null;
+  const said = lastLine(db, trackKey, ask, actor, taskKey);
+  const lastOf = said ? { last: said } : {};
+  const open = db.stmt(`SELECT ti.task AS key, r.label AS id, ${openRunSql('r.key')} AS running, r.fields FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ?
+    AND ti.task <> ? AND coalesce(r.status, '') NOT IN ('done', 'dropped') ORDER BY ti.position`).all(trackKey, taskKey).map((r) => ({ ...r, f: JSON.parse(r.fields) }));
+  const reviews = open.filter((r) => isReview(r.f));
+  const waits = (a, b) => Boolean(pathBetween(db, a, b));
+  /* a station the step comes after (its after) is never its closing review, while another review is left */
+  const last = reviews.filter((r) => !reviews.some((o) => o !== r && pathBetween(db, o.key, r.key)));
+  const closing = last.filter((r) => !waits(taskKey, r.key)).pop() || last.pop();
+  if (!closing) return { end: true, ...lastOf };
+  const stations = reviews.filter((r) => r !== closing).map((r) => r.id);
+  const target = closing.running || waits(taskKey, closing.key)
+    ? open.find((o) => o !== closing && waits(o.key, closing.key) && !waits(o.key, taskKey) && !waits(taskKey, o.key)) : closing;
+  if (!target) return { end: true, closing: closing.id, stations, ...lastOf };
+  addEdge(db, { task: target.id, on: task.fields.id, reason: (said ? 'filed last (' + said + '): ' : 'the default before: ') + (target === closing ? 'the closing review' : 'the first step after the closing review ' + closing.id) }, actor);
+  return { before: target.id, closing: closing.id, stations, ...lastOf };
+}
+
+/* Up to three open tasks in the workstream sharing the new task's words, from the search index, so one that
+   already covers it takes a note and the new one is dropped. */
+function lookAlikes(db, task) {
+  const words = [...wordsOf(task.fields.name)].slice(0, 8);
+  if (!words.length) return [];
+  const out = [];
+  try {
+    let seen = 0;
+    for (const { key } of db.stmt('SELECT key FROM search WHERE search MATCH ? ORDER BY rank').iterate(words.map((w) => '"' + w + '"').join(' OR '))) {
+      if (++seen > 60 || out.length >= 3) break;
+      if (key === task.key || out.some((o) => o.key === key)) continue;
+      const r = db.stmt('SELECT key, label, title, status, workstream, kind FROM records WHERE key = ?').get(key);
+      if (r && r.kind === 'task' && r.workstream === (task.fields.workstream || null) && !ENDED_TASK.includes(r.status)) out.push({ key, id: r.label, name: r.title });
+    }
+  } catch { return []; }
+  return out.map(({ key, ...o }) => o);
+}
+
+/* task edit --wake next-session alone: a task on a track waits until a session other than this one takes it. */
+export function waitNextSession(db, taskKey, actor) {
+  const c = ctx(actor);
+  const task = loadRecord(db, taskKey);
+  const row = db.stmt('SELECT track FROM track_items WHERE task = ?').get(taskKey);
+  if (!row) throw new TrackRefusal('--wake next-session waits on a track, and ' + task.fields.id + ' is on none: place it first (`' + CLI + ' task edit ' + task.fields.id + ' --track TR-n`), or give the inbox a wake still to come (' + WAKE_FORMS + ')');
+  if (!c.session) throw new TrackRefusal('--wake next-session waits for a session other than the one that sets it, and this call names no session: set it with --session <own id>');
+  const wake = nextSessionWake(c);
+  const old = task.fields.wake;
+  const diff = writeFront(db, task, { wake, updated: c.at }, TASK_KEYS);
+  diff.wake = [old ? wakeWords(db, old) : null, wakeWords(db, wake)];
+  logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: diff, by: c.by, pc: c.pc, note: 'waits on ' + labelOf(db, row.track) + ' for the next session' });
+  return { wake: wakeWords(db, wake) };
+}
+
+/* After the place lands: the default before on a track, the note that tells the target track's holder (tiers 3
+   and 4), and the tier stored with the activity line saying where it went. `opts.defaulted`: the layout already
+   filled the before. Returns { tier, ladder } for the result. */
+export function settlePlace(db, taskKey, lad, actor, opts = {}) {
+  const c = ctx(actor);
+  const task = loadRecord(db, taskKey);
+  const row = db.stmt('SELECT track FROM track_items WHERE task = ?').get(taskKey);
+  const tr = row ? loadRecord(db, row.track) : null;
+  const d = !tr ? null : opts.defaulted !== undefined ? opts.defaulted : !isGiven(lad.before) && (lad.named || c.session) ? defaultBefore(db, tr.key, taskKey, actor, lad) : null;
+  const filled = [...(lad.filled || []), ...(d && d.before ? ['before'] : [])];
+  let told = null;
+  if (tr && lad.tell) {
+    const who = c.session ? sessionWords(db, c.session) : c.by;
+    addNote(db, tr.key, { at: c.at, actor: c.by, body: task.fields.id + ' ' + oneLineOf(task.fields.name) + ' was filed here at tier ' + lad.tier + ' by ' + who + (d && d.before ? ', before ' + d.before : '') + '.' });
+    told = tr.fields.id;
+  }
+  const where = tr ? 'on ' + tr.fields.id + (tr.fields.status === 'parked' ? ' (parked)' : '') + (d && d.before ? ', before ' + d.before + (d.before === d.closing ? ', the closing review' : '') : d && d.end ? ', an end' + (isReview(task.fields) ? ', so the closing review' : '') : '') + (lad.nextSession ? ', waiting for the next session' : '')
+    : 'in the inbox of ' + labelOf(db, task.fields.workstream) + (task.fields.wake ? ', wakes ' + wakeWords(db, task.fields.wake) : '');
+  /* a tier is the filing session's rung: one derived never overwrites a stored tier, and none is derived with no session */
+  const had = isGiven(task.fields.tier) ? task.fields.tier : undefined;
+  const derive = !lad.named && c.session && had === undefined;
+  const tier = lad.named || derive ? lad.tier : had;
+  /* a later filing that needs no line clears the one an earlier outward filing left */
+  const why = lad.named ? lad.whyElsewhere || undefined : task.fields.whyElsewhere;
+  /* the line given with last is kept on the task, since an end has no edge to carry it; a later named filing clears it */
+  const lastWhy = d && d.last ? { filedLast: d.last } : lad.named && task.fields.filedLast !== undefined ? { filedLast: undefined } : {};
+  const next = lad.nextSession && tr ? { wake: nextSessionWake(c) } : {};
+  const diff = lad.named || derive || d?.last || next.wake ? writeFront(db, task, { tier, ...(lad.named ? { whyElsewhere: why } : {}), ...lastWhy, ...next, updated: c.at }, TASK_KEYS) : {};
+  if (diff.wake) diff.wake = [null, wakeWords(db, next.wake)];
+  if (diff.tier || diff.whyElsewhere || diff.filedLast || diff.wake) logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: diff, by: c.by, pc: c.pc, note: 'tier ' + tier + (lad.named ? '' : ' (derived from where it landed)') + ': ' + where });
+  const ladder = {
+    ...(tier !== undefined ? { tier } : {}), ...(derive ? { derived: true } : {}), ...(why ? { whyElsewhere: why } : {}), ...(tr ? { track: tr.fields.id, ...(tr.fields.goal ? { goal: tr.fields.goal } : {}) } : { inbox: labelOf(db, task.fields.workstream) }),
+    ...(d && d.before ? { before: d.before } : {}), ...(d && d.closing ? { closing: d.closing } : {}), ...(d && d.end ? { end: true } : {}), ...(d && d.last ? { last: d.last } : {}), ...(d && d.stations && d.stations.length ? { stations: d.stations } : {}),
+    ...(filled.length ? { filled } : {}), ...(told ? { told } : {}), where,
+  };
+  /* look-alikes are for new work only: an existing task placed is not a duplicate to drop */
+  if (lad.named && !lad.existing) {
+    const alike = lookAlikes(db, task);
+    if (alike.length) ladder.lookAlikes = alike;
+  }
+  return { ...(tier !== undefined ? { tier } : {}), ladder };
+}
+
 export function openTrack(db, ref) {
   const rec = trackRec(db, ref);
   if (CLOSED.includes(rec.fields.status)) throw new TrackRefusal(rec.fields.id + ' is ' + rec.fields.status);
   return rec;
+}
+
+/* a session's call that carries tasks off its held track is refused, naming the place call that asks for each. */
+function carriesOff(db, tasks, c, verb) {
+  const heldRec = policedHeld(db, c);
+  if (!heldRec || !Array.isArray(tasks) || !tasks.length) return;
+  const off = tasks.map((t) => recordOf(db, t, 'task')).filter((t) => db.stmt('SELECT 1 FROM track_items WHERE track = ? AND task = ?').get(heldRec.key, t.key));
+  if (!off.length) return;
+  const id = heldRec.fields.id;
+  throw new TrackRefusal(verb + ' would carry ' + off.map((t) => t.fields.id).join(', ') + ' off ' + id + ', ' + youHold(heldRec) + ', and work leaves it only by the user\'s answer: make the track without --task, then place each, which asks the user ('
+    + off.map((t) => '`' + CLI + ' task edit ' + t.fields.id + ' --tier 3 --track <the new TR-n> --why-elsewhere "<why ' + id + ' does not cover it>" --here-before <T-n on ' + id + '>`').join('; ') + ')',
+  { tasks: off.map((t) => t.fields.id) });
 }
 
 /* A new line of work; with a session, the session takes it. Labels and refs
@@ -440,11 +1088,13 @@ export function newTrack(db, input, actor) {
   const refs = strList(input.refs, 'refs');
   return tx(db, () => {
     const c = ctx(actor);
+    carriesOff(db, input.tasks, c, 'track new');
     const rec = makeTrack(db, {
       name, workstream: workstreamOf(db, input.workstream), goal: input.goal ? needText(input.goal, 'a goal') : undefined, labels, refs: refsFor(db, refs, c.day),
     }, c);
     for (const t of input.tasks || []) putOnTrack(db, recordOf(db, t, 'task'), rec, c);
-    const session = sessionOf(input, actor);
+    /* hold: false, the CLI with no --session: the call's session is policed but takes no lease */
+    const session = input.hold === false ? '' : sessionOf(input, actor);
     if (session) holdLease(db, rec, session, pcOf(input, actor), c);
     return { id: rec.fields.id, key: rec.key, kind: 'track', name, state: stateOf(db, rec) };
   });
@@ -476,6 +1126,7 @@ export function splinter(db, input, actor) {
   return tx(db, () => {
     const c = ctx(actor);
     const parent = openTrack(db, input.from ?? input.track);
+    carriesOff(db, input.tasks, c, 'track splinter');
     let atTask = input.at ? recordOf(db, input.at, 'task') : null;
     if (atTask && !db.stmt('SELECT 1 FROM track_items WHERE track = ? AND task = ?').get(parent.key, atTask.key)) {
       throw new TrackRefusal(atTask.fields.id + ' is not on ' + parent.fields.id);
@@ -503,7 +1154,7 @@ export function splinter(db, input, actor) {
         parked: false, session: null, tied, chain: chainOf(db, side.key).text,
       };
     }
-    const session = sessionOf(input, actor);
+    const session = input.hold === false ? '' : sessionOf(input, actor);
     const parked = leaveFor(db, loadRecord(db, parent.key), side, atTask, session, pcOf(input, actor), c);
     return {
       id: side.fields.id, key: side.key, kind: 'track', name, parent: parent.fields.id, at: atTask ? atTask.fields.id : null,
@@ -520,7 +1171,7 @@ export function junctionWants(db, sideKey) {
   const at = j && j.task ? loadRecord(db, j.task.key) : null;
   if (!at || ENDED_TASK.includes(at.fields.status)) return { at, want: null };
   const open = db.stmt(`SELECT ti.task FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ?
-    AND coalesce(r.status, '') NOT IN ('completed', 'dropped') ORDER BY ti.position`).all(sideKey).map((r) => r.task);
+    AND coalesce(r.status, '') NOT IN ('done', 'dropped') ORDER BY ti.position`).all(sideKey).map((r) => r.task);
   const onLine = new Set(open);
   const want = open.filter((k) => k !== at.key && !db.stmt('SELECT "on" FROM depends WHERE task = ?').all(k).some((r) => onLine.has(r.on)));
   return { at, want };
@@ -561,7 +1212,7 @@ function captureOn(db, track, input, actor, c) {
     if (!ws) throw new TrackRefusal('a capture needs a track or a workstream');
     const r = createRecord(db, {
       // A capture is a quick idea, so it needs no description of its own.
-      name: input.name, description: input.description || 'Captured on ' + (track ? track.fields.id : ws) + '.', intent: input.intent, workstream: ws,
+      name: input.name, description: input.description || 'Captured on ' + (track ? track.fields.id : labelOf(db, ws)) + '.', intent: input.intent, workstream: ws,
       priority: input.priority, labels: input.labels, refs: input.refs, serves: input.serves,
     }, actor);
     task = loadRecord(db, r.key);
@@ -584,6 +1235,23 @@ function captureOn(db, track, input, actor, c) {
 export function capture(db, input, actor) {
   return tx(db, () => {
     const c = ctx(actor);
+    /* a capture that names its tier is placed by the ladder */
+    const had = input.task ? recordOf(db, input.task, 'task') : null;
+    const talk = talkOf(db, input.question, input.words, c);
+    /* a session holding a track names the tier of what it captures, so the board can ask */
+    const skip = new Set(had ? [had.key] : []);
+    const lad = ladderPlace(db, { ...input, ...(had ? { name: had.fields.name, labels: had.fields.labels } : {}) }, c,
+      { via: input.task ? 'edit' : 'capture', task: had ? had.fields.id : null, taskWs: had ? had.fields.workstream : null, marked: isGiven(input.tier) || Boolean(policedHeld(db, c)), free: Boolean(talk), skip });
+    if (lad && lad.ask) return { asked: askFiling(db, input, c, had ? { task: had.fields.id } : { draft: input }, { via: 'place', ...(had ? { task: had.fields.id } : {}) }, skip) };
+    if (lad) {
+      const home = lad.track ? null : labelOf(db, (lad.inbox || lad.park).ws);
+      if (!had && lad.inbox) wakeOf(db, lad.inbox.wake, c.day, null, 'capture');
+      const r = captureOn(db, lad.track || null, { ...input, workstream: home || input.workstream }, actor, c);
+      const placed = landPlace(db, r.key, lad, actor);
+      if (placed && placed.asked) return { ...r, ...placed };
+      if (talk) settleTalk(db, talk, r.key, c);
+      return { ...r, ...placed, track: placed.track || r.track, ...settlePlace(db, r.key, lad, actor) };
+    }
     const track = input.track ? openTrack(db, input.track) : null;
     const why = typeof input.unplaced === 'string' && input.unplaced.trim() ? input.unplaced : null;
     const wake = input.wake === undefined || input.wake === null || input.wake === '' ? undefined : input.wake;
@@ -593,19 +1261,20 @@ export function capture(db, input, actor) {
       const ws = input.workstream ? workstreamOf(db, input.workstream) : null;
       throw new TrackRefusal(placeRefusal(input.task ? null : suggestTrack(db, { ...input, workstream: ws }, c.session), at));
     }
-    const no = track ? null : inboxLacks(why, wake, at);
+    const no = track ? null : inboxLacks(why, wake, at) || ownTrackLacks(db, wake, c.session, at);
     if (no) throw new TrackRefusal(no);
     /* a new capture's fired wake is refused before the task is made, so the way out names no id */
     if (!track && !input.task) wakeOf(db, wake, c.day, null, 'capture');
     const r = captureOn(db, track, input, actor, c);
     const placed = track ? null : placeTask(db, r.key, { ...(why ? { unplaced: why } : {}), wake }, actor);
-    return placed ? { ...r, ...placed } : r;
+    if (placed && placed.asked) return { ...r, ...placed };
+    return { ...(placed ? { ...r, ...placed } : r), ...settlePlace(db, r.key, { tier: landedTier(db, r.key, c.session) }, actor) };
   });
 }
 
 /* a line of work's steps, in its words; the PC's check (lib/handoff-payload.mjs
    stepProblems) runs first, so these refusals only meet a caller that skipped it. */
-const STEP_KEYS = ['name', 'task', 'after', 'before', 'description', 'priority', 'runBy', 'reviewScope'];
+const STEP_KEYS = ['name', 'task', 'after', 'before', 'last', 'description', 'priority', 'runBy', 'reviewScope', 'here', 'whyElsewhere'];
 const TASK_ID = /^T-\d+$/;
 const sameName = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
@@ -637,7 +1306,7 @@ function checkSteps(steps) {
 function openNamed(db, trackKey, name) {
   const want = sameName(name);
   const row = db.stmt(`SELECT r.key, json_extract(r.fields, '$.name') AS name FROM track_items ti JOIN records r ON r.key = ti.task
-    WHERE ti.track = ? AND coalesce(r.status, '') NOT IN ('completed', 'dropped') ORDER BY ti.position`).all(trackKey)
+    WHERE ti.track = ? AND coalesce(r.status, '') NOT IN ('done', 'dropped') ORDER BY ti.position`).all(trackKey)
     .find((r) => sameName(r.name) === want);
   return row ? row.key : null;
 }
@@ -651,9 +1320,17 @@ export function layOut(db, input, actor) {
   return tx(db, () => {
     const c = ctx(actor);
     const track = openTrack(db, input.track);
+    const asked = placeLayout(db, track, steps, input, c);
     const out = [];
+    const landed = [];
     steps.forEach((s, i) => stepped(i, s, () => {
+      if (asked[i]) {
+        out.push({ step: i + 1, name: s.name || s.task, asked: asked[i] });
+        return;
+      }
       const named = s.task === undefined ? openNamed(db, track.key, s.name) : null;
+      const prior = named || s.task !== undefined ? db.stmt('SELECT track FROM track_items WHERE task = ?').get(named || keyOf(db, s.task.trim(), 'task')) : null;
+      landed[i] = !prior || prior.track !== track.key;
       const r = captureOn(db, track, named ? { task: named } : s.task !== undefined ? { task: s.task.trim() }
         : { name: s.name.trim(), description: s.description, priority: s.priority }, actor, c);
       /* the step's runBy lands on its task, a matched one too, logged with the old value */
@@ -661,9 +1338,10 @@ export function layOut(db, input, actor) {
       if (runBy) editRecord(db, { id: r.key, kind: 'task', runBy }, actor);
       /* a review step's scope lands the same way */
       if (s.reviewScope !== undefined) editRecord(db, { id: r.key, kind: 'task', reviewScope: s.reviewScope }, actor);
-      out.push({ id: r.id, key: r.key, name: r.name, created: r.created, ...(runBy ? { runBy } : {}), ...(s.reviewScope !== undefined ? { reviewScope: s.reviewScope } : {}), edges: [] });
+      out.push({ step: i + 1, id: r.id, key: r.key, name: r.name, created: r.created, ...(runBy ? { runBy } : {}), ...(s.reviewScope !== undefined ? { reviewScope: s.reviewScope } : {}), edges: [] });
     }));
     steps.forEach((s, i) => stepped(i, s, () => {
+      if (asked[i]) return;
       for (const a of s.after || []) {
         const on = typeof a === 'string' ? a.trim() : out[a - 1].id;
         const e = addEdge(db, { task: out[i].id, on, reason: 'laid out on ' + track.fields.id }, actor);
@@ -674,8 +1352,57 @@ export function layOut(db, input, actor) {
         (out[i].before ||= []).push({ task: e.task, added: e.added });
       }
     }));
+    /* the default before, once the call's own edges are laid, for each step this call put on the track */
+    if (c.session) {
+      steps.forEach((s, i) => stepped(i, s, () => {
+        const d = landed[i] && !(s.before || []).length ? defaultBefore(db, track.key, out[i].key, actor, { last: s.last, step: true, nextSession: Boolean(input.nextSession), skip: [...((input[LAID] && input.skip) || []), ...out.filter((o) => o && o.key).map((o) => o.key)] }) : null;
+        if (d) out[i].default = d;
+        if (!d || !d.last) return;
+        const task = loadRecord(db, out[i].key);
+        const diff = writeFront(db, task, { filedLast: d.last, updated: c.at }, TASK_KEYS);
+        /* logged as settlePlace logs it, so the activity export carries the line too */
+        if (diff.filedLast) logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: diff, by: c.by, pc: c.pc, note: 'laid out on ' + track.fields.id + ', last' });
+      }));
+    }
     return { track: track.fields.id, key: track.key, steps: out };
   });
+}
+
+/* A layout from layLeftovers, which classified its one step already: never a request body's. */
+export const LAID = Symbol('laid by leftovers');
+
+/* For a layout: onto the held track with nothing else open it is laid whole; with work open there a step that
+   lands is free at a real place and asked when last; onto another track each such step is asked. The questions by
+   step index; a later step that waits on an asked one is refused, since nothing is made for it. */
+function placeLayout(db, track, steps, input, c) {
+  const heldRec = input[LAID] ? null : policedHeld(db, c);
+  if (!heldRec) return [];
+  const held = heldRec.key === track.key;
+  if (held && nothingElseOpen(db, track.key)) return [];
+  const keyOfStep = (s) => (s.task !== undefined ? keyOf(db, s.task.trim(), 'task') : openNamed(db, track.key, s.name));
+  const lands = steps.map((s) => {
+    const k = keyOfStep(s);
+    const prior = k ? db.stmt('SELECT track FROM track_items WHERE task = ?').get(k) : null;
+    return !prior || prior.track !== track.key;
+  });
+  const open = openOn(db, track.key);
+  const closing = closingKeys(db, open);
+  const waiting = (k) => open.some((r) => r.key === k) && !closing.has(k);
+  const real = [];
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    real[i] = held && (lands[i] ? realBefore(db, heldRec, s.before, null, false) || steps.some((o, j) => j > i && (o.after || []).includes(i + 1) && real[j]) : waiting(keyOfStep(s)));
+  }
+  const tier = held ? 2 : track.fields.workstream === heldRec.fields.workstream ? 3 : 4;
+  const asked = [];
+  steps.forEach((s, i) => stepped(i, s, () => {
+    for (const a of s.after || []) if (Number.isInteger(a) && asked[a - 1]) throw new TrackRefusal('after names step ' + a + ', which is asked of the user (' + asked[a - 1].id + '), so nothing is made for it yet');
+    if (!lands[i]) return;
+    const f = { ...s, tier, track: track.fields.id, after: (s.after || []).filter((a) => typeof a === 'string') };
+    const lad = ladderPlace(db, f, c, { via: 'layout', laterReal: real[i] });
+    if (lad && lad.ask) asked[i] = askFiling(db, f, c, s.task !== undefined ? { task: s.task.trim() } : { draft: s }, { via: 'layout', step: i + 1 });
+  }));
+  return asked;
 }
 
 /* a refusal names its step by number and name, never by an id the rollback frees */
@@ -706,7 +1433,7 @@ function rethread(db, trackKey, taskKey, c) {
   for (const n of led) del.run(n, taskKey, IMPORTED);
   for (const n of led) for (const p of was) add(n, p);
   const open = db.stmt(`SELECT ti.task FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ?
-    AND coalesce(r.status, '') NOT IN ('completed', 'dropped') ORDER BY ti.position`).all(trackKey).map((r) => r.task);
+    AND coalesce(r.status, '') NOT IN ('done', 'dropped') ORDER BY ti.position`).all(trackKey).map((r) => r.task);
   const i = open.indexOf(taskKey);
   const prev = i > 0 ? open[i - 1] : null;
   const next = i >= 0 && i < open.length - 1 ? open[i + 1] : null;
@@ -776,25 +1503,43 @@ export function parkTrack(db, input, actor) {
   });
 }
 
+/* A drop that would end a task with a step open is refused whole, naming each task and step. */
+function stepsStop(db, tasks, what) {
+  const held = tasks.map((t) => ({ id: t.id, steps: openSteps(db, t.key) })).filter((t) => t.steps.length);
+  if (!held.length) return;
+  throw new TrackRefusal('cannot ' + what + ': ' + held.map((t) => t.id + ' has open steps ' + t.steps.map((s) => s.n + '. ' + s.text).join('; ')).join(', and ')
+    + '. Settle each step first (task update with checks.done or checks.strike), or place the task elsewhere', { openSteps: held });
+}
+
+/* a drop over another session's open run is refused whole, naming each run. */
+function runsStop(db, tasks, what, c) {
+  const held = tasks.map((t) => ({ id: t.id, runs: runsHolding(db, t.key, c.session) })).filter((t) => t.runs.length);
+  if (!held.length) return;
+  throw new TrackRefusal('cannot ' + what + ': ' + held.map((t) => heldWords(t.id, t.runs, c)).join(', and ')
+    + '. Tell the user who runs it: that session finishes or lets it go, or the task is placed elsewhere first', { runs: held.map((t) => ({ id: t.id, runs: t.runs.map((r) => r.id) })) });
+}
+
 /* Open tasks stop a close unless they go to the inbox with a wake or are dropped with it. */
 function settleLeftovers(db, rec, leftovers, c, why, status, wakeRaw) {
   const g = trackGraph(db, rec.key);
   if (!g.tasks.length) return [];
   if (leftovers !== 'inbox' && leftovers !== 'drop') {
-    throw new TrackRefusal(rec.fields.id + ' still has ' + g.tasks.map((t) => t.id).join(', ') + ' open: finish them, or pass leftovers inbox (with a wake) or drop',
-      { open: g.tasks.map((t) => t.id) });
+    /* each open task with the board's call: another track, a parked one an event opens, or a question */
+    const rows = withOffers(db, g.tasks.map((t) => ({ id: t.id, key: t.key, name: t.name })), { ownWs: rec.fields.workstream, exclude: rec.key });
+    const lines = offerLines(rows);
+    throw new TrackRefusal(rec.fields.id + ' still has ' + g.tasks.map((t) => t.id).join(', ') + ' open: finish them, place each elsewhere'
+      + (lines.length ? " by the board's call below" : '') + ', or pass leftovers inbox (with a wake) or drop' + (lines.length ? ':\n' + lines.join('\n') : ''),
+      { open: g.tasks.map((t) => t.id), offers: rows.filter((r) => r.offers).map((r) => ({ id: r.id, ...(r.line ? { line: r.line } : {}), offers: r.offers })) });
   }
   const at = { via: status === 'dropped' ? 'drop' : 'finish', track: rec.fields.id, workstream: rec.fields.workstream ? labelOf(db, rec.fields.workstream) : null };
   if (leftovers === 'inbox' && (wakeRaw === undefined || wakeRaw === null || wakeRaw === '')) {
     throw new TrackRefusal(inboxRefusal({ ...at, cause: g.tasks.map((t) => t.id).join(', ') + (g.tasks.length === 1 ? ' goes' : ' go') + ' to the inbox with no wake' }));
   }
   const wake = leftovers === 'inbox' ? wakeOf(db, wakeRaw, c.day, null, at.via, rec.fields.id) : undefined;
-  /* a promoted task's done follows its side track, so a close never drops it under one */
-  const promoted = leftovers === 'drop' ? g.tasks.map((t) => ({ id: t.id, side: sideOf(db, t.key) })).filter((p) => p.side) : [];
-  if (promoted.length) {
-    throw new TrackRefusal(rec.fields.id + ' cannot drop ' + promoted.map((p) => p.id + ' (promoted to ' + p.side.label + ', still ' + p.side.status + ')').join(', ')
-      + ': finish, drop or fold the side track first, or pass leftovers inbox with a wake', { promoted: promoted.map((p) => ({ task: p.id, track: p.side.label })) });
-  }
+  const own = leftovers === 'inbox' ? ownTrackLacks(db, wakeRaw, c.session, { ...at, open: g.tasks.map((t) => t.id) }) : null;
+  if (own) throw new TrackRefusal(own);
+  if (leftovers === 'drop') stepsStop(db, g.tasks, 'drop ' + rec.fields.id + ' with its tasks');
+  if (leftovers === 'drop') runsStop(db, g.tasks, 'drop ' + rec.fields.id + ' with its tasks', c);
   for (const t of g.tasks) {
     const task = loadRecord(db, t.key);
     if (leftovers === 'inbox') {
@@ -805,9 +1550,7 @@ function settleLeftovers(db, rec, leftovers, c, why, status, wakeRaw) {
       logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: { track: [rec.key, null], ...diff }, by: c.by, pc: c.pc,
         note: 'to the inbox as ' + rec.fields.id + ' closed; wakes ' + wakeWords(db, wake) });
     } else {
-      const diff = writeFront(db, task, { status: 'dropped', updated: c.at, closed: c.at, inHand: undefined, inHandSince: undefined }, TASK_KEYS);
-      logLine(db, { at: c.at, verb: 'drop', kind: 'task', rec: headOf(task), changes: diff, by: c.by, pc: c.pc, note: why });
-      wakeLinked(db, { ...task.fields, key: task.key }, 'dropped', c);
+      endTask(db, task, 'dropped', c, { changes: { updated: c.at }, note: why });
     }
   }
   return g.tasks.map((t) => t.id);
@@ -817,154 +1560,36 @@ function closeTrack(db, input, actor, status) {
   const c = ctx(actor);
   const rec = trackRec(db, input.track);
   if (CLOSED.includes(rec.fields.status)) throw new TrackRefusal(rec.fields.id + ' is already ' + rec.fields.status);
+  /* a track is not finished while a placement of its work waits on the user */
+  const waits = placementsOpen(db, rec.key);
+  if (waits.length) {
+    throw new TrackRefusal(rec.fields.id + ' still waits on the user about where its work goes: ' + waits.join(', ') + (waits.length === 1 ? ' is' : ' are')
+      + ' open. Leave the track open until ' + (waits.length === 1 ? 'it is' : 'they are') + ' answered', { placements: waits });
+  }
+  if (input.leftovers === 'inbox' && c.session && !isUserCall(c)) {
+    throw new TrackRefusal("leftovers inbox moves every open task off the track, which is the user's own command: finish, drop or place each open task (a place off "
+      + rec.fields.id + ' is asked of the user), then ' + (status === 'dropped' ? 'drop' : 'finish') + ' it');
+  }
   const why = status === 'dropped' ? needText(input.reason, 'dropping a track') : input.outcome ? needText(input.outcome, 'an outcome') : undefined;
   /* at full depth a finish waits for a review of its finished code, or a waiver */
   const waived = status === 'done' ? finishGate(db, rec, input, c) : null;
+  const keys = trackTasks(db, rec.key);
   const left = settleLeftovers(db, rec, input.leftovers, c, why || rec.fields.id + ' finished', status, input.wake);
   const held = leaseOf(db, rec.key);
-  if (held) dropLease(db, held, c, status);
+  if (held) dropLease(db, held, c, status, keys);
   setStatus(db, rec, status, why ? { outcome: why } : {}, c, status === 'dropped' ? 'drop' : 'close', [why, waived].filter(Boolean).join('; ') || undefined);
   wakeLinked(db, { ...rec.fields, key: rec.key }, status, c);
-  const j = junctionOf(db, rec.key);
-  /* a promoted task's done follows its side track; the stored status is kept in step */
-  if (rec.fields.origin === 'promote' && j && j.task) {
-    const pointer = loadRecord(db, j.task.key);
-    if (status === 'done' && !ENDED_TASK.includes(pointer.fields.status)) {
-      const diff = writeFront(db, pointer, { status: 'completed', updated: c.at, closed: c.at, inHand: undefined, inHandSince: undefined }, TASK_KEYS);
-      logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(pointer), changes: diff, by: c.by, pc: c.pc, note: 'done as ' + rec.fields.id + ' finished' });
-      afterTask(db, pointer.key, { completed: true }, actor);
-      wakeLinked(db, { ...pointer.fields, key: pointer.key }, 'completed', c);
-    }
-    if (status === 'dropped') addNote(db, pointer.key, { at: c.at, actor: c.by, body: rec.fields.id + ' was dropped: ' + why + '. ' + pointer.fields.id + ' is a plain task again.' });
-  }
-  /* the inbox the kickoff listed, so the reply places, carries or asks about each */
-  return { id: rec.fields.id, key: rec.key, state: status, leftovers: left, junction: junctionBack(db, rec), inbox: projectInbox(db, rec.fields.workstream, c.day),
-    workstream: rec.fields.workstream ? labelOf(db, rec.fields.workstream) : null, ...(waived ? { waived } : {}) };
+  /* the inbox the kickoff listed, so the reply places, carries or asks about each.
+     A sweep of the track's sessions is offered, never run: the user decides */
+  /* each due item owed here carries the board's call, never the closed track */
+  const inbox = inboxOffers(db, projectInbox(db, rec.fields.workstream, c.day), { wsKey: rec.fields.workstream, exclude: rec.key });
+  return { id: rec.fields.id, key: rec.key, state: status, leftovers: left, junction: junctionBack(db, rec), inbox,
+    workstream: rec.fields.workstream ? labelOf(db, rec.fields.workstream) : null, ...(waived ? { waived } : {}),
+    sweep: 'Offer the user a sweep of ' + rec.fields.id + "'s sessions for anything left behind: /askerdo:sweep " + rec.fields.id + '.' };
 }
 
 export const finishTrack = (db, input, actor) => tx(db, () => closeTrack(db, input || {}, actor, 'done'));
 export const dropTrack = (db, input, actor) => tx(db, () => closeTrack(db, input || {}, actor, 'dropped'));
-
-/* ---- promote and fold back ------------------------------------------------ */
-
-/* The checklist becomes a side track's tasks in order, with no edges; the task
-   stays as the pointer. With move, the session goes there as a splinter does. */
-export function promoteTask(db, input, actor) {
-  return tx(db, () => {
-    const c = ctx(actor);
-    const task = recordOf(db, input && input.task, 'task');
-    if (ENDED_TASK.includes(task.fields.status)) throw new TrackRefusal(task.fields.id + ' is ' + task.fields.status);
-    for (const s of sideTracksOf(db, task.key)) {
-      const st = loadRecord(db, s.key);
-      if (st.fields.origin === 'promote' && !CLOSED.includes(st.fields.status)) throw new TrackRefusal(task.fields.id + ' is already promoted to ' + s.label);
-    }
-    const row = db.stmt('SELECT track FROM track_items WHERE task = ?').get(task.key);
-    const parent = row ? loadRecord(db, row.track) : null;
-    const ws = task.fields.workstream || (parent && parent.fields.workstream);
-    const side = makeTrack(db, {
-      name: input.name ? needText(input.name, 'a side track') : task.fields.name, workstream: workstreamOf(db, ws),
-      goal: input.goal ? needText(input.goal, 'a goal') : undefined, origin: 'promote',
-    }, c);
-    if (parent) junctionRow(db, side.key, parent.key, c.at);
-    junctionRow(db, side.key, task.key, c.at);
-    const items = itemsOf(db, task.key);
-    const made = [];
-    items.forEach((it, i) => {
-      const r = createRecord(db, { name: it.text, description: 'Step ' + (i + 1) + ' of ' + task.fields.id + "'s checklist.", workstream: side.fields.workstream }, actor);
-      const t = loadRecord(db, r.key);
-      if (it.done) {
-        const diff = writeFront(db, t, { status: 'completed', closed: it.doneAt || c.at }, TASK_KEYS);
-        logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(t), changes: diff, by: c.by, pc: c.pc, note: 'checked on ' + task.fields.id + "'s checklist" });
-      }
-      db.stmt('INSERT INTO track_items (track, task, position) VALUES (?, ?, ?)').run(side.key, r.key, i + 1);
-      made.push(r.id);
-    });
-    writeItems(db, task.key, []);
-    bumpVersion(db, task.key);
-    const was = items.length ? items.filter((i) => i.done).length + ' of ' + items.length : null;
-    logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: { checklist: [was, null], promoted: [null, side.key] }, by: c.by, pc: c.pc,
-      note: 'promoted to ' + side.fields.id });
-    let parked = false;
-    const session = sessionOf(input, actor);
-    if (input.move) {
-      if (parent && !CLOSED.includes(parent.fields.status)) parked = leaveFor(db, loadRecord(db, parent.key), side, task, session, pcOf(input, actor), c);
-      else if (session) holdLease(db, side, session, pcOf(input, actor), c);
-    }
-    return {
-      id: side.fields.id, key: side.key, kind: 'track', name: side.fields.name, pointer: task.fields.id, tasks: made,
-      parked, state: stateOf(db, side), chain: chainOf(db, side.key).text,
-    };
-  });
-}
-
-/* A small promoted track back into its pointer's checklist: done tasks checked,
-   notes moved, edges carried by the pointer; it closes as folded so its label
-   still resolves. */
-export function foldBack(db, input, actor) {
-  return tx(db, () => {
-    const c = ctx(actor);
-    const side = trackRec(db, input && input.track);
-    const id = side.fields.id;
-    if (side.fields.origin !== 'promote') throw new TrackRefusal(id + ' was not promoted from a task, so it has no checklist to fold into');
-    if (CLOSED.includes(side.fields.status)) throw new TrackRefusal(id + ' is ' + side.fields.status);
-    const held = leaseOf(db, side.key);
-    if (held) {
-      throw new TrackRefusal(id + ' is held by ' + holderPlain(db, side.key, held, { now: c.date.getTime(), pc: c.pc }) + '; it folds back only with no lease', { holder: holderOf(held) });
-    }
-    const subs = sideTracksOf(db, side.key).filter((s) => !['dropped', 'folded'].includes(s.status));
-    if (subs.length) throw new TrackRefusal(id + ' has side tracks of its own (' + subs.map((s) => s.label).join(', ') + ')');
-    const j = junctionOf(db, side.key);
-    const pointer = loadRecord(db, j.task.key);
-    const rows = db.stmt(`SELECT ti.task FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ? AND r.status <> 'dropped'
-      ORDER BY ti.position`).all(side.key).map((r) => loadRecord(db, r.task));
-    if (rows.length > foldMax(db)) throw new TrackRefusal(id + ' has ' + rows.length + ' tasks; it folds back at ' + foldMax(db) + ' or fewer');
-    const before = itemsOf(db, pointer.key);
-    const items = before.concat(rows.map((t) => ({ text: t.fields.name, done: t.fields.status === 'completed', doneAt: t.fields.closed || null })));
-    writeItems(db, pointer.key, items);
-    for (const t of rows) {
-      for (const n of db.stmt('SELECT at, actor, body FROM notes WHERE record = ? ORDER BY position').all(t.key)) {
-        addNote(db, pointer.key, { at: n.at, actor: n.actor, body: t.fields.id + ': ' + n.body });
-      }
-      db.stmt('DELETE FROM notes WHERE record = ?').run(t.key);
-    }
-    /* edges touching the folded tasks move to the pointer; a loop that would make stops the fold */
-    const all = db.stmt(`SELECT task, "on", reason FROM depends WHERE task IN (SELECT task FROM track_items WHERE track = ?)
-      OR "on" IN (SELECT task FROM track_items WHERE track = ?)`).all(side.key, side.key);
-    db.stmt(`DELETE FROM depends WHERE task IN (SELECT task FROM track_items WHERE track = ?)
-      OR "on" IN (SELECT task FROM track_items WHERE track = ?)`).run(side.key, side.key);
-    const sideKeys = new Set(db.stmt('SELECT task FROM track_items WHERE track = ?').all(side.key).map((r) => r.task));
-    const openSide = new Set(rows.filter((t) => t.fields.status !== 'completed').map((t) => t.key));
-    setStatus(db, side, 'folded', { outcome: input.reason ? needText(input.reason, 'a reason') : 'folded back into ' + pointer.fields.id }, c, 'close',
-      'folded back into ' + pointer.fields.id + "'s checklist");
-    wakeLinked(db, { ...side.fields, key: side.key }, 'folded', c);
-    for (const e of all) {
-      /* an edge at a finished step was met and goes; one at an open step lands on the pointer */
-      if ((sideKeys.has(e.task) && !openSide.has(e.task)) || (sideKeys.has(e.on) && !openSide.has(e.on))) continue;
-      const task = sideKeys.has(e.task) ? pointer.key : e.task;
-      const on = sideKeys.has(e.on) ? pointer.key : e.on;
-      if (task === on || db.stmt('SELECT 1 FROM depends WHERE task = ? AND "on" = ?').get(task, on)) continue;
-      const loop = pathBetween(db, on, task);
-      if (loop) {
-        throw new TrackRefusal('folding ' + id + ' would make ' + labelOf(db, task) + ' and ' + labelOf(db, on) + ' wait on each other; remove one of those edges first',
-          { loop: loop.map((k) => labelOf(db, k)) });
-      }
-      db.stmt('INSERT INTO depends (task, "on", reason, added, actor) VALUES (?, ?, ?, ?, ?)').run(task, on, 'folded from ' + id + ': ' + e.reason, c.at, c.by);
-    }
-    for (const t of rows) {
-      if (t.fields.status === 'completed') continue;
-      const diff = writeFront(db, t, { status: 'dropped', updated: c.at, closed: c.at, inHand: undefined, inHandSince: undefined }, TASK_KEYS);
-      logLine(db, { at: c.at, verb: 'drop', kind: 'task', rec: headOf(t), changes: diff, by: c.by, pc: c.pc, note: 'folded into ' + pointer.fields.id + "'s checklist" });
-      wakeLinked(db, { ...t.fields, key: t.key }, 'dropped', c);
-    }
-    bumpVersion(db, pointer.key);
-    const text = (items) => (items.length ? items.filter((i) => i.done).length + ' of ' + items.length : null);
-    logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(pointer), changes: { checklist: [text(before), text(items)] }, by: c.by, pc: c.pc,
-      note: 'folded back from ' + id });
-    /* one level of nesting: a side task's own checklist stays on that task, so the reply names it */
-    const stepsStayed = rows.filter((t) => itemsOf(db, t.key).length).map((t) => t.fields.id);
-    return { id, key: side.key, state: 'folded', pointer: pointer.fields.id, progress: text(items), stepsStayed };
-  });
-}
 
 /* ---- reads ---------------------------------------------------------------- */
 
@@ -976,37 +1601,51 @@ export function unparkOf(db, rec, state) {
   return u ? { unpark: u } : {};
 }
 
-/* a started task runs while a live hand backs it: its own hand the reader's or a session
-   holding a lease; with no hand of its own, its track's lease. Read here once for every surface. */
-function staleOf(db, trackKey, now, opts) {
-  const reader = (opts && opts.reader) || null;
-  const held = Boolean(leaseOf(db, trackKey));
-  return now.filter((n) => {
-    const hand = (db.stmt("SELECT json_extract(fields, '$.inHand') AS hand FROM records WHERE key = ?").get(n.key) || {}).hand;
-    return hand ? hand !== reader && !db.stmt('SELECT 1 FROM leases WHERE session = ?').get(hand) : !held;
-  });
-}
-
-/* The band's track row and the kickoff's head, from the tables in one read: now (the started
-   tasks a live hand backs), stale (the rest), the ready count and the critical path's length. */
+/* The band's track row and the kickoff's head, from the tables in one read: now (its open runs,
+   each with its word), the running, unconfirmed and ready counts and the critical path's length. */
 function summarize(db, input, opts) {
   const rec = trackRec(db, input && input.track);
   const state = stateOf(db, rec);
-  const g = trackGraph(db, rec.key);
-  const stale = staleOf(db, rec.key, g.now, opts);
-  const now = g.now.filter((n) => !stale.includes(n));
-  /* a task whose agent ended stays in now, counted apart from running */
-  const c = nowCounts(now);
-  const running = c.running;
+  const g = trackGraph(db, rec.key, nowMsOf(opts));
+  const count = (w) => g.now.filter((n) => n.word.is === w).length;
+  const running = count('running');
+  const unconfirmed = count('unconfirmed');
+  const hold = holdOf(db, rec);
   const summary = {
     id: rec.fields.id, key: rec.key, name: rec.fields.name, goal: rec.fields.goal || null, state, stalled: isStalled(db, rec, state, nowMsOf(opts)),
     quietSince: state === 'active' ? quietSince(db, rec.key, nowMsOf(opts)) : null,
-    noHandoff: noHandoff(db, rec.key, state), parkReason: rec.fields.parkReason || null, ...unparkOf(db, rec, state), chain: chainOf(db, rec.key).text, now,
-    stale: stale.map((n) => ({ id: n.id, key: n.key, name: n.name })),
-    running, ready: g.ready.length, toGo: g.critical.length,
-    text: countsText({ ...c, open: g.tasks.length, left: stale.length, ready: g.ready.length, chain: g.critical.length }),
+    noHandoff: noHandoff(db, rec.key, state), parkReason: rec.fields.parkReason || null, ...unparkOf(db, rec, state), chain: chainOf(db, rec.key).text, now: g.now,
+    running, unconfirmed, ready: g.ready.length, toGo: g.critical.length,
+    text: countsText({ running, open: g.tasks.length, unconfirmed, ready: g.ready.length, chain: g.critical.length }),
+    ...(hold ? { hold } : {}), goalRestated: goalRestatedOf(db, rec),
   };
   return { summary, g };
+}
+
+/* the goal the track's last handoff restated, while it stands: { handoff, at, was }, else null */
+export function goalRestatedOf(db, rec) {
+  const row = db.stmt('SELECT label, fields FROM handoffs WHERE track = ? ORDER BY ' + NEWEST_FIRST + ' LIMIT 1').get(rec.key);
+  const f = row ? JSON.parse(row.fields) : null;
+  if (!f || !f.goalWas) return null;
+  const flat = (x) => String(x ?? '').replace(/\s+/g, ' ').trim();
+  /* a note that restated it since says the newer goal itself */
+  if (f.goal && flat(f.goal) !== flat(rec.fields.goal)) return null;
+  return { handoff: row.label, at: f.created || null, was: unguardHeadings(f.goalWas) };
+}
+
+/* the user's hold on the track, by draw.mjs's one test over its active hold decisions since the take;
+   the newest such decision's id and when ride with it */
+function holdOf(db, rec) {
+  const rows = db.stmt(`SELECT label, fields FROM records WHERE kind = 'knowledge' AND status = 'active'
+    AND json_extract(fields, '$.type') = 'decision' AND EXISTS (SELECT 1 FROM json_each(fields, '$.labels') WHERE value = 'hold')
+    AND EXISTS (SELECT 1 FROM json_each(fields, '$.tracks') WHERE value = ?)`).all(rec.key);
+  if (!rows.length) return null;
+  const lease = leaseOf(db, rec.key);
+  const since = lease ? lease.since : '';
+  const ds = rows.map((r) => { const f = JSON.parse(r.fields); return { id: r.label || f.id, labels: f.labels, tracks: f.tracks, created: f.created, amended: f.amended }; });
+  if (!holdOn(ds, rec.key, since)) return null;
+  const d = ds.filter((x) => holdOn([x], rec.key, since)).sort((a, b) => String(b.created || '').localeCompare(String(a.created || '')))[0];
+  return { on: true, id: d.id, at: d.created || d.amended || null };
 }
 
 export const trackSummary = (db, input, opts) => readTx(db, () => summarize(db, input, opts).summary);
@@ -1026,27 +1665,26 @@ export function trackView(db, input, opts) {
     const tasks = g.tasks.map((t) => {
       const f = scopeOf.get(t.key);
       /* a review back open after it completed draws as reopened */
-      const again = f && isReview(f) && !!db.stmt(`SELECT 1 FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[0]') = 'completed' LIMIT 1`).get(t.key);
+      const again = f && isReview(f) && !!db.stmt(`SELECT 1 FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[0]') IN ('done', 'completed') LIMIT 1`).get(t.key);
       return { ...t, position: pos.get(t.key) ?? null, ...(f && isReview(f) ? { review: true, reviewScope: f.reviewScope === 'project' ? 'project' : 'track', ...(again ? { reopened: true } : {}) } : {}) };
     });
     return {
       ...s, holder: lease ? holderOf(lease) : null, readySet: g.ready, critical: g.critical, tasks, edges: g.edges, names: g.names,
       done: g.done, total: g.total, junction: junctionOf(db, s.key),
       sideTracks: sideTracksOf(db, s.key).map((t) => ({ id: t.label, key: t.key, state: stateOf(db, loadRecord(db, t.key)) })),
-      /* what its arc found, for the Tracks tab's row */
-      found: foundSummary(db, s.key),
+      /* what its arc found, for the Tracks tab's row; the Overview, which draws no such row, passes found: false */
+      found: opts && opts.found === false ? null : foundSummary(db, s.key),
       /* the review readout and, apart from the open stations, the finished code tasks and the reviews, for the station map */
-      review: reviewHead(r), finished: r ? [...r.finished, ...r.reviews.filter((v) => v.status === 'completed')].sort((a, b) => a.position - b.position) : [],
+      review: reviewHead(r), finished: r ? [...r.finished, ...r.reviews.filter((v) => v.status === 'done')].sort((a, b) => a.position - b.position) : [],
     };
   });
 }
 
-/* The day a task with no wake stored entered the inbox: its last move off a track or its
-   last unplaced reason, else its birth. */
-function enteredInbox(db, key, created) {
-  const r = db.stmt(`SELECT at FROM activity WHERE record = ? AND (json_type(diff, '$.unplaced[1]') = 'text'
-    OR (json_type(diff, '$.track') = 'array' AND json_type(diff, '$.track[1]') = 'null')) ORDER BY seq DESC LIMIT 1`).get(key);
-  return String((r && r.at) || created || '').slice(0, 10) || null;
+/* An unplaced task's wake in words and whether it is due, as projectInbox reads them. */
+export function taskWake(db, rec, day = dayOf(new Date())) {
+  const w = rec.fields.wake && typeof rec.fields.wake === 'object' ? rec.fields.wake : null;
+  const s = wakeState(db, w, day, w ? null : enteredInbox(db, rec.key, rec.fields.created));
+  return { wake: s.wake, due: s.due };
 }
 
 /* an inbox row's wake for the lists (draw.mjs wakeText words it): its day, or the record it waits on */
@@ -1065,9 +1703,9 @@ export function projectInbox(db, wsKey, day = dayOf(new Date())) {
   const own = wsKey ? loadRecord(db, wsKey) : null;
   if (!own) return [];
   const out = [];
-  /* the user's open question about a task's home, beside it */
-  const asked = new Map(db.stmt(`SELECT g.value AS task, r.label FROM records r, json_each(r.fields, '$.gates') g WHERE r.kind = 'question' AND r.status IN ('open', 'snoozed')
-    AND EXISTS (SELECT 1 FROM json_each(r.fields, '$.labels') WHERE value = ?)`).all(WAKE_ASK).map((x) => [x.task, x.label]));
+  /* an open question gating a task, beside it: the user is asked, so it owes nothing more */
+  const asked = new Map(db.stmt(`SELECT g.value AS task, r.label FROM records r, json_each(r.fields, '$.gates') g WHERE r.kind = 'question' AND r.status IN ('open', 'snoozed')`)
+    .all().map((x) => [x.task, x.label]));
   for (const w of db.stmt("SELECT key, label, fields FROM records WHERE kind = 'workstream' AND (status = 'open' OR key = ?) ORDER BY id").all(wsKey)) {
     const f = JSON.parse(w.fields);
     if (w.key !== wsKey && !sharesProject(own.fields, f)) continue;
@@ -1083,35 +1721,40 @@ export function projectInbox(db, wsKey, day = dayOf(new Date())) {
 }
 
 /* the track's open tasks no open task waits on (one on another track counts), apart
-   from the end of its longest chain; `g` is its graph or view. A promoted track's tasks are
-   all waited on by the task it was promoted from. */
+   from the end of its longest chain; `g` is its graph or view. */
 export function openLeaves(db, trackKey, g = trackGraph(db, trackKey)) {
   const rec = loadRecord(db, trackKey);
-  if (!rec || rec.fields.origin === 'promote' || !g.tasks.length) return [];
-  const last = g.critical.path[g.critical.path.length - 1];
-  const end = last && !g.tasks.some((t) => t.id === last) ? promotedEnd(db, trackKey, last) : last;
+  if (!rec || !g.tasks.length) return [];
+  const end = g.critical.path[g.critical.path.length - 1];
   const isEnd = (t) => t.id === end;
   const waited = new Set(db.stmt(`SELECT DISTINCT d."on" AS k FROM depends d JOIN records r ON r.key = d.task
-    WHERE d."on" IN (SELECT value FROM json_each(?)) AND coalesce(r.status, '') NOT IN ('completed', 'dropped')`)
+    WHERE d."on" IN (SELECT value FROM json_each(?)) AND coalesce(r.status, '') NOT IN ('done', 'dropped')`)
     .all(JSON.stringify(g.tasks.map((t) => t.key))).map((r) => r.k));
-  return g.tasks.filter((t) => !isEnd(t) && !waited.has(t.key)).map((t) => ({ id: t.id, name: t.name }));
+  /* a task filed last already said why nothing needs it sooner, so asking again changes nothing */
+  const filedLast = new Set(db.stmt(`SELECT key FROM records WHERE key IN (SELECT value FROM json_each(?)) AND json_extract(fields, '$.filedLast') IS NOT NULL`)
+    .all(JSON.stringify(g.tasks.map((t) => t.key))).map((r) => r.key));
+  return g.tasks.filter((t) => !isEnd(t) && !waited.has(t.key) && !filedLast.has(t.key)).map((t) => ({ id: t.id, name: t.name }));
 }
 
-/* A promoted task adds no length of its own, so a chain ending on a side track ends on the task
-   of this track whose side track (or one nested in it) holds the chain's last task. */
-function promotedEnd(db, trackKey, last) {
-  let at = (db.stmt('SELECT track FROM track_items WHERE task = ?').get(keyOf(db, last, 'task')) || {}).track;
-  for (let hop = 0; at && hop < 20; hop++) {
-    const j = junctionOf(db, at);
-    if (!j || !j.track || !j.task) return null;
-    if (j.track.key === trackKey) return j.task.id;
-    at = j.track.key;
+/* the new, active and waiting tracks everywhere (one workstream's when named), each with
+   its newest handoff's verify-first entries, so a dev PC's setup reads the board once. */
+function openTracks(db, input) {
+  const ws = input.workstream ? workstreamOf(db, input.workstream) : null;
+  const tracks = [];
+  for (const r of db.stmt("SELECT key FROM records WHERE kind = 'track' AND status = 'open'" + (ws ? ' AND workstream = ?' : '') + ' ORDER BY id').all(...(ws ? [ws] : []))) {
+    const rec = loadRecord(db, r.key);
+    const h = db.stmt('SELECT label, fields, verify FROM handoffs WHERE track = ? ORDER BY ' + NEWEST_FIRST + ' LIMIT 1').get(rec.key);
+    tracks.push({
+      id: rec.fields.id, key: rec.key, name: rec.fields.name, state: stateOf(db, rec), workstream: rec.fields.workstream ? labelOf(db, rec.fields.workstream) : null,
+      handoff: h ? h.label : null, created: h ? JSON.parse(h.fields).created || '' : '', verify: h ? JSON.parse(h.verify || '[]') : [],
+    });
   }
-  return null;
+  return { open: true, tracks };
 }
 
 /* A workstream's tracks with their state, stalls marked; closed ones on request. */
 export function listTracks(db, input, opts) {
+  if (input && input.open) return readTx(db, () => openTracks(db, input));
   return readTx(db, () => {
     const ws = workstreamOf(db, input && input.workstream);
     const nowMs = nowMsOf(opts);

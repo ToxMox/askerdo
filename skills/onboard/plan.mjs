@@ -23,6 +23,21 @@ const ref = (id) => '@{' + id + '}';
 /* an import's inbox task names its wake; apply fills this with a day 14 days from the write */
 export const WAKE_REF = 'wake';
 const list = (v) => (Array.isArray(v) ? v : v === undefined || v === null || v === '' ? [] : [v]);
+const reEscape = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/* A step its task's worker may not be able to do: it names the user, a look or a sitting, real use,
+   or a later session, merge, release, install or restart before it can be checked. Candidates only: the session judges. */
+const OWED = [
+  ['look', /\b(?:a|the|his|her|their|your|live) (?:look|sitting)\b|\bsitting\b(?![.\w/-])|\blooks? (?:at|over) (?:it|them|the (?:pane|band|page|card|app))\b/i],
+  ['use', /\bin (?:real|daily|everyday|live) use\b|\bsighting\b|\bin the wild\b|\bseen (?:it )?(?:in|on) (?:a |his |the )?real\b/i],
+  ['later', /\b(?:later|next|another|a fresh|the following) session\b|\b(?:after|once|when|at) (?:(?:the|a|its|his|each|next) )*(?:(?:merge|release|update)d?|(?:install|restart|reload)(?:ed)?)\b/i],
+];
+export function owedStep(text, who) {
+  const t = String(text || '');
+  const names = [...new Set(['the user', "the user's", 'your', ...list(who).filter(Boolean)])];
+  if (new RegExp('(?<![\\w-])(?:' + names.map(reEscape).join('|') + ')(?![\\w-])', 'i').test(t)) return 'user';
+  for (const [kind, re] of OWED) if (re.test(t)) return kind;
+  return null;
+}
 const ownerOf = (source) => String(source || '').split(' on ')[0];
 /* a board line's slug a kept rule can take (a setting such as tests.policy is no slug) */
 const SLUG = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -521,7 +536,10 @@ export function buildPlan(proposal, { readVersion, readFile, session } = {}) {
   const workstreams = new Set((board.workstreams || []).map((w) => w.id));
   /* a fact's file triggers: the globs it names, and those of the `paths:` menu it came from, as written */
   const scopes = proposal.scopes || {};
-  const globsOf = (r) => [...new Set([...list(r.fields && r.fields.files), ...(scopes[String((r.source && r.source.file) || '').replace(/\\/g, '/')] || [])].map(String))];
+  const scopeOf = (r) => (scopes[String((r.source && r.source.file) || '').replace(/\\/g, '/')] || []).map(String);
+  const globsOf = (r) => [...new Set([...list(r.fields && r.fields.files).map(String), ...scopeOf(r)])];
+  /* a `paths:` rule loads on a read too, so a record's glob from its menu points on reads (cards stay on edits) */
+  const linksOf = (r) => { const menu = new Set(scopeOf(r)); return [...new Set(globsOf(r).map((g) => (menu.has(g) ? '(edit read) ' + g : g)))]; };
   /* a rule's scope is the files and commands it governs; its home keeps them */
   const commandsOf = (r) => [...new Set(list(r.fields && r.fields.commands).map(String))];
   const scopeSaid = (r) => [...globsOf(r), ...commandsOf(r).map((c) => '`' + c + '`')].slice(0, 4).join(', ');
@@ -581,11 +599,17 @@ export function buildPlan(proposal, { readVersion, readFile, session } = {}) {
         continue;
       }
     }
+    /* a task's steps are its worker's: one the user owes is a question item gating it, else the next doctor run flags it */
+    if (r.kind === 'task' && !oneLine(f.mine)) {
+      const owed = list(f.steps).map((x, i) => ({ n: i + 1, text: String(x), why: owedStep(x, proposal.who) })).filter((x) => x.why);
+      if (owed.length) { pend(r, 'step ' + owed.map((x) => x.n + ' "' + clip(x.text, 80) + '" (' + x.why + ')').join(', ') + ' may not be for its worker: move it into a question item gating this task, or say in fields.mine why its worker does it'); continue; }
+    }
     if (r.kind === 'fix') {
       const fx = f.fix;
       if (f.info) continue;
       if (fx && fx.op === 'profile rule-add' && !fx.text) { pend(r, 'a rule line needs words of at most 400 characters'); continue; }
       if (!fx || !(fx.after || fx.args || fx.op === 'profile rule-add')) { pend(r, 'a fix needs words or a pick'); continue; }
+      if (list(fx.args).includes('--move-steps') && !(fx.stdin && list(fx.stdin).length)) { pend(r, 'a move of steps waits on the session\'s list: fields.fix.stdin, each { check, onto | question | a new task\'s place }'); continue; }
     }
     if (!['rule', 'track', 'task', 'handoff', 'decision', 'question', 'knowledge', 'card', 'fix'].includes(r.kind)) { pend(r, 'its kind ' + JSON.stringify(r.kind) + ' has no home on the board'); continue; }
     /* a new record on the subject of one the board holds is judged before the go, never left for the next doctor run */
@@ -621,29 +645,33 @@ export function buildPlan(proposal, { readVersion, readFile, session } = {}) {
     return (t && (t.workstream || (t.fields && t.fields.workstream))) || ws;
   };
 
-  /* tasks, each dated by its line in the old list */
+  /* tasks, each dated by its line in the old list; an old list names a done task completed */
+  const ENDS = ['done', 'completed', 'dropped'];
   const taskRefs = new Map();
   const made = [];
   for (const r of of('task')) {
     const f = r.fields;
     made.push(r);
     const t = f.track && keptIds.has(f.track) ? f.track : null;
-    const onBoardTrack = !t && BOARD_TRACK.test(String(f.track || '')) && f.status !== 'completed' && f.status !== 'dropped' ? f.track : null;
+    const onBoardTrack = !t && BOARD_TRACK.test(String(f.track || '')) && !ENDS.includes(f.status) ? f.track : null;
     /* an import's task says where it goes; a later layout or edit places the ones on a track */
+    /* an import files into its own workstream's inbox, tier 4 to the session that runs it; its track move is tier 3 */
     add({ id: r.id, item: r.id, op: 'task create', args: ['task', 'create'], stdin: {
-      unplaced: t || onBoardTrack ? 'imported; this plan lays it on its track next' : 'imported from a list that put it on no track', wake: ref(WAKE_REF),
+      tier: 4, unplaced: t || onBoardTrack ? 'imported; this plan lays it on its track next' : 'imported from a list that put it on no track', wake: ref(WAKE_REF),
       name: clip(f.name || r.title, 200), description: textOf(r) + '\n\n' + fromLine(r), ...(f.intent ? { intent: f.intent } : {}),
-      workstream: wsOf(r), status: f.status === 'completed' ? 'completed' : f.status === 'dropped' ? 'dropped' : 'open', priority: f.priority || 'medium',
+      workstream: wsOf(r), status: f.status === 'dropped' ? 'dropped' : ENDS.includes(f.status) ? 'done' : 'open', priority: f.priority || 'medium',
       labels: [label], refs: ['onboard:' + r.id], ...(dateOf(r) ? { created: dateOf(r) } : {}), ...bySession,
     } });
-    if (onBoardTrack) add({ id: r.id + '@place', item: r.id, op: 'task edit', args: ['task', 'edit', ref(r.id), '--track', onBoardTrack, ...by] });
-    if (t) { if (!taskRefs.has(t)) taskRefs.set(t, []); taskRefs.get(t).push({ ref: ref(r.id), open: f.status !== 'completed' && f.status !== 'dropped' }); }
+    const steps = ENDS.includes(f.status) ? [] : list(f.steps).map((x) => oneLine(x)).filter(Boolean);
+    if (steps.length) add({ id: r.id + '@steps', item: r.id, op: 'task update', args: ['task', 'update', ref(r.id), ...steps.flatMap((x) => ['--check-add', x]), ...by] });
+    if (onBoardTrack) add({ id: r.id + '@place', item: r.id, op: 'task edit', args: ['task', 'edit', ref(r.id), '--track', onBoardTrack, '--tier', '3', ...by] });
+    if (t) { if (!taskRefs.has(t)) taskRefs.set(t, []); taskRefs.get(t).push({ ref: ref(r.id), open: !ENDS.includes(f.status) }); }
   }
 
   /* a task's after (item ids, T-n ids, or a number naming the n-th task on its track, 1 first),
      before and runBy; an edge to an item this plan does not write is reported */
   const madeIds = new Set(made.map((r) => r.id));
-  const ended = (r) => ['completed', 'dropped'].includes(r.fields.status);
+  const ended = (r) => ENDS.includes(r.fields.status);
   const groupOf = (r) => { const t = r.fields.track; return t && keptIds.has(t) ? t : null; };
   const edgeTo = (r, a) => {
     const grp = made.filter((x) => groupOf(x) === groupOf(r));
@@ -756,7 +784,7 @@ export function buildPlan(proposal, { readVersion, readFile, session } = {}) {
     const sup = [...olds.map(ref), ...list(f.supersedes).filter((x) => /^K-\d+$/.test(x))];
     for (const x of list(f.supersedes).filter((y) => !decIds.has(y) && !/^K-\d+$/.test(y))) unlinked.push({ item: r.id, names: x, why: 'is no decision this plan writes', kind: 'Supersedes' });
     /* a scoped rule's decision governs its files and commands, and its detail record triggers on the same files */
-    const files = globsOf(r);
+    const files = linksOf(r);
     const commands = commandsOf(r);
     const detail = f.detail ? detailStep(r, f.title || r.title, files) : null;
     /* workstreams always named, so decide never links the track the session holds */
@@ -770,7 +798,7 @@ export function buildPlan(proposal, { readVersion, readFile, session } = {}) {
   for (const r of of('knowledge')) {
     const f = r.fields;
     add({ id: r.id, item: r.id, op: 'knowledge new', args: ['knowledge', 'new', '--type', f.type === 'decision' ? 'decision' : 'gotcha', '--title', clip(f.title || r.title, 200),
-      '--project', dir, '--label', label, ...list(f.labels).flatMap((l) => ['--label', l]), '--ref', 'onboard:' + r.id, ...globsOf(r).flatMap((g) => ['--file', g]),
+      '--project', dir, '--label', label, ...list(f.labels).flatMap((l) => ['--label', l]), '--ref', 'onboard:' + r.id, ...linksOf(r).flatMap((g) => ['--file', g]),
       ...(dateOf(r) ? ['--created', dateOf(r)] : []), ...by],
     body: textOf(r).trim() + '\n\n' + fromLine(r) });
   }
@@ -779,7 +807,7 @@ export function buildPlan(proposal, { readVersion, readFile, session } = {}) {
   const globKey = (g) => String(g).replace(/\\/g, '/').replace(/^(\.\/)+/, '');
   const filesOn = new Map((board.knowledge || []).map((k) => [k.id, new Set(list(k.files).map(globKey))]));
   for (const r of retrigger) {
-    const lacks = globsOf(r).filter((g) => !(filesOn.get(r.covered) || new Set()).has(globKey(g)));
+    const lacks = linksOf(r).filter((g) => !(filesOn.get(r.covered) || new Set()).has(globKey(g)));
     if (lacks.length) add({ id: r.id + '@files', item: r.id, op: 'knowledge edit', fix: true, target: r.covered, args: ['knowledge', 'edit', r.covered, ...lacks.flatMap((g) => ['--add-file', g]), ...by] });
   }
   const titles = oldTitles(items);
@@ -791,11 +819,12 @@ export function buildPlan(proposal, { readVersion, readFile, session } = {}) {
     const un = (t) => unlabel(t, titles, folder);
     const ask = un(oneLine(f.ask || r.text || r.title));
     const options = (f.options || []).map((o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, k === 'type' || typeof v !== 'string' ? v : un(v)])));
+    /* track null keeps it off the onboarding session's held track; the scope step below places it */
     add({ id: r.id, item: r.id, op: 'register', args: ['register'], stdin: {
       name: clip(un(folder ? bareTitle(f.name || r.title) : f.name || r.title), 80), ask: /\?$/.test(ask) ? ask : ask + '?',
       gist: un((f.gist || '**From the old system:** ' + (file || 'its notes')) + '\n' + fromLine(r)),
       projectDir: dir, session: session || 'onboard-' + slug, blocking: f.blocking === true, ...(options.length ? { options } : {}),
-      pick: f.pick || null, ...(dateOf(r) ? { created: dateOf(r) } : {}), workstream: wsOf(r),
+      pick: f.pick || null, ...(dateOf(r) ? { created: dateOf(r) } : {}), workstream: wsOf(r), track: null,
       labels: [label], refs: ['onboard:' + r.id],
     } });
     /* the track it belongs to and the tasks it blocks (item ids, or TR-n and T-n), once they exist */

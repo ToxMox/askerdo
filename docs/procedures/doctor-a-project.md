@@ -32,7 +32,7 @@ Tell the user what it checks, what it asks of them (a short report, band questio
 ### 2. The entry check and the checks
 
 ```sh
-node "$D/checks.mjs" <project dir>
+node "$D/checks.mjs" <project dir> --who <the user's name>
 ```
 
 A project the board does not hold prints "not on the board yet: run askerdo:onboard" and exits 1: run `/askerdo:onboard` instead. A run whose board reads failed prints `Checkup incomplete` with the unread checks as "not read" and exits 2: stop, fix the failed reads and run it again; never report an unread check as 0. Otherwise it gathers the facts and writes `checkup.json`: each finding as an item of kind `fix` with its proposed fix, and a call for each only the user can settle; report in a few lines, never a table, the Checkup line's findings per check and the calls left for the user. Skill step 2.
@@ -44,6 +44,7 @@ Judge each finding against the facts and what you open, and write the fixes you 
 - A judgment the facts mark `rejudge` (a `kept` finding: its reader gone, its cite unresolved, its event come, its file changed, or no evidence recorded) is made again from the facts: convert the thing, drop it with its evidence, or keep it with a reason of a named shape and fresh evidence. It is answered in the proposal's items, folders or ledger, never copied in as a fix and never left; a judgment marked `holds` stands.
 - A kept clause or kept file is held to the test a rule line is: a clause or rule file citing a gone path is a repoint where its subject moved, and one citing nothing live is stale only when its subject is gone from the tree, the machine and the board.
 - The Project instructions setting changed since the last run: each file Claude reads by it is judged as onboarding judges CLAUDE.md, its ledger written in the proposal; a CLAUDE.md is never written beside an AGENTS.md Claude reads alone.
+- Each task shape finding is judged with its block in hand (`task block T-n`, several ids in one call): a step its worker does stays, the rest move by `--move-steps` with the list in `fields.fix.stdin`; a rewrite and a wait take your words in `fields.fix.args`; an unconfirmed run is reported with its holder, never fixed.
 - A rerun judges fresh: a source converted and unchanged is never opened again, and an earlier run's view of what is workflow is never copied.
 
 Skill steps 3 and 4.
@@ -70,17 +71,17 @@ On the go, recorded in the proposal: the board writes and fixes, then the covera
 
 ### 6. Record the run
 
-At the end, or at any stop, record the run with the report as its note: the checkup counts per check (found, fixed, judged wrong, left), left last time counted apart, the judgments made again and how each came out, then onboard's report parts (the fresh reader's list, or the date of the last one when it did not run). A deviated run opens the note with one sentence naming the step that differed and how. Skill step 5.
+At the end, or at any stop, record the run with the report as its note: the checkup counts per check (found, fixed, judged wrong, left), left last time counted apart, the judgments made again and how each came out, then onboard's report parts (the fresh reader's list, or the date of the last one when it did not run). A deviated run opens the note with one sentence naming the step that differed and how, and says its outcome in the same call: `--fixed <commit>` (this card fixed in that commit), `--one-off "<why>"` (the steps stand) or `--filed T-n` (the work, filed through the ladder). Skill step 5.
 
 ```sh
 node ~/.claude/askerdo/cli.mjs proc ran doctor-a-project clean --note "<report>"
-node ~/.claude/askerdo/cli.mjs proc ran doctor-a-project deviated --note "<step-that-differed-and-how>. <report>"
+node ~/.claude/askerdo/cli.mjs proc ran doctor-a-project deviated --note "<step-that-differed-and-how>. <report>" --one-off "<why-the-steps-stand>"
 ```
 
 ## Verify
 
 ```sh
-node "$D/checks.mjs" <project dir>
+node "$D/checks.mjs" <project dir> --who <the user's name>
 ```
 
 - expect: the Checkup line counts no finding the run fixed; what the user left counts as left last time.
@@ -88,7 +89,7 @@ node "$D/checks.mjs" <project dir>
 ## References
 
 - `skills/doctor/SKILL.md`: every step of the run, in full.
-- `skills/doctor/checks.mjs`: the entry check, the facts, the reads, the checks (rules, board shape, knowledge, cards, the repo, what earlier runs kept, earlier runs, the map's sources) and the reconcile, each finding a fix item with its proposed fix and its call, in `checkup.json`.
+- `skills/doctor/checks.mjs`: the entry check, the facts, the reads, the checks (rules, board shape, task shape, knowledge, cards, the repo, what earlier runs kept, earlier runs, the map's sources) and the reconcile, each finding a fix item with its proposed fix and its call, in `checkup.json`.
 - `skills/onboard/plan.mjs`: the fix steps after every create, and the amend for a reconciled record.
 - `skills/onboard/apply.mjs`: the rehearsal's would-run list, the manifest's fix entries and their undo.
 - `docs/procedures/onboard-a-project.md`: the judgment of anything of the old way, which the doctor shares.

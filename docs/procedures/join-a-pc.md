@@ -41,7 +41,7 @@ A Windows PC with no AskerDo joins your board: one board for every machine and t
 
 ### 1. Check the tools
 
-Node and git on the plain PATH, GitHub reachable over https (the public repo ToxMox/askerdo), the board on the network and the Claude CLI. Node 24 is the safe floor: the board image runs it. The board's scheduled task starts `node.exe` from the PATH a logon task gets, so a node that only a shell profile adds (a version manager's per-shell folder) never reaches it: `where.exe` should name the installer's `node.exe`. In the Bash tool `CLAUDE_CODE_EXECPATH` names the desktop app's own `claude.exe`, the engine its sessions run, so every Claude CLI command here is written `"${CLAUDE_CODE_EXECPATH:-claude}"`. Ask the user for the board address (`http://<board-host>:17480` on the default port, the board host's name or network address) for the last line.
+Node and git on the plain PATH, GitHub reachable over https (the public repo ToxMox/askerdo), the board on the network and the Claude CLI. Node 24 is the safe floor: the board image runs it. The board's scheduled task starts the `node.exe` the sessions ran when they registered it, saved by its full path, and the one on the PATH a logon task gets only when that file is gone. In the Bash tool `CLAUDE_CODE_EXECPATH` names the desktop app's own `claude.exe`, the engine its sessions run, so every Claude CLI command here is written `"${CLAUDE_CODE_EXECPATH:-claude}"`. Ask the user for the board address (`http://<board-host>:17480` on the default port, the board host's name or network address) for the last line.
 
 ```sh
 node --version
@@ -106,7 +106,7 @@ node ~/.claude/askerdo/cli.mjs list
 
 ### 6. Map the projects
 
-A file link naming another PC's folder opens here only once this PC's map has that project's folder. Each session start adds the project it opens in; a scan adds the rest now. Ask the user where their repos live and scan each folder.
+A file link in a record opens on every PC that maps the record's project, wherever each PC keeps its folder: each PC's local server sends its map to the board at start and when the map changes, and opens a path written on another PC at its own folder for that project. So a link opens here once this PC's map has the project's folder and the PC that wrote the link has sent its map. Each session start adds the project it opens in; a scan adds the rest now. Ask the user where their repos live and scan each folder.
 
 ```sh
 node ~/.claude/askerdo/cli.mjs projects scan <folder>
@@ -119,11 +119,11 @@ Only the user sees the app. They open a new session in one of the mapped repos: 
 
 ### 8. Record the run
 
-The run teaches the card: record it clean, or deviated with a note whose first sentence names the step that differed and how (the card's flag and draft edit carry that sentence alone). Anything in AskerDo that tripped the run becomes a task labelled field-bug in the inbox of the workstream that builds AskerDo, when the board has one (what happened, the cause, a fix), waking 14 days out, and this card is corrected in the AskerDo repo for the next PC.
+The run teaches the card: record it clean, or deviated with a note whose first sentence names the step that differed and how, and its outcome in the same call: `--fixed <commit>` (this card corrected in that commit), `--one-off "<why>"` (the steps stand) or `--filed T-n` (the work, filed through the ladder). Anything in AskerDo that tripped the run becomes a task labelled field-bug in the inbox of the workstream that builds AskerDo, when the board has one (what happened, the cause, a fix), waking 14 days out, and this card is corrected in the AskerDo repo for the next PC.
 
 ```sh
 node ~/.claude/askerdo/cli.mjs proc ran join-a-pc clean --note "<notes>"
-node ~/.claude/askerdo/cli.mjs proc ran join-a-pc deviated --note "<step-that-differed-and-how>. <notes>"
+node ~/.claude/askerdo/cli.mjs proc ran join-a-pc deviated --note "<step-that-differed-and-how>. <notes>" --one-off "<why-the-steps-stand>"
 echo '{"name":"<one-line-fault>","workstream":"<ws-n>","labels":["field-bug"],"description":"<what-happened-the-cause-a-fix>"}' | node ~/.claude/askerdo/cli.mjs task create --unplaced "found by a join-a-pc run" --wake <YYYY-MM-DD-14-days-out>
 ```
 
@@ -146,4 +146,5 @@ node ~/.claude/askerdo/cli.mjs list
 - `lib/cli-commands.mjs`: the join, join-code, board, list, projects scan, proc ran and task create verbs.
 - `lib/board-ensure.mjs`: the board task step 5 checks.
 - `lib/project-map.mjs`: the map step 6 fills.
+- `server/verbs/pc-maps.mjs`: the board's copy of each PC's map, which the local server (`hooks/board-server.mjs`) sends and reads.
 - `.claude-plugin/marketplace.json`: the marketplace name, which names the clone folder.

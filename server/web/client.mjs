@@ -198,7 +198,7 @@ function render(anim) {
   }
   gv.innerHTML = '<div class="layer">' + out.svg + '</div>';
   pic.querySelector('.pslot').innerHTML = stripHtml(V.sel ? detail(P, V, V.sel) : null);
-  pic.querySelector('.legend').innerHTML = legend(P, V, narrow ? 'narrow' : 'web', { measure }).map((e) => '<span>' + e.svg + esc(e.words) + '</span>').join('');
+  pic.querySelector('.legend').innerHTML = legend(P, V, narrow ? 'narrow' : 'web', { measure, sideFold: out.sideFold }).map((e) => '<span>' + e.svg + esc(e.words) + '</span>').join('');
   const s = sinceWords(P, V);
   const since = pic.querySelector('.since');
   since.hidden = !s;
@@ -280,6 +280,13 @@ function select(v) {
   render();
 }
 
+/* a pressed portal scrolls its lit twin into view */
+function twinIntoView(k) {
+  setTimeout(() => {
+    const t = [...document.querySelectorAll('#pic .hit.lit[data-k^="prt:"]')].find((e) => e.dataset.k !== k);
+    if (t) t.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, 60);
+}
 function press(k) {
   if (!G || !V) return;
   let r = null;
@@ -294,7 +301,7 @@ function press(k) {
     // a jump to a task on another workstream opens its page
     if (r.view.level === 2 && !canDraw(G.P, r.view) && k.startsWith('jump:')) location.href = urlOf(k.slice(5));
     else if (r.dir) go(r.view, r.dir, r.from);
-    else select(r.view);
+    else { select(r.view); if (k.startsWith('prt:')) twinIntoView(k); }
   } else if (r.open) {
     const o = G.P.ov.find((x) => x.id === r.open);
     if (/^WS-\d+$/.test(r.open) && (!o || o.opens)) go({ level: 1, ws: r.open, tr: null, sel: null }, 1, 'ws:' + r.open);

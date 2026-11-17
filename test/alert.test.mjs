@@ -131,9 +131,9 @@ test('the question and work senders build names the request keeps', () => {
     whereNames: questionWhereNames(q), pick: 'Names on the card' });
   assert.equal(alertPlace(ask.value.whereNames), 'Tidewatch \u00B7 the board \u00B7 holds up tray cards');
   assert.equal(ask.value.pick, 'Names on the card');
-  const e = { id: 'T-1', name: 'counter rebuild', ending: 'completed', workstreamName: 'the board' };
+  const e = { id: 'T-1', name: 'counter rebuild', ending: 'done', workstreamName: 'the board' };
   const done = validateAlert({ kind: 'done', title: workAlertTitle(e), whereNames: workWhereNames(e) });
-  assert.equal(done.value.title, 'counter rebuild completed');
+  assert.equal(done.value.title, 'counter rebuild done');
   assert.equal(alertPlace(done.value.whereNames), 'the board');
   /* a woken question's card says what woke it, by name */
   const [woken] = enrichEvents([{ kind: 'open', id: 'Q8', name: 'x', woken: true, wokeBy: 'T-75 completed' }],

@@ -5,10 +5,11 @@
 import { readTx, tx } from '../db.mjs';
 import { actorOf, labelOf, logRow } from '../records.mjs';
 import { UsageError, loadEntry, resolveRecord, shownFront } from './labels.mjs';
-import { knowledgePayload, markSuperseded, mintKnowledge, projectName } from './work.mjs';
+import { WORK_KINDS, knowledgePayload, markSuperseded, mintKnowledge, orderFront, projectName, shownSectionsOf } from './work.mjs';
 import { answer, parseOptions, questionSections } from './questions.mjs';
+import { isPlacement, userAnswersIt } from './placement-answer.mjs';
 
-const ACTIVE = `SELECT key, fields FROM records WHERE kind = 'knowledge' AND status = 'active'
+const ACTIVE = `SELECT key, fields, body FROM records WHERE kind = 'knowledge' AND status = 'active'
   AND json_extract(fields, '$.type') = 'decision'`;
 
 /* A bare day is local midnight, as a session reads a date. */
@@ -28,12 +29,26 @@ function need(db, token, kind) {
 
 const listOf = (f, k) => (Array.isArray(f[k]) ? f[k] : []);
 
+const one = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
+const clip = (s, max) => (s.length > max ? s.slice(0, max - 3).trimEnd() + '...' : s);
+const AMENDED = /^Amended \d{4}-\d{2}-\d{2} by /;
+
+/* What a ruling's body adds to its title and words, a line each: its first sentence and
+   every amend paragraph, so a later clause reaches the readers that print the ruling. */
+export function bodyGist(body, name) {
+  const paras = String(shownSectionsOf(body || '').Body || '').split(/\n\s*\n/).map(one).filter(Boolean);
+  const own = paras.find((p) => !AMENDED.test(p));
+  const first = own ? (/^.*?[.!?](?=\s|$)/.exec(own) || [own])[0] : '';
+  const amends = paras.filter((p) => AMENDED.test(p)).map((p) => clip(p, 300));
+  return { ...(first && first !== one(name) ? { gist: clip(first, 240) } : {}), ...(amends.length ? { amends } : {}) };
+}
+
 /* A decision as the reads hand it out: links as labels, empty ones as []. */
-function viewOf(db, f, memo) {
+function viewOf(db, f, memo, body) {
   const s = shownFront(db, f, memo);
   return {
     id: s.id, key: s.key, name: s.name, created: s.created || null, ...(s.amended ? { amended: s.amended } : {}),
-    ...(s.words ? { words: s.words } : {}), ...(s.question ? { question: s.question } : {}),
+    ...(s.words ? { words: s.words } : {}), ...(s.confirmed === true ? { confirmed: true } : {}), ...(s.question ? { question: s.question } : {}), ...(body === undefined ? {} : bodyGist(body, s.name)),
     workstreams: listOf(s, 'workstreams'), tracks: listOf(s, 'tracks'), tasks: listOf(s, 'tasks'),
     files: listOf(s, 'files'), commands: listOf(s, 'commands'), labels: listOf(s, 'labels'),
   };
@@ -53,6 +68,8 @@ function settleQuestion(db, f, actor) {
   const q = f.question ? db.stmt("SELECT fields, body FROM records WHERE key = ? AND kind = 'question'").get(f.question) : null;
   const front = q ? JSON.parse(q.fields) : null;
   if (!front || (front.status !== 'open' && front.status !== 'snoozed')) return {};
+  /* a ruling never answers a placement question: it stays open for the user's own act */
+  if (isPlacement(front)) return { warning: userAnswersIt(front.id) + '; this ruling left it open' };
   const num = String(front.id).replace(/^Q/, '');
   // Only the question's own option letters count, and a space only after the Q: "the 3 a.m. build" answers nothing.
   const letters = parseOptions(questionSections(q.body || '', '').sections['Options'])
@@ -74,7 +91,8 @@ function settleQuestion(db, f, actor) {
    supersedes the old ones in one transaction. */
 export function decide(db, input = {}, actor) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new UsageError('decide takes a JSON object');
-  const { supersedes, ...raw } = input;
+  const { supersedes, confirmed, ...raw } = input;
+  if (confirmed !== undefined && typeof confirmed !== 'boolean') throw new UsageError('confirmed is true when the user confirmed the title as worded');
   if (raw.type !== undefined && raw.type !== 'decision') throw new UsageError('decide records a decision; a gotcha is knowledge new --type gotcha');
   const olds = supersedes === undefined || supersedes === null ? [] : Array.isArray(supersedes) ? supersedes : [supersedes];
   if (olds.some((s) => typeof s !== 'string' || !s.trim())) throw new UsageError('supersedes takes a K-n or a list of them');
@@ -101,15 +119,38 @@ export function decide(db, input = {}, actor) {
       if (!old.some((o) => o.key === e.key)) old.push(e);
     }
     const m = mintKnowledge(db, p, ctx);
+    /* the words may answer the question, which the confirmed mark reads */
+    const settled = settleQuestion(db, m.fields, actor);
+    /* confirmed when the title is the option the user pressed on the question it names, else only on --confirmed */
+    if (confirmed === true || pressedTitle(db, m.fields)) confirm(db, m);
     logRow(db, ctx, m.line);
     for (const e of old) logRow(db, ctx, markSuperseded(db, e, m.fields.key, ctx).line);
-    return { ...viewOf(db, m.fields), kind: 'knowledge', type: 'decision', superseded: old.map((e) => e.label), ...settleQuestion(db, m.fields, actor) };
+    const minted = db.stmt('SELECT body FROM records WHERE key = ?').get(m.fields.key);
+    return { ...viewOf(db, m.fields, undefined, minted ? minted.body : undefined), kind: 'knowledge', type: 'decision', superseded: old.map((e) => e.label), ...settled };
   });
 }
 
+/* True when the named question is answered with an option whose text is the title (space folded, case ignored). */
+function pressedTitle(db, f) {
+  const q = f.question ? db.stmt("SELECT fields, body FROM records WHERE key = ? AND kind = 'question'").get(f.question) : null;
+  if (!q || JSON.parse(q.fields).status !== 'answered') return false;
+  const pick = (db.stmt(`SELECT json_extract(diff, '$.chosen[1]') AS pick FROM activity WHERE record = ? AND verb IN ('answer', 'amend') ORDER BY seq DESC LIMIT 1`).get(f.question) || {}).pick;
+  const fold = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const hit = pick ? parseOptions(questionSections(q.body || '', '').sections['Options']).find((o) => String(o.type || '').trim() === pick) : null;
+  return Boolean(hit) && fold(hit.option) === fold(f.name);
+}
+
+/* The confirmed mark rides the minted front before its activity row is written. */
+function confirm(db, m) {
+  const fields = orderFront(WORK_KINDS.knowledge, { ...m.fields, confirmed: true });
+  db.stmt('UPDATE records SET fields = ? WHERE key = ?').run(JSON.stringify(fields), m.fields.key);
+  m.fields = fields;
+  m.line = { ...m.line, front: fields, changes: { ...m.line.changes, confirmed: [null, true] } };
+}
+
 /* The active decisions linked to any of task, track or workstream (a track's tasks and
-   its workstream count, and so does the workstream's label), made at or after `since`,
-   newest first. Named none, every active decision. */
+   its workstream count, and so does the workstream's label), made or amended at or after
+   `since`, newest first. Named none, every active decision. */
 export function decisionsFor(db, input = {}) {
   const { task, track, workstream, since } = input || {};
   const t0 = since === undefined || since === null || since === '' ? null : timeOf(since);
@@ -132,15 +173,16 @@ export function decisionsFor(db, input = {}) {
     const any = Boolean(task || track || workstream);
     const hit = (f) => !any || ['tasks', 'tracks', 'workstreams', 'labels'].some((k) => listOf(f, k).some((v) => want[k].has(v)));
     const memo = new Map();
-    return db.stmt(ACTIVE).all().map((r) => JSON.parse(r.fields))
-      .filter((f) => hit(f) && (t0 === null || (timeOf(f.created) ?? -Infinity) >= t0))
-      .sort((a, b) => (timeOf(b.created) ?? 0) - (timeOf(a.created) ?? 0) || Number(String(b.id).slice(2)) - Number(String(a.id).slice(2)))
-      .map((f) => viewOf(db, f, memo));
+    const after = (s) => (timeOf(s) ?? -Infinity) >= t0;
+    return db.stmt(ACTIVE).all().map((r) => ({ f: JSON.parse(r.fields), body: r.body || '' }))
+      .filter(({ f }) => hit(f) && (t0 === null || after(f.created) || (f.amended && after(f.amended))))
+      .sort(({ f: a }, { f: b }) => (timeOf(b.created) ?? 0) - (timeOf(a.created) ?? 0) || Number(String(b.id).slice(2)) - Number(String(a.id).slice(2)))
+      .map(({ f, body }) => viewOf(db, f, memo, body));
   });
 }
 
-/* The kickoff's slice: the decisions on a track since its last leg began, which is the
-   newest resume of any handoff but the one being carried (else the track's start). */
+/* The kickoff's slice: the decisions made or amended on a track since its last leg began,
+   which is the newest resume of any handoff but the one being carried (else the track's start). */
 export function decisionsSince(db, input = {}) {
   return readTx(db, () => {
     const t = need(db, input.track, 'track');
@@ -162,14 +204,15 @@ export function decisionTriggers(db, input = {}) {
   const project = input && typeof input.project === 'string' && input.project.trim() ? projectName(input.project) : null;
   return readTx(db, () => {
     const memo = new Map();
-    return db.stmt("SELECT fields FROM records WHERE kind = 'knowledge' AND status = 'active'").all().map((r) => JSON.parse(r.fields))
-      .filter((f) => (listOf(f, 'files').length || (f.type === 'decision' && listOf(f, 'commands').length))
+    return db.stmt("SELECT fields, body FROM records WHERE kind = 'knowledge' AND status = 'active'").all().map((r) => ({ f: JSON.parse(r.fields), body: r.body || '' }))
+      .filter(({ f }) => (listOf(f, 'files').length || (f.type === 'decision' && listOf(f, 'commands').length))
         && (!project || f.scope === 'global' || listOf(f, 'projectRepos').some((n) => projectName(n) === project)))
-      .sort((a, b) => Number(String(a.id).slice(2)) - Number(String(b.id).slice(2)))
-      .map((f) => ({
-        id: f.id, key: f.key, name: f.name, type: f.type, ...(f.words ? { words: f.words } : {}), files: listOf(f, 'files'),
+      .sort(({ f: a }, { f: b }) => Number(String(a.id).slice(2)) - Number(String(b.id).slice(2)))
+      .map(({ f, body }) => ({
+        id: f.id, key: f.key, name: f.name, type: f.type, ...(f.words ? { words: f.words } : {}), ...(f.confirmed === true ? { confirmed: true } : {}), files: listOf(f, 'files'),
         commands: f.type === 'decision' ? listOf(f, 'commands') : [],
         scope: f.scope, projectRepos: listOf(f, 'projectRepos'), tasks: listOf(shownFront(db, f, memo), 'tasks'),
+        ...(f.type === 'decision' ? bodyGist(body, f.name) : {}),
       }));
   });
 }

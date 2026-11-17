@@ -84,8 +84,12 @@ test('THE SANDBOX SEAM: with ASKERDO_ROOT set the home gets no writes and the sa
   writeFileSync(join(rig, 'cli.mjs'), '/* AskerDo launcher, maintained by the AskerDo sync; edits are overwritten */\n'
     + 'await import(' + JSON.stringify(pathToFileURL(join(other, 'bin', 'askerdo.mjs')).href) + ');\n');
   const sbxHome = join(sandbox, 'askerdo-home');
+  /* the project whose settings name this sandbox, where the app reads a style */
+  const project = join(sandbox, 'project');
+  mkdirSync(join(project, '.claude'), { recursive: true });
+  writeFileSync(join(project, '.claude', 'settings.local.json'), JSON.stringify({ env: { ASKERDO_ROOT: rig } }));
 
-  const out = runSync(home, { ASKERDO_ROOT: rig });
+  const out = runSync(home, { ASKERDO_ROOT: rig, CLAUDE_PROJECT_DIR: project });
   runSync(home, { ASKERDO_ROOT: rig }, ['--install']);
 
   assert.deepEqual(snapshot(home), before, 'the handed home was not written');
@@ -101,6 +105,9 @@ test('THE SANDBOX SEAM: with ASKERDO_ROOT set the home gets no writes and the sa
   /* the contract names that launcher, so the model's CLI calls run this copy's code */
   assert.ok(style.includes('node ' + join(rig, 'cli.mjs').replace(/\\/g, '/') + ' register'), 'the style names the sandbox launcher');
   assert.ok(!style.includes('~/.claude/askerdo/cli.mjs register'), 'and not the live one');
+  const own = readFileSync(join(project, '.claude', 'output-styles', 'askerdo-sandbox.md'), 'utf8');
+  assert.ok(/^name: askerdo-sandbox$/m.test(own) && own.includes('node ' + join(rig, 'cli.mjs').replace(/\\/g, '/') + ' register'),
+    'the project gets the sandbox style under its own name');
   assert.ok(existsSync(join(sbxHome, PC, 'sync.log')), 'the sync log lands in the sandbox data dir');
   /* the /askerdo command file lands in the sandbox home too (the home's snapshot above holds none) */
   assert.match(readFileSync(join(sbxHome, '.claude', 'commands', 'askerdo.md'), 'utf8'), /^---\ndescription: /);

@@ -101,7 +101,7 @@ const cards = (posted) => posted.map((hit) => alertOf(hit).card);
 /* The events the local board hands over (lib/local-board.mjs deliver). */
 const TASK = { id: 'T-1', name: 'counter rebuild', workstream: 'WS-1' };
 const WS = { id: 'WS-1', name: 'work system build' };
-const done = (over = {}) => ({ ...TASK, ending: 'completed', ...over });
+const done = (over = {}) => ({ ...TASK, ending: 'done', ...over });
 const closed = (over = {}) => ({ ...WS, ending: 'closed', ...over });
 
 /* ---- the card ---------------------------------------------------------- */
@@ -334,11 +334,11 @@ test('the question gate and the work gate never accept each other ids', async ()
     ensure: () => {}, ping: () => false, ensureWaitMs: 1, ensureStepMs: 1,
   });
   assert.equal(w.raise({ id: 'Q7', name: 'store shape', ending: 'closed' }), 0);
-  assert.equal(w.raise({ id: 'T-1/../board/secret', name: 'traversal', ending: 'completed' }), 0);
-  assert.equal(w.raise({ id: '', name: 'empty', ending: 'completed' }), 0);
+  assert.equal(w.raise({ id: 'T-1/../board/secret', name: 'traversal', ending: 'done' }), 0);
+  assert.equal(w.raise({ id: '', name: 'empty', ending: 'done' }), 0);
   /* an ending outside the vocabulary is refused the same way, so no verb can
      invent a fourth one by passing a string through */
   assert.equal(w.raise({ id: 'T-1', name: 'counter rebuild', ending: 'in_progress' }), 0);
   assert.deepEqual(new Set(wlog.lines), new Set(['notify: dropped a work event that was not well formed']));
-  assert.deepEqual([...WORK_ENDINGS], ['completed', 'dropped', 'closed']);
+  assert.deepEqual([...WORK_ENDINGS], ['done', 'dropped', 'closed']);
 });

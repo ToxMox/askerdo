@@ -29,10 +29,17 @@ export const fileTriggerText = (t) => (t.repo && t.repo !== 'self' ? t.repo + ':
 export function badgeOf(card) {
   const c = card || {};
   if (c.status === 'retired') return { badge: 'retired', reasons: ['the file is gone from ' + String(c.project || 'its repo')] };
-  if (c.flag) return { badge: 'flagged', reasons: ['the last run deviated: ' + c.flag] };
+  if (c.flag) return { badge: 'flagged', reasons: [(c.openTasks && c.openTasks.length ? 'a run deviated and its work waits in ' + c.openTasks.join(', ') + ': ' : 'the last run deviated: ') + c.flag] };
   if (Array.isArray(c.stale) && c.stale.length) return { badge: 'stale', reasons: c.stale.slice() };
   if (!c.verifiedAt) return { badge: 'never run', reasons: [] };
   return { badge: 'fresh', reasons: [] };
+}
+
+/* A cited card in words: its name and badge, the first reason cut short (its page has them all). */
+export function citedWords(c, { reasons = true } = {}) {
+  const why = reasons && c.reasons && c.reasons.length ? String(c.reasons[0]).replace(/\s+/g, ' ').trim() : '';
+  return c.id + ' ' + String(c.name || '').replace(/\s+/g, ' ').trim() + ' (' + c.badge
+    + (why ? ': ' + (why.length > 140 ? why.slice(0, 137).trimEnd() + '...' : why) + (c.reasons.length > 1 ? '; and ' + (c.reasons.length - 1) + ' more' : '') : '') + ')';
 }
 
 /* A card as the CLI and the mod read it; `verified` rides along so the PC's
@@ -48,6 +55,8 @@ export function cardView(front) {
     stale: front.stale || [], flag: front.flag || '', verified: front.verified || {}, verifiedAt: front.verifiedAt || '',
     runs: front.runs || 0, cleanRuns: front.cleanRuns || 0, badge: b.badge, reasons: b.reasons,
     ...(front.everywhere ? { everywhere: true } : {}), ...(front.live ? { live: true } : {}),
+    ...(front.record === 'command' ? { record: 'command' } : {}),
+    ...(front.openTasks && front.openTasks.length ? { openTasks: front.openTasks } : {}),
   };
 }
 

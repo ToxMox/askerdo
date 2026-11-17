@@ -4,7 +4,7 @@
 import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync,
+  appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync,
 } from 'node:fs';
 /* aliased: `resolve` is already a promise settler in more than one closure
    below, and one name meaning two things in one file reads badly */
@@ -14,8 +14,9 @@ import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer, request as httpRequest } from 'node:http';
 import { hostname } from 'node:os';
-import { LEGACY_TASK_NAME, ensureBoardServer, isLiveRoot, whoamiCommand } from '../lib/board-ensure.mjs';
+import { LEGACY_TASK_NAME, boardIdentity, ensureBoardServer, ensureRoot, isLiveRoot, mergeUnderway, registeringNode, whoamiCommand } from '../lib/board-ensure.mjs';
 import { TASK_NAME, parseAction, taskXml, wantedAction } from '../lib/board-task.mjs';
+import { restartForCode } from '../lib/board-host.mjs';
 import { pluginRoot, pluginVersion, storeRoot } from '../lib/node-helpers.mjs';
 import { ASSETS } from '../lib/board-assets.mjs';
 import { sampleAlert, sampleShape } from '../lib/notify-page.mjs';
@@ -149,7 +150,8 @@ async function pollUntil(check, capMs = 15000) {
 /* A test board (lib/board-call.mjs startBoard), the env that points a spawned
    server at it, and `verb(name, input, body)` writing it as another PC would. */
 async function onBoard(t) {
-  const b = await startBoard();
+  /* a quiet port: a case that closes the board finds its port still refusing */
+  const b = await startBoard({ port: await quietPort() });
   t.after(() => b.close());
   const verb = (name, input, body = {}) => boardRequest('POST', '/api/v1/verbs/' + name,
     { input, ...body, opts: { strict: false, inherit: false } }, { url: b.url, token: b.token });
@@ -638,7 +640,7 @@ test('a stale-version instance is replaced through the secret stop route', { tim
      fake runner answers a CURRENT action, so only /query and /run are issued,
      and the fake /run spawns what the scheduler would have spawned. */
   let fresh = null;
-  const task = taskRunner({ current: wantedAction(sb.root), onRun: () => { fresh = start(t, sb); } });
+  const task = taskRunner({ current: wantedAction(sb.root, registeringNode()), onRun: () => { fresh = start(t, sb); } });
   const r = await ensureBoardServer(sb.root, { run: task.run, sid: task.sid, home: () => sb.home });
   t.after(async () => { try { await fetch(sb.base + '/stop', { method: 'POST' }); } catch {} });
   assert.equal(r.status, 'replaced');
@@ -695,11 +697,38 @@ test('a manifest edited under a running server does not move the version it repo
   { timeout: 20000 }, async (t) => {
     const sb = await mint();
     const tree = copyTree('9.9.1');
+    /* access times hours old: Windows writes a fresh one on the next read and the watch
+       hears it, which must not count as a change */
+    const hoursAgo = new Date(Date.now() - 3 * 3600e3);
+    const codeFiles = ['hooks', 'lib', 'server'].flatMap((d) => readdirSync(join(tree, d), { recursive: true })
+      .map((n) => join(tree, d, String(n))).filter((f) => /\.(c?m?js|json)$/.test(f)));
+    for (const f of codeFiles) utimesSync(f, hoursAgo, statSync(f).mtime);
     const srv = start(t, sb, {}, [], join(tree, 'hooks', 'board-server.mjs'));
     await srv.line;
+    for (const f of codeFiles) readFileSync(f);
+    /* nor do a docs or test write, or the harness's hooks.json, which the server never loads */
+    writeFileSync(join(tree, 'lib', 'notes.md'), 'x');
+    mkdirSync(join(tree, 'hooks', 'mod', 'tests'), { recursive: true });
+    writeFileSync(join(tree, 'hooks', 'mod', 'tests', 'x.test.tsx'), 'x');
+    writeFileSync(join(tree, 'hooks', 'hooks.json'), readFileSync(join(tree, 'hooks', 'hooks.json'), 'utf8') + '\n');
+    await new Promise((r) => setTimeout(r, 400));
 
     const before = await raw(sb.port, '/' + sb.secret + '/ping', { method: 'POST' });
     assert.equal(before.headers['x-askerdo-board'], '9.9.1', 'the copied manifest is what it serves');
+    assert.equal(before.headers['x-askerdo-code'], 'current', 'reads and non-code writes leave the server current');
+
+    /* a merge under a running server with no version bump: its loaded modules are the
+       old code, so a CLI call is sent back to run in its caller */
+    const edited = join(tree, 'lib', 'answer-token.mjs');
+    writeFileSync(edited, readFileSync(edited, 'utf8') + '\n');
+    let code = '';
+    for (let i = 0; i < 40 && code !== 'stale'; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      code = (await raw(sb.port, '/' + sb.secret + '/ping', { method: 'POST' })).headers['x-askerdo-code'];
+    }
+    assert.equal(code, 'stale', 'the ping says the code changed');
+    const call = await fetch(sb.base + '/local/cli', { method: 'POST', body: JSON.stringify({ argv: ['help'], cwd: pluginRoot, env: {} }) });
+    assert.equal(call.status, 409, 'a stale server runs no CLI call');
 
     /* imported BEFORE the bump on purpose: an ensure that ever baked its own
        version at module scope would read 9.9.1 here, see no mismatch below,
@@ -751,6 +780,77 @@ test('a manifest edited under a running server does not move the version it repo
     assert.equal(kept2.headers['x-askerdo-instance'], now.headers['x-askerdo-instance'], 'the installed board still serves');
   });
 
+/* Seen live: a merge left a file that did not parse, the restart stopped the old server,
+   and the PC had no local server until someone started one by hand. */
+test('code that does not load leaves the old server serving and says why; the repaired code restarts it',
+  { timeout: 60000 }, async (t) => {
+    const sb = await mint();
+    const tree = copyTree(version);
+    const hoursAgo = new Date(Date.now() - 3 * 3600e3);
+    for (const d of ['hooks', 'lib', 'server']) {
+      for (const n of readdirSync(join(tree, d), { recursive: true })) {
+        const f = join(tree, d, String(n));
+        if (/\.(c?m?js|json)$/.test(f)) utimesSync(f, hoursAgo, statSync(f).mtime);
+      }
+    }
+    /* the scratch seam: a restart starts the copy's server detached, never through the task */
+    const srv = start(t, sb, { ASKERDO_RESTART_DETACHED: '1' }, [], join(tree, 'hooks', 'board-server.mjs'));
+    await srv.line;
+    const ping = () => raw(sb.port, '/' + sb.secret + '/ping', { method: 'POST' }).then((r) => r.headers, () => ({}));
+    const until = async (ok, ms) => {
+      for (const end = Date.now() + ms; Date.now() < end;) {
+        const h = await ping();
+        if (ok(h)) return h;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return ping();
+    };
+    const first = await ping();
+
+    const file = join(tree, 'lib', 'local-board.mjs');
+    const good = readFileSync(file, 'utf8');
+    writeFileSync(file, good + '\nexport const = ;\n');
+    const held = await until((h) => h['x-askerdo-code'] === 'held', 20000);
+    assert.equal(held['x-askerdo-code'], 'held', 'the server holds on its old code');
+    assert.match(held['x-askerdo-held'], /local-board\.mjs/, 'the ping names the file');
+    assert.equal(held['x-askerdo-instance'], first['x-askerdo-instance'], 'the old server kept running');
+    /* this call is refused for its made-up caller, never for the code: held calls stay here */
+    const call = await fetch(sb.base + '/local/cli', { method: 'POST', body: JSON.stringify({ argv: ['help'], cwd: pluginRoot, env: {}, version }) });
+    assert.doesNotMatch(await call.text(), /since replaced/, 'a held server serves the calls the broken code could not');
+    assert.match(readFileSync(join(sb.root, 'log'), 'utf8'), /does not load: lib\/local-board\.mjs:\d+: SyntaxError/);
+
+    writeFileSync(file, good);
+    const fresh = await until((h) => h['x-askerdo-instance'] && h['x-askerdo-instance'] !== first['x-askerdo-instance'], 30000);
+    assert.notEqual(fresh['x-askerdo-instance'], first['x-askerdo-instance'], 'the repaired code restarted it');
+    assert.equal(fresh['x-askerdo-code'], 'current');
+    assert.equal(await srv.closed, 0, 'the old server stopped itself');
+
+    /* a restart that left no server is tried again by its helper, each try logged */
+    const outs = [{ status: 'failed', detail: 'the replacement server did not answer' }, { status: 'failed' }, { status: 'started' }];
+    const asked = [];
+    const lines = [];
+    const back = await restartForCode(sb.root, {
+      ensure: async (_r, o) => { asked.push(o.restart === true); return outs.shift(); },
+      waits: [1, 1, 1], sleep: async () => {}, ping: async () => ({ listening: false }), log: (s) => lines.push(s), platform: 'test',
+    });
+    assert.equal(back.status, 'started');
+    assert.deepEqual(asked, [true, false, false], 'the tries after the restart start a server');
+    assert.equal(lines.length, 3);
+
+    /* a merge under way is waited out: MERGE_HEAD in a worktree's git dir, or conflict markers */
+    const repo = tempDir('nd-tree-');
+    mkdirSync(join(repo, 'gitdir'), { recursive: true });
+    mkdirSync(join(repo, 'wt', 'lib'), { recursive: true });
+    writeFileSync(join(repo, 'wt', '.git'), 'gitdir: ../gitdir\n');
+    writeFileSync(join(repo, 'wt', 'lib', 'a.mjs'), 'export const a = 1;\n');
+    assert.equal(mergeUnderway(join(repo, 'wt'), [join(repo, 'wt', 'lib', 'a.mjs')]), '');
+    writeFileSync(join(repo, 'gitdir', 'MERGE_HEAD'), 'x\n');
+    assert.match(mergeUnderway(join(repo, 'wt')), /merge/);
+    rmSync(join(repo, 'gitdir', 'MERGE_HEAD'));
+    writeFileSync(join(repo, 'wt', 'lib', 'a.mjs'), '<<<<<<< HEAD\nexport const a = 1;\n=======\n>>>>>>> lane\n');
+    assert.match(mergeUnderway(join(repo, 'wt'), [join(repo, 'wt', 'lib', 'a.mjs')]), /lib\/a\.mjs/);
+  });
+
 test('ensureBoardServer starts, adopts, and refuses', async (t) => {
   const cold = await mint();
   /* `starts` is the TASK: the argv is what this half asserts, and the fake /run
@@ -783,7 +883,8 @@ test('ensureBoardServer starts, adopts, and refuses', async (t) => {
 });
 
 /* a stand-in local server on the identity port. `header` is the version it
-   names on the ping (none, as every server before 0.8.13 did), `stops` whether it
+   names on the ping (none, as every server before 0.8.13 did; one naming a version
+   also says its code is current), `stops` whether it
    obeys /stop, and `hits` the secret routes it was posted. `later` is the version
    it names after its first ping, as a server another session start just put there,
    and that server refuses a stop naming another version. */
@@ -793,7 +894,7 @@ function fakeServer(t, sb, { header, stops = true, later } = {}) {
     hits.push(req.url.slice(sb.secret.length + 2));
     if (req.url === '/' + sb.secret + '/ping') {
       const named = later && hits.filter((h) => h === 'ping').length > 1 ? later : header;
-      res.writeHead(204, named ? { 'x-askerdo-board': named } : {});
+      res.writeHead(204, named ? { 'x-askerdo-board': named, 'x-askerdo-code': 'current' } : {});
       return res.end();
     }
     const seen = req.headers['x-askerdo-if-version'];
@@ -879,7 +980,7 @@ test('a cold ensure registers the task, runs it, and waits for the ping', { time
      and the SID it was handed */
   assert.equal(task.docs.length, 1);
   assert.equal(task.docs[0].bom, true, 'schtasks reads the file as Unicode');
-  assert.deepEqual(parseAction(task.docs[0].text), wantedAction(sb.root));
+  assert.deepEqual(parseAction(task.docs[0].text), wantedAction(sb.root, registeringNode()));
   assert.ok(task.docs[0].text.includes('<UserId>' + FAKE_SID + '</UserId>'));
 
   /* AND IT IS GONE: the file carried an identity, so it does not outlive the
@@ -936,7 +1037,7 @@ test('a delete that fails does not fail the ensure', { timeout: 20000 }, async (
 
 test('a current task is not re-registered, and the SID is never read', { timeout: 20000 }, async (t) => {
   const sb = await mint();
-  const task = taskRunner({ current: wantedAction(sb.root), onRun: () => start(t, sb) });
+  const task = taskRunner({ current: wantedAction(sb.root, registeringNode()), onRun: () => start(t, sb) });
   /* the read-compare-first rule refreshLauncher keeps: an ordinary session start
      neither rewrites the task nor spawns `whoami` */
   const r = await ensureBoardServer(sb.root, {
@@ -961,7 +1062,7 @@ test('a stale action is re-registered at the new checkout', { timeout: 20000 }, 
   t.after(async () => { try { await fetch(sb.base + '/stop', { method: 'POST' }); } catch {} });
   assert.equal(r.status, 'started');
   assert.deepEqual(task.verbs(), ['/query', '/query', '/create', '/run']);
-  assert.deepEqual(parseAction(task.docs[0].text), wantedAction(sb.root),
+  assert.deepEqual(parseAction(task.docs[0].text), wantedAction(sb.root, registeringNode()),
     'the new action names this checkout, not the one the task carried');
 });
 
@@ -1026,58 +1127,36 @@ test('the SID is read from the environment, and whoami is never spawned',
 
 /* ONLY THE LIVE STORE MAY REGISTER: there is one task on the machine, so a
    throwaway root reaching the register would point it at a directory that is
-   about to be deleted. Both sides run through the injected seams. */
-test('a store that is not the live one is refused the register, and the live one is not',
+   about to be deleted. Such a root, a sandbox's through the seam, starts
+   detached on Windows too, so its server comes up with no hand step. */
+test('a store that is not the live one starts detached and never names the task, and the live one registers',
   { timeout: 20000 }, async (t) => {
-    const live = await mint();
-    const copy = await mint();
-
-    /* the copy: the live home is `live.home`, and `copy.root` is not the store
-       under it, so the register is refused by name before anything is written */
-    const refused = taskRunner();
-    const no = await ensureBoardServer(copy.root, {
-      run: refused.run, sid: refused.sid, waitMs: 300, home: () => live.home,
-    });
-    assert.equal(no.status, 'failed');
-    assert.match(no.detail, /not the live store root/);
-    assert.match(no.detail, /AskerDo board/, 'the task is named so a person can look for it');
-    assert.deepEqual(refused.verbs(), ['/query'], 'nothing was written and nothing was run');
-    assert.deepEqual(refused.docs, [], 'no document was ever made');
-    await assert.rejects(raw(copy.port, '/'), 'a board was started for the copy anyway');
-
-    /* and the SAME runner and SID against the live root register and run: the
-       refusal is about the root, not about the seams */
-    const task = taskRunner({ onRun: () => start(t, live) });
-    const yes = await ensureBoardServer(live.root, {
-      run: task.run, sid: task.sid, home: () => live.home,
-    });
-    t.after(async () => { try { await fetch(live.base + '/stop', { method: 'POST' }); } catch {} });
-    assert.equal(yes.status, 'started');
-    assert.deepEqual(task.verbs(), ['/query', '/query', '/create', '/run']);
-    assert.deepEqual(parseAction(task.docs[0].text), wantedAction(live.root));
-  });
-
-/* a seam naming the live store is simply not setting it, and the
-   dangerous direction is the one already fenced. This is that fence read
-   through the seam: the root a rig session holds is refused the register, and
-   the refusal lands before anything is stopped (the order). */
-test('a copy addressed through the seam is refused the register, and nothing is stopped',
-  { timeout: 20000 }, async () => {
     const live = await mint();
     const copy = await mint();
     const seamed = storeRoot(live.home, { ASKERDO_ROOT: copy.root });
     assert.equal(seamed, copy.root, 'the seam is what resolved this root');
 
-    const refused = taskRunner();
+    const untouched = taskRunner();
+    let detached = 0;
     const no = await ensureBoardServer(seamed, {
-      run: refused.run, sid: refused.sid, waitMs: 300, home: () => live.home,
+      run: untouched.run, sid: untouched.sid, platform: 'win32', home: () => live.home,
+      start: () => { detached += 1; start(t, copy); return { ok: true }; },
     });
-    assert.equal(no.status, 'failed');
-    assert.match(no.detail, /not the live store root/);
-    assert.deepEqual(refused.verbs(), ['/query'], 'nothing was written and nothing was run');
-    assert.deepEqual(refused.docs, [], 'no document was ever made');
-    await assert.rejects(raw(copy.port, '/'), 'a board was started for the copy anyway');
+    t.after(async () => { try { await fetch(copy.base + '/stop', { method: 'POST' }); } catch {} });
+    assert.equal(no.status, 'started', no.detail);
+    assert.equal(detached, 1);
+    assert.deepEqual(untouched.verbs(), [], 'the task was never queried, written or run');
     await assert.rejects(raw(live.port, '/'), 'the live board was touched');
+
+    /* and the live root registers and runs through the task */
+    const task = taskRunner({ onRun: () => start(t, live) });
+    const yes = await ensureBoardServer(live.root, {
+      run: task.run, sid: task.sid, platform: 'win32', home: () => live.home,
+    });
+    t.after(async () => { try { await fetch(live.base + '/stop', { method: 'POST' }); } catch {} });
+    assert.equal(yes.status, 'started');
+    assert.deepEqual(task.verbs(), ['/query', '/query', '/create', '/run']);
+    assert.deepEqual(parseAction(task.docs[0].text), wantedAction(live.root, registeringNode()));
   });
 
 /* the gate that decides who may point the one machine-wide task takes
@@ -1089,6 +1168,13 @@ test('the live-root gate accepts the store root and refuses any other path', () 
   assert.equal(isLiveRoot('C:\\Users\\nobody\\.claude\\AskerDo', home), true);
   assert.equal(isLiveRoot('C:/Users/nobody/.claude/somewhere-else', home), false);
   assert.equal(isLiveRoot('C:/Users/someone-else/.claude/askerdo', home), false);
+});
+
+/* a sandbox minted while the live server is down would keep the live port for good */
+test('a root that is not the live one never mints the live default port', async () => {
+  const root = join(tempDir('nd-board-'), '.claude', 'askerdo');
+  await ensureRoot(root, { home: () => 'C:/Users/nobody' });
+  assert.notEqual(boardIdentity(root).port, 17435);
 });
 
 /* ---- the SID's command, and prove before stop --------------------- */
@@ -1165,26 +1251,6 @@ test('a register that cannot proceed leaves the running board alone', { timeout:
   assert.equal((await fetch(sb.base + '/')).status, 200);
 });
 
-/* And the same order on the arm that is NOT about the SID: a root that may not
-   write the register is refused with the old board still serving. */
-test('a store that may not register is refused before the running board is stopped',
-  { timeout: 20000 }, async (t) => {
-    const live = await mint();
-    const copy = await mint();
-    const old = start(t, copy, { ASKERDO_BOARD_VERSION: '0.0.1' });
-    await old.line;
-    const task = taskRunner();
-    const r = await ensureBoardServer(copy.root, {
-      run: task.run, sid: task.sid, waitMs: 300, home: () => live.home,
-    });
-    assert.equal(r.status, 'failed');
-    assert.match(r.detail, /not the live store root/);
-    assert.deepEqual(task.verbs(), ['/query']);
-    assert.equal(old.proc.exitCode, null, 'the copy stopped a board it could not replace');
-    const ping = await raw(copy.port, '/' + copy.secret + '/ping', { method: 'POST' });
-    assert.equal(ping.headers['x-askerdo-board'], '0.0.1');
-  });
-
 /* AND THE WRITE ITSELF IS AHEAD OF THE STOP: `schtasks /create` rewrites the register
    alone, so the create is free to fail with that board still up. Registered after the
    stop, a denied create would leave the machine with no board. */
@@ -1243,7 +1309,7 @@ test('a successful replace writes the register before the stop and runs the task
     assert.deepEqual(task.verbs(), ['/query', '/query', '/create', '/run']);
     assert.deepEqual(alive.slice(0, 3), [['/query', true], ['/query', true], ['/create', true]],
       'the register was read and written while the stale instance was still serving');
-    assert.deepEqual(parseAction(task.docs[0].text), wantedAction(sb.root),
+    assert.deepEqual(parseAction(task.docs[0].text), wantedAction(sb.root, registeringNode()),
       'the new action names this checkout, not the one the task carried');
     assert.equal(await old.closed, 0, 'the stale instance stopped itself');
 
@@ -1311,6 +1377,16 @@ test('the tray dot, counts and both lists follow the board', async (t) => {
   /* answered leaves the corner: only OPEN questions count */
   await verb('answer', { id: q1.id, pick: 'a' }, { user: true });
   assert.equal(await dot('waiting'), 'waiting');
+
+  /* only snoozed questions left keeps the dot quiet; the hover counts them all and names two */
+  const more = [q2];
+  for (const name of ['second nap', 'third nap']) more.push(await verb('register', asked({ name, blocking: false }), { session: 'sess-a' }));
+  for (const q of more) await verb('snooze', { id: q.id, until: '2099-01-02' }, { session: 'sess-a' });
+  assert.equal(await dot('quiet'), 'quiet');
+  const asleep = await es.waitFor(() => es.of('change').find((e) => e.tray.asleep === 3));
+  assert.equal(asleep.tray.dot, 'quiet');
+  assert.deepEqual(asleep.tray.asleepQuestions.map((q) => q.id), more.slice(0, 2).map((q) => q.id));
+  assert.ok(asleep.tray.asleepQuestions.every((q) => q.name && q.wake), 'each named line carries its wake words');
 });
 
 /* The ping is the liveness wire the tray's self-reap and the handshake key on,
@@ -1361,22 +1437,23 @@ test('the ping reads nothing, and the tray readings are set together off the boa
   assert.ok(!channel.includes('setInterval(watchTick'), 'and the alert channel does not own the timer');
 });
 
-/* A rename or a typo in one of these six names would fall back to another face in
+/* A rename or a typo in one of these eight names would fall back to another face in
    silence, which is exactly the failure these pins exist to catch: the corner would
    simply stop telling the truth. */
-/* SIX FACES, COMPILED INTO THE EXE: the server names none, so the pin is on where
-   they live: three for a dark taskbar, three for a light one, plus app.ico. */
-test('the server names no icon face, the exe carries all six, and each is committed', () => {
+/* TEN FACES, COMPILED INTO THE EXE: the server names none, so the pin is on where
+   they live: five for a dark taskbar, five for a light one, plus app.ico. */
+test('the server names no icon face, the exe carries all ten, and each is committed', () => {
   const src = readFileSync(boardScript, 'utf8');
   assert.deepEqual(src.match(/[a-z][a-z0-9-]*\.ico/g) || [], [],
     'the board server still resolves an icon path for a tray to load');
   const rust = readFileSync(join(pluginRoot, 'tray', 'src', 'tray.rs'), 'utf8');
   const named = (rust.match(/tray-[a-z-]*\.ico/g) || []);
   assert.deepEqual([...named].sort(), [
-    'tray-blocking.ico', 'tray-light-blocking.ico', 'tray-light-quiet.ico',
-    'tray-light-waiting.ico', 'tray-quiet.ico', 'tray-waiting.ico',
+    'tray-asleep.ico', 'tray-blocking.ico', 'tray-light-asleep.ico', 'tray-light-blocking.ico',
+    'tray-light-quiet.ico', 'tray-light-waiting-asleep.ico', 'tray-light-waiting.ico', 'tray-quiet.ico',
+    'tray-waiting-asleep.ico', 'tray-waiting.ico',
   ]);
-  /* each set in the Dot order (waiting, quiet, blocking) and each face wired to
+  /* each set in the Dot order (waiting, quiet, blocking), asleep, then waiting with asleep, and each face wired to
      its OWN file, not two faces to one: the arrays are read in order, so the
      order in the source IS the order the states index into */
   const arrayOf = (name) => {
@@ -1386,9 +1463,10 @@ test('the server names no icon face, the exe carries all six, and each is commit
     return (rust.slice(from, to).match(/tray-[a-z-]*\.ico/g) || []);
   };
   assert.deepEqual(arrayOf('ART_DARK'),
-    ['tray-waiting.ico', 'tray-quiet.ico', 'tray-blocking.ico']);
+    ['tray-waiting.ico', 'tray-quiet.ico', 'tray-blocking.ico', 'tray-asleep.ico', 'tray-waiting-asleep.ico']);
   assert.deepEqual(arrayOf('ART_LIGHT'),
-    ['tray-light-waiting.ico', 'tray-light-quiet.ico', 'tray-light-blocking.ico']);
+    ['tray-light-waiting.ico', 'tray-light-quiet.ico', 'tray-light-blocking.ico', 'tray-light-asleep.ico',
+      'tray-light-waiting-asleep.ico']);
   for (const name of named) {
     assert.ok(existsSync(join(pluginRoot, 'assets', name)), 'assets/' + name + ' is not committed');
   }
@@ -2844,6 +2922,9 @@ test('a board row reaches the stream as a line with its author, changes, sequenc
   const newPcToken = async () => (await (await fetch(b.url + '/admin/token/new', { method: 'POST', headers: { 'x-askerdo-admin': b.api.adminSecret }, body: JSON.stringify({ device: 'pc-one' }) })).json()).result.token;
   const config = (token) => writeFileSync(join(data, 'config.json'), JSON.stringify({ queue: 'hub', boardUrl: b.url, boardToken: token }));
   config(await newPcToken());
+  mkdirSync(join(data, 'local'), { recursive: true });
+  writeFileSync(join(data, 'local', 'projects.json'), JSON.stringify({ 'github.com/x/app': 'C:/repos/app' }));
+  const mapped = () => !!b.db.prepare("SELECT 1 FROM meta WHERE name = 'pc.map.pc-one'").get();
   await start(t, sb, { CLAUDE_PLUGIN_DATA: data, ASKERDO_WATCH_MS: '100' }).line;
   assert.ok(await boardLoaded(sb));
   const es = stream(t, sb);
@@ -2854,7 +2935,7 @@ test('a board row reaches the stream as a line with its author, changes, sequenc
   const task = await verb('createRecord', { kind: 'task', name: 'counter rebuild', description: 'A step.', workstream: ws.id, unplaced: 'not laid out yet', wake: '2099-01-01' }, { session: 'sess-a' });
   await verb('editRecord', { kind: 'task', id: task.id, priority: 'high' }, { session: 'sess-a' });
   const line = await es.waitFor(() => es.of('change').flatMap((e) => e.activity)
-    .find((l) => l.verb === 'edit' && l.id === task.id));
+    .find((l) => l.verb === 'edit' && l.id === task.id && l.changes.priority));
   assert.ok(line, 'the row reached the stream within a tick');
   assert.equal(line.kind, 'task');
   assert.equal(line.by, 'session:sess-a');
@@ -2866,9 +2947,14 @@ test('a board row reaches the stream as a line with its author, changes, sequenc
 
   /* a new token cuts the old one's stream; an answer given before it is saved still reaches the asker */
   const next = await newPcToken();
-  const q = await verb('register', asked({ session: 'sess-z' }), { session: 'sess-z' });
+  /* the asker is a session on this PC, so it registers with this PC's token */
+  const q = await boardRequest('POST', '/api/v1/verbs/register', { input: asked({ session: 'sess-z' }), session: 'sess-z', opts: { strict: false, inherit: false } }, { url: b.url, token: next });
   await verb('answer', { id: q.id, pick: 'a' }, { user: true });
+  /* a rejoin after a revoke (which drops the PC's map) sends the map again */
+  assert.ok(await pollUntil(mapped), 'the project map reached the board');
+  b.db.prepare("DELETE FROM meta WHERE name = 'pc.map.pc-one'").run();
   config(next);
+  assert.ok(await pollUntil(mapped), 'the new token sent the map again');
   const told = () => { try { return readFileSync(join(sb.root, 'inbox', 'sess-z.jsonl'), 'utf8').includes('"' + q.id + '"'); } catch { return false; } };
   assert.ok(await pollUntil(told), 'the saved token reached the running server and it caught up from its cursor');
 });
@@ -2944,7 +3030,7 @@ async function instanceOf(sb) {
 
 /* The relay body the CLI's work half posts (lib/notify.mjs relayAlert): an
    alert with no card, so no relay case reads the store. */
-const RELAY_ALERT = { kind: 'done', title: 'counter rebuild completed' };
+const RELAY_ALERT = { kind: 'done', title: 'counter rebuild done' };
 const RELAY = JSON.stringify({ alert: RELAY_ALERT });
 /* the headers of a tray that draws the popup (tray/src/net.rs) */
 const popupTray = (inst) => ({ 'x-askerdo-tray': inst, 'x-askerdo-popup': '1' });
@@ -2986,6 +3072,8 @@ test('the tray attaches with the server own instance, and a stranger is refused'
     /* and the key the tray opens it by */
     questions: [{ id: q1.id, name: 'store shape', key: q1.key }],
     waitingQuestions: [],
+    asleep: 0,
+    asleepQuestions: [],
     /* the TENTH field, additive beside the other nine and empty until the
        opener has touched something: nothing has been opened on this board */
     recent: [],
@@ -3231,7 +3319,8 @@ function storeLog(sb) {
    that ONE file, and this is what proves they wrote nothing else. */
 function boardStamp(sb) {
   const dir = join(sb.root, 'board');
-  return readdirSync(dir).sort().filter((name) => name !== 'notify.json')
+  /* the timing log is the server's own: a loop lag row lands there under load, whatever was clicked */
+  return readdirSync(dir).sort().filter((name) => name !== 'notify.json' && name !== 'timings-local.log')
     .map((name) => {
       let body;
       try { body = readFileSync(join(dir, name), 'utf8'); } catch { body = '<not a file>'; }
@@ -3938,7 +4027,7 @@ test('the relay and the board hand a popup tray the alert, and one it cannot res
 
     /* the CLI's relay body: the alert alone */
     const res = await fetch(sb.base + '/api/relay', { method: 'POST', body: JSON.stringify({
-      alert: { kind: 'done', title: 'counter rebuild completed', card: 'T-1' },
+      alert: { kind: 'done', title: 'counter rebuild done', card: 'T-1' },
     }) });
     assert.equal(res.status, 204);
     const done = await es.waitFor(() => es.of('alert')[0]);

@@ -102,10 +102,10 @@ export function pictureWsShapes() {
         "T-289": { tr: "TR-3" }, "T-293": { tr: "TR-3" }, "T-271": { tr: "TR-3" },
       },
       ws: { 'WS-12': {
-        name: "Chart independence: original charts and licensed data retirement", short: "Chart independence",
+        name: "Tide charts redraw: original charts and licensed data retirement", short: "Tide charts redraw",
         crit: { n: 17, from: "T-675", to: "T-326", path: ["T-675", "T-676", "T-677", "T-678", "T-279", "T-283", "T-274", "T-275", "T-276", "T-282", "T-254", "T-16", "T-285", "T-286", "T-289", "T-290", "T-326"] },
         tracks: [
-          { id: "TR-3", name: "Chart independence (main: cleanup, license triage, validation, release)", short: "Chart independence", state: "waiting", words: "waiting since Oct 21" },
+          { id: "TR-3", name: "Tide charts redraw (main: cleanup, license triage, validation, release)", short: "Tide charts redraw", state: "waiting", words: "waiting since Oct 21" },
           { id: "TR-12", ws: "WS-12", name: "Beacons", state: "new", words: "new, nobody on it yet", spine: ["T-675", "T-676", "T-677", "T-678", "T-279", "T-283"], from: "T-293", doneRun: 0, junctions: [] },
           { id: "TR-13", name: "Buoy maker and catalog", state: "parked", words: "parked: after Beacons" },
           { id: "TR-14", name: "Currents", state: "parked", words: "parked: after Buoy maker and catalog" },
@@ -131,7 +131,7 @@ export function pictureWsShapes() {
         { id: "WS-8", name: "Harbor accounts: sign-in, API, website and app", short: "Harbor accounts", state: "parked", words: "1 track parked", counts: "2 open, critical path 2 tasks", needs: "Fetch the signed berth permit from the port authority's document service by 2026-11-07.", stalled: "stalled 8 days" },
         { id: "WS-3", name: "Lighthouse", state: "waiting", words: "5 tracks: 1 waiting, 4 parked", counts: "84 open, critical path 6 tasks", needs: "The third foghorn run failed line 3 on all three foghorns; the user has not been told yet, and a fourth run before the user's try is the user's call." },
         { id: "WS-13", name: "Bellbuoy", state: "waiting", words: "1 track waiting", counts: "8 open, critical path 6 tasks, inbox 7", needs: "Track TR-26 Chime reliability candidate: card layout and acceptance has open tasks and no movement since Nov 2 16:26", stalled: "stalled 4 days" },
-        { id: "WS-12", name: "Chart independence: original charts and licensed data retirement", short: "Chart independence", state: "waiting", words: "5 tracks: 1 waiting, 1 new, 3 parked", counts: "28 open, critical path 17 tasks" },
+        { id: "WS-12", name: "Tide charts redraw: original charts and licensed data retirement", short: "Tide charts redraw", state: "waiting", words: "5 tracks: 1 waiting, 1 new, 3 parked", counts: "28 open, critical path 17 tasks" },
         { id: "WS-7", name: "Dock screen modernization: new layout and big type", short: "Dock screen modernization", state: "parked", words: "2 tracks: 1 parked, 1 new", counts: "TR-1 opens when T-326 completes", stalled: "stalled 8 days" },
         { id: "WS-6", name: "sea-shanty-bits", state: "new", words: "2 tracks new", counts: "8 open, critical path 3 tasks, inbox 1" },
         { id: "WS-17", name: "Seawall: inbox", state: "waiting", words: "1 track waiting", counts: "nothing open, inbox 1" },

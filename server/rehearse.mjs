@@ -49,7 +49,9 @@ export function renderProof(db, root) {
   const problems = [];
   for (const p of theirs) {
     const raw = readFileSync(join(root, p), 'utf8');
-    const text = p.startsWith('handoffs/') ? handoffTextAsKept(raw) : raw;
+    /* since migration 015 a task stores done where the old store wrote completed, and open for in_progress, blocked and deferred */
+    const text = p.startsWith('handoffs/') ? handoffTextAsKept(raw) : p.startsWith('tasks/')
+      ? raw.replace(/^(---\n[\s\S]*?^status: )(completed|in_progress|blocked|deferred)$/m, (m, head, s) => head + (s === 'completed' ? 'done' : 'open')) : raw;
     const back = mine.get(p);
     if (back === undefined) { n.missing += 1; problems.push(p + ' did not come back'); continue; }
     if (back === text) n.identical += 1;

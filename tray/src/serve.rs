@@ -9,7 +9,7 @@
  * So the launcher is a per-user scheduled task, and the task needs an ACTION that starts node and shows no window.
  *
  * WHY THE ACTION IS THIS EXE. A task whose action is node.exe itself comes up
- * with a console: measured 2026-09-09, a visible Windows Terminal window of
+ * with a console: measured, a visible Windows Terminal window of
  * class CASCADIA_HOSTING_WINDOW_CLASS for the whole life of the process, and
  * with the legacy host a ConsoleWindowClass window just as visible. A node
  * launcher script only shortens that to a flash of about a tenth of a second,
@@ -33,7 +33,8 @@
  *     detectable from the exe path alone. --root IS an argument, because the
  *     store root is the one thing the exe must not assume (--open assumes it,
  *     and says so, for a CLICK; a launcher registered by the ensure is handed
- *     the root the ensure used).
+ *     the root the ensure used). So is --node, the node.exe that registered
+ *     the task, because a logon's PATH can lack a node installed per user.
  */
 use std::path::{Path, PathBuf};
 use std::ptr::null;
@@ -48,10 +49,8 @@ use crate::journal::Journal;
 use crate::registry::wide;
 use crate::{EXIT_ARGS, EXIT_OK};
 
-/* Resolved from PATH by CreateProcessW itself (lpApplicationName is null), so
-   the board runs the same node every hook runs: C:\Program Files\nodejs\node.exe
-   on a default install, outside the Claude package, which is why no locked file is
-   ever in the picture. */
+/* The fallback when no node was saved or the saved one is gone: resolved from
+   PATH by CreateProcessW itself (lpApplicationName is null). */
 pub const NODE: &str = "node.exe";
 
 /* Relative to the exe's own directory: assets/ is where the exe ships, so its
@@ -89,6 +88,19 @@ pub fn log_path(argv: &[String]) -> Option<PathBuf> {
     value(argv, "--log").map(PathBuf::from)
 }
 
+/* The node.exe the registration saved by its full path, while it is still a
+   file; else node.exe on PATH. The second value says which, for the journal. */
+pub fn pick_node(argv: &[String], is_file: impl Fn(&Path) -> bool) -> (String, String) {
+    match value(argv, "--node").filter(|v| !v.is_empty()) {
+        Some(saved) if is_file(Path::new(&saved)) => (saved, "the saved node".to_string()),
+        Some(saved) => (
+            NODE.to_string(),
+            format!("{NODE} from PATH: the saved node {saved} is gone"),
+        ),
+        None => (NODE.to_string(), format!("{NODE} from PATH: no node was saved")),
+    }
+}
+
 fn value(argv: &[String], flag: &str) -> Option<String> {
     let mut i = 0;
     while i < argv.len() {
@@ -110,10 +122,10 @@ pub fn server_script(exe: &Path) -> Option<PathBuf> {
 /* The command line CreateProcessW parses. The first token is quoted so a node
    installed under a path with a space still resolves, and both values after it
    are quoted for the same reason. */
-pub fn command_line(script: &Path, root: &str) -> String {
+pub fn command_line(node: &str, script: &Path, root: &str) -> String {
     format!(
         "\"{}\" \"{}\" --root \"{}\"",
-        NODE,
+        node,
         script.display(),
         root
     )
@@ -140,14 +152,15 @@ pub fn run(journal: &Journal, argv: &[String]) -> i32 {
         journal.line("serve: the exe sits in no checkout");
         return EXIT_ARGS;
     };
-    let line = command_line(&script, &root);
+    let (node, which) = pick_node(argv, |p| p.is_file());
+    let line = command_line(&node, &script, &root);
     match create(&line) {
         Ok(pid) => {
-            journal.line(&format!("serve: started pid {pid} for {line}"));
+            journal.line(&format!("serve: started pid {pid} for {line} ({which})"));
             EXIT_OK
         }
         Err(e) => {
-            journal.line(&format!("serve: {e} for {line}"));
+            journal.line(&format!("serve: {e} for {line} ({which})"));
             EXIT_ARGS
         }
     }
@@ -261,16 +274,32 @@ mod tests {
     fn the_command_line_quotes_the_node_the_script_and_the_root() {
         let script = Path::new("C:\\cache\\askerdo\\hooks\\board-server.mjs");
         assert_eq!(
-            command_line(script, "C:\\Store\\askerdo"),
+            command_line(NODE, script, "C:\\Store\\askerdo"),
             "\"node.exe\" \"C:\\cache\\askerdo\\hooks\\board-server.mjs\" \
              --root \"C:\\Store\\askerdo\""
         );
         /* a path with a space is the whole reason the quotes are there */
         let spaced = Path::new("C:\\Program Files\\td\\hooks\\board-server.mjs");
         assert_eq!(
-            command_line(spaced, "C:\\My Store"),
-            "\"node.exe\" \"C:\\Program Files\\td\\hooks\\board-server.mjs\" --root \"C:\\My Store\""
+            command_line("C:\\Program Files\\nodejs\\node.exe", spaced, "C:\\My Store"),
+            "\"C:\\Program Files\\nodejs\\node.exe\" \"C:\\Program Files\\td\\hooks\\board-server.mjs\" \
+             --root \"C:\\My Store\""
         );
+    }
+
+    /* THE NODE: the saved full path while it is a file, else node.exe on PATH,
+       and the journal's reason names a saved node that is gone. */
+    #[test]
+    fn the_saved_node_runs_while_it_is_there_and_path_node_otherwise() {
+        let argv = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+        let saved = "C:\\Users\\u\\AppData\\Local\\fnm\\node.exe";
+        let with = argv(&["--serve", "--root", "C:/store", "--node", saved]);
+        assert_eq!(pick_node(&with, |_| true).0, saved);
+        let (node, which) = pick_node(&with, |_| false);
+        assert_eq!(node, NODE);
+        assert!(which.contains(saved), "{which}");
+        assert_eq!(pick_node(&argv(&["--serve", "--root", "C:/store"]), |_| true).0, NODE);
+        assert_eq!(pick_node(&argv(&["--serve", "--node", ""]), |_| true).0, NODE);
     }
 
     /* THE CREATION FLAGS, pinned by value so a rename or a refactor cannot

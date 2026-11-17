@@ -3,7 +3,7 @@
    the record checks and the reconcile on the board's records, and writes checkup.json: each finding as an item
    of kind fix with its proposed fix, and a call where only the user can settle it. The session judges them and
    writes the fixes it agrees with into proposal.json, for plan.mjs and apply.mjs.
-   node checks.mjs <project dir> [--work <dir>] [--cli <path>] */
+   node checks.mjs <project dir> [--work <dir>] [--cli <path>] [--who <the user's name>] */
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -14,11 +14,11 @@ import { sharedName } from '../../lib/project-id.mjs';
 import { DEFAULT_CLI, DORMANT_DAYS, cliJson, matchRules, sameSubject, survey, surveyLines, tokens } from '../onboard/survey.mjs';
 import { clausesOf, covers } from '../onboard/coverage.mjs';
 import { kebab } from '../onboard/cites.mjs';
-import { folderKey, readFacts } from '../onboard/plan.mjs';
+import { folderKey, owedStep, readFacts } from '../onboard/plan.mjs';
 import { projectRoots, resolver } from '../onboard/instructions.mjs';
 import { coveredBy, linesHold, seedCovers } from '../onboard/map.mjs';
 
-export const CHECKS = ['rules', 'shape', 'knowledge', 'cards', 'repo', 'kept', 'earlier', 'source', 'gone', 'reconcile'];
+export const CHECKS = ['rules', 'shape', 'tasks', 'knowledge', 'cards', 'repo', 'kept', 'earlier', 'source', 'gone', 'reconcile'];
 const LINE_MAX = 400;
 const SHOW_BATCH = 50;
 const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -151,8 +151,27 @@ export function readDoctor(cli, doc, env = process.env, { knowledge, spawns } = 
     const notes = String((rec && (rec.journal || (rec.sections || {}).Journal)) || '').split(/\n(?=\d{4}-\d\d-\d\d)/).filter((n) => n.includes(root) || n.includes(basename(root)));
     return notes.length ? notes[notes.length - 1] : null;
   };
+  /* each open task's block: its steps by number, word, labels, track and typed notes since its last rewrite */
+  const openIds = bs.tasks.filter((t) => !['done', 'dropped', 'completed'].includes(t.status)).map((t) => t.id);
+  const blocks = new Map();
+  for (let i = 0; i < openIds.length; i += SHOW_BATCH) {
+    const v = get(['task', 'block', ...openIds.slice(i, i + SHOW_BATCH)], {}, ['tasks']);
+    for (const b of v ? [].concat(v) : []) if (b && b.id) blocks.set(b.id, b);
+  }
+  /* who was blocked (015's migration line) or deferred last (a status line), for the waits */
+  const lines = (search) => (get(['activity', '--project', root, '--search', search, '--limit', '0'], {}, ['tasks']) || {}).lines || [];
+  const statusOf = (l) => (l && l.kind === 'task' && l.changes && Array.isArray(l.changes.status) ? l.changes.status : null);
+  const parked = new Map();
+  for (const l of lines('board:migration')) { const s = statusOf(l); if (s && s[0] === 'blocked' && l.by === 'board:migration') parked.set(l.id, 'blocked'); }
+  const lastDefer = new Map();
+  /* newest first: the first status line naming deferred is the task's last word on it */
+  for (const l of lines('deferred')) { const s = statusOf(l); if (s && !lastDefer.has(l.id) && s.includes('deferred')) lastDefer.set(l.id, s[1]); }
+  for (const [id, to] of lastDefer) if (to === 'deferred' && !parked.has(id)) parked.set(id, 'deferred');
+  /* the track this session holds, so a drafted move names its place and the reason the user is shown */
+  const sid = String((env && env.CLAUDE_CODE_SESSION_ID) || '').trim();
+  const ours = sid ? get(['track', 'mine', '--session', sid], {}, ['tasks']) : null;
   return {
-    inbox: [...inbox.values()], knowledge: all, records, scopes, snoozed, cards, files, states,
+    inbox: [...inbox.values()], knowledge: all, records, scopes, snoozed, cards, files, states, blocks, parked, held: (ours && ours.held && ours.track) || null,
     lastRun: { doctor: runOf('doctor-a-project'), onboard: runOf('onboard-a-project') },
     errors, unread: [...unread], spawns: count,
   };
@@ -237,7 +256,7 @@ export function checkRules(doc, extra) {
 
 const shareTokens = (a, b) => { const ta = tokens(a); let n = 0; for (const w of tokens(b)) if (ta.has(w)) n++; return n; };
 const UNPARK = { T: 'task-completes', TR: 'track-ends', Q: 'question-answered' };
-const ENDED = ['completed', 'dropped', 'done', 'folded', 'answered', 'finished'];
+const ENDED = ['dropped', 'done', 'folded', 'answered', 'finished'];
 export function checkShape(doc, extra) {
   const bs = doc.board || {};
   const rows = [];
@@ -245,7 +264,7 @@ export function checkShape(doc, extra) {
   const latest = doc.history && doc.history.latest;
   const since = (doc.activity && doc.activity.since) || (latest ? new Date(Date.parse(latest) - DORMANT_DAYS * 864e5).toISOString().slice(0, 10) : null);
   const live = (bs.tracks || []).filter((t) => !['finished', 'dropped', 'done'].includes(t.state));
-  for (const t of (extra.inbox || []).filter((x) => ['open', 'in_progress', undefined].includes(x.status))) {
+  for (const t of (extra.inbox || []).filter((x) => ['open', undefined].includes(x.status))) {
     const best = live.map((tr) => ({ tr, n: shareTokens(t.name, tr.name) })).filter((x) => x.n >= 2).sort((a, b) => b.n - a.n)[0];
     /* a track moves the task to its own workstream, so the undo needs the one it left */
     const was = { unplaced: t.unplaced || null, ...(t.workstream ? { workstream: t.workstream } : {}) };
@@ -253,11 +272,6 @@ export function checkShape(doc, extra) {
     if (best) rows.push(checkRow('shape', t.id, { ...base, fix: { op: 'task edit', args: ['task', 'edit', t.id, '--track', best.tr.id], target: t.id, was }, why: 'its name shares words with ' + best.tr.id + ' ' + best.tr.name }));
     else rows.push(checkRow('shape', t.id, { ...base, call: true, fix: { op: 'task edit', target: t.id, was, pick: '--track' }, extra: { tracks: live.map((x) => ({ id: x.id, name: x.name })) },
       why: 'no track shares its words: pick one of ' + (live.map((x) => x.id + ' ' + x.name).join(', ') || 'no live track') + ', or leave it in the inbox' }));
-  }
-  for (const t of (bs.tasks || []).filter((x) => x.status === 'in_progress' && !x.inHand && since && x.updated && day(x.updated) < day(since))) {
-    rows.push(checkRow('shape', t.id + ':stalled', { title: t.name + ' is in progress with nobody on it', record: t.id, evidence: 'last changed ' + day(t.updated) + ', before the project\'s recent activity (' + day(since) + ')', sourceText: t.name,
-      fix: { op: 'task update', args: ['task', 'update', t.id, '--status', 'open', '--note', 'Back to open by the doctor: in progress since ' + day(t.updated) + ' with no session holding it.'], target: t.id, was: { status: 'in_progress' } },
-      why: 'no session holds it: back to open with a note, so the ready set shows it' }));
   }
   /* the import parks its own plan-section tracks with no condition: its output, not drift */
   const own = (t) => (t.labels || []).includes('import:' + doc.project.slug) || (t.refs || []).some((x) => String(x).startsWith('onboard:'));
@@ -275,8 +289,8 @@ export function checkShape(doc, extra) {
   }
   const ws = bs.workstreams || [];
   if (ws.length && ws.every((w) => /inbox$/i.test(w.name))) {
-    const tasks = (bs.tasks || []).filter((t) => !['completed', 'dropped'].includes(t.status));
-    if (tasks.length >= 5 || tasks.some((t) => t.status === 'in_progress')) {
+    const tasks = (bs.tasks || []).filter((t) => !['done', 'dropped'].includes(t.status));
+    if (tasks.length >= 5 || tasks.some((t) => t.word && ['running', 'unconfirmed'].includes(t.word.is))) {
       rows.push(checkRow('shape', 'inbox-only', { title: 'The project has only an inbox workstream, holding ' + tasks.length + ' open tasks', record: ws[0].id, evidence: ws.map((w) => w.id + ' ' + w.name).join(', '),
         call: true, def: 'leave', why: 'real work in an inbox: make a workstream for the project (ws create) and move each task (task edit --workstream), or leave it' }));
     }
@@ -289,6 +303,96 @@ export function checkShape(doc, extra) {
   for (const q of (extra.snoozed || []).filter((x) => !(x.snooze && (x.snooze.until || x.snooze.wakeOn || x.snooze['wake-on'])) && since && day(x.created) < day(since))) {
     rows.push(checkRow('shape', q.id + ':asleep', { title: q.name + ' has slept since ' + day(q.created), record: q.id, evidence: 'snoozed' + (q.snooze && q.snooze.trigger ? ' until the words "' + q.snooze.trigger + '"' : '') + ', nothing set to wake it',
       call: true, def: 'leave', sourceText: q.ask || q.name, why: 'long asleep: wake it (wake), drop it (drop with a note), or leave it' }));
+  }
+  return rows;
+}
+
+/* ---- check 2b: tasks that only fit the old shape ---- */
+
+const DONE_CLAUSE = /\bdone(?::| when\b| is\b| looks like\b| means\b)/i;
+/* a moved step's description, as stepShort in server/verbs/work.mjs builds it: the step's text is its fact to check */
+const STEP_SHORT = /^Step \d+ of T-\d+: \S[^\n]*$/;
+const wordCount = (s) => (String(s || '').match(/\S+/g) || []).length;
+const dayAfter = (ms, n) => new Date(ms + n * 864e5).toISOString().slice(0, 10);
+export function checkTasks(doc, extra) {
+  const rows = [];
+  const now = extra.now || Date.now();
+  const who = extra.who || null;
+  const blocks = extra.blocks || new Map();
+  const open = ((doc.board || {}).tasks || []).filter((t) => !['done', 'dropped', 'completed'].includes(t.status));
+  const named = (t) => t.id + ' ' + clip(t.name, 80);
+  /* a step's other places: an open task on its track labelled look or review */
+  const ontoOf = (track, id) => (track ? [...blocks.values()].filter((b) => b.id !== id && b.track && b.track.id === track.id && b.status === 'open'
+    && (b.labels || []).some((l) => l === 'look' || l === 'review')).map((b) => ({ id: b.id, name: b.name, labels: b.labels })) : []);
+  for (const t of open) {
+    const b = blocks.get(t.id);
+    const close = t.close && typeof t.close === 'object' ? t.close : null;
+    const owed = b ? (b.steps || []).map((s) => ({ ...s, why: owedStep(s.text, who) })).filter((s) => s.why) : [];
+    if (owed.length) {
+      const track = (b && b.track) || null;
+      /* a later session's check waits on its track for the next session: an asked place, so each draft
+         carries the reason the placement question shows; the session adds here, the real place on its held track */
+      const place = !track ? null : extra.held === track.id ? { tier: 2, last: 'a later session checks the work of ' + t.id + '; nothing on ' + track.id + ' needs it sooner' }
+        : { tier: 3, track: track.id, ...(extra.held ? { whyElsewhere: 'a later session checks the work of ' + t.id + ' on its own track ' + track.id } : {}) };
+      const later = place ? owed.filter((s) => s.why === 'later').map((s) => ({ check: s.n, runBy: 'orchestrator', ...place, wake: 'next-session' })) : [];
+      rows.push(checkRow('tasks', t.id + ':steps', { title: named(t) + ': ' + owed.length + ' open step' + (owed.length > 1 ? 's' : '') + ' its worker may not do', record: t.id,
+        evidence: owed.map((s) => 'step ' + s.n + ' (' + s.why + '): ' + clip(s.text, 120)).join('; '), sourceText: owed.map((s) => s.n + '. ' + s.text).join('\n'),
+        fix: { op: 'task update', args: ['task', 'update', t.id, '--move-steps'], target: t.id },
+        extra: { needsWords: true, steps: owed, track, onto: ontoOf(track, t.id), ...(later.length ? { moves: later } : {}) },
+        why: 'judge each with task block ' + t.id + ': a step its worker does stays; the rest move (fields.fix.stdin, the list task update --move-steps takes) onto a look or review task on its track, into a new task (a later session\'s check as fields.moves drafts it, waiting on its track for the next session; a date wake in the inbox for real use), or to a question item; a move to a later session, last, or off the held track is asked of the user: it carries here, the real place on the held track, and lands on their press' }));
+    }
+    if (close && close.kind === 'look') {
+      rows.push(checkRow('tasks', t.id + ':look', { title: named(t) + ' closes at a look', record: t.id,
+        evidence: 'its close is a look' + (t.landed ? ', its work landed ' + day(t.landed) : ', its work not reported landed'), sourceText: t.name,
+        fix: { op: 'task edit', args: ['task', 'edit', t.id, '--add-label', 'look', '--clear-close'], target: t.id },
+        why: 'a look is a task labelled look: the session that holds its track runs the look and asks the one question that ends it' }));
+    }
+    if (close && close.kind === 'when') {
+      const desc = String((b && b.description) || t.description || '').trim();
+      const fact = oneLine(close.fact).replace(/\.$/, '');
+      rows.push(checkRow('tasks', t.id + ':when', { title: named(t) + ' closes when ' + clip(fact, 80), record: t.id, evidence: 'its close is a fact: ' + fact, sourceText: desc,
+        fix: { op: 'task update', args: ['task', 'update', t.id, '--description', (desc ? desc + '\n\n' : '') + 'Done when ' + fact + '.', '--note', 'The doctor moved its when close into its done clause.'], target: t.id },
+        why: 'a checkable fact is the description\'s done clause; the next row clears the close' }));
+      rows.push(checkRow('tasks', t.id + ':when-close', { title: named(t) + ': its when close goes', record: t.id, evidence: 'its close is a fact: ' + fact, sourceText: desc,
+        fix: { op: 'task edit', args: ['task', 'edit', t.id, '--clear-close'], target: t.id }, why: 'the fact is in its description now' }));
+    }
+    const was = (extra.parked || new Map()).get(t.id);
+    if (was && t.word && t.word.is === 'ready') {
+      const last = b && b.notes && b.notes.length ? b.notes[b.notes.length - 1] : null;
+      rows.push(checkRow('tasks', t.id + ':waits', { title: named(t) + ' was ' + was + ' on nothing the board can watch', record: t.id,
+        evidence: 'it was ' + was + ', and it reads ready' + (last ? '; its last note: ' + clip(last.body, 200) : ''), sourceText: last ? last.body : t.name,
+        fix: { op: 'edge add', target: t.id }, extra: { needsWords: true, was },
+        why: 'from its last note: an edge on what it waits for (edge add), a gate (question edit --add-gate), a wake (task edit --wake, next-session on a track), or a question item when the user owes the answer' }));
+    }
+    const desc = String((b && b.description) || t.description || '');
+    /* an amend's own why note shares the rewrite's stamp, so only notes after it count as the job moving */
+    const after = b && b.rewrittenAt ? Date.parse(b.rewrittenAt) : NaN;
+    const notes = b ? (b.notes || []).filter((x) => !(Date.parse(x.at) <= after)).reduce((n, x) => n + wordCount(x.body), 0) : 0;
+    const noDone = b && !(close && close.kind === 'when') && !DONE_CLAUSE.test(desc) && !STEP_SHORT.test(desc.trim());
+    const moved = b && wordCount(desc) && notes * 2 >= wordCount(desc);
+    if (noDone || moved) {
+      rows.push(checkRow('tasks', t.id + ':rewrite', { title: named(t) + (noDone ? ' says no done clause' : ': its job moved into its notes'), record: t.id,
+        evidence: (noDone ? 'its description has no "Done" sentence' : '') + (noDone && moved ? '; ' : '') + (moved ? notes + ' words of notes since its last rewrite against ' + wordCount(desc) + ' in its description' : ''), sourceText: desc,
+        fix: { op: 'task update', target: t.id }, extra: { needsWords: true, reason: noDone ? 'done' : 'notes' },
+        why: 'rewrite its description from task block ' + t.id + ' (what the work is now, ending in its done clause): task update --description <words> --note <why>' }));
+    }
+    if (t.word && t.word.is === 'unconfirmed' && now - Date.parse(t.word.since) > 864e5) {
+      const w = t.word;
+      const holder = w.job ? 'the agent ' + w.job + (w.session ? ' of ' + w.session : '') : w.session ? 'the session ' + w.session : 'a worker';
+      rows.push(checkRow('tasks', t.id + ':unconfirmed', { title: named(t) + ': its run is unconfirmed since ' + day(w.since), record: t.id,
+        evidence: holder + (w.pc ? ' on ' + w.pc : '') + ', last heard ' + String(w.since).slice(0, 16).replace('T', ' '), sourceText: t.name,
+        extra: { info: true, holder: { session: w.session || null, job: w.job || null, pc: w.pc || null }, heard: w.since },
+        why: 'resume or confirm that session; taking it over is the user\'s word, never a doctor fix' }));
+    }
+  }
+  /* an inbox task with no wake and no created stamp reads waiting for ever (old data) */
+  const byId = new Map(open.map((t) => [t.id, t]));
+  for (const x of extra.inbox || []) {
+    const t = byId.get(x.id);
+    if (!t || t.wake || t.created) continue;
+    rows.push(checkRow('tasks', t.id + ':nowake', { title: named(t) + ' waits in the inbox with nothing to wake it', record: t.id, evidence: 'no wake stored and no created stamp', sourceText: t.name,
+      fix: { op: 'task edit', args: ['task', 'edit', t.id, '--wake', dayAfter(now, 14)], target: t.id },
+      why: 'a wake 14 days out brings it back; when its on-no-track finding is kept with a track, keep that one and leave this' }));
   }
   return rows;
 }
@@ -586,7 +690,7 @@ export function onBoard({ workstreams = [], knowledge = [], imported = 0, mapped
 }
 
 /* board false runs the checks on the gathered facts alone, with no board read (the tests' seam) */
-export function doctor(dir, { work, cli = DEFAULT_CLI, board = true, env = process.env, spawns = { n: 0 }, gather = survey } = {}) {
+export function doctor(dir, { work, cli = DEFAULT_CLI, board = true, env = process.env, spawns = { n: 0 }, gather = survey, who = null } = {}) {
   const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8', windowsHide: true });
   const root = slashed(top.status === 0 ? top.stdout.trim() : resolve(dir));
   const slug = kebab(basename(root), 30);
@@ -622,9 +726,11 @@ export function doctor(dir, { work, cli = DEFAULT_CLI, board = true, env = proce
   const doc = { project: { dir: root, slug, shared }, board: fb, conversion: facts.conversion || null, history: { latest: head.status === 0 ? head.stdout.trim() || null : null }, proposal,
     instructions: facts.instructions || null, claude, ruleFiles };
   const extra = board ? readDoctor(cli, doc, env, { knowledge, spawns }) : { inbox: [], records: new Map(), files: [], errors: [], unread: [] };
+  /* the name the user goes by, which the session knows and the board does not hold */
+  extra.who = who;
   /* the survey's board reads feed the checks that read its board state */
   const surveyErrors = (doc.board && doc.board.errors) || [];
-  const unread = new Set([...(extra.unread || []), ...(surveyErrors.length || !doc.board ? ['rules', 'shape', 'reconcile'] : [])]);
+  const unread = new Set([...(extra.unread || []), ...(surveyErrors.length || !doc.board ? ['rules', 'shape', 'tasks', 'reconcile'] : [])]);
   /* a finding the user left stays left while its subjects are unchanged: the map holds its call answered with leave */
   const answered = new Map(((doc.conversion && doc.conversion.calls) || []).filter((c) => c.state === 'unchanged' && c.answer).map((c) => [c.call, c.answer]));
   /* or the run row lists it as left with no call, its source unchanged */
@@ -633,7 +739,7 @@ export function doctor(dir, { work, cli = DEFAULT_CLI, board = true, env = proce
   /* a judgment to make again is never left: its evidence changed since */
   const markLeft = (xs) => { for (const x of xs.filter((y) => !y.covered && !y.fields.judgment && leftBefore(y))) { Object.assign(x, { cut: true, dropped: 'left last time', leftLast: true, why: 'left last time: ' + (x.why || '') }); delete x.call; } };
   const found = {
-    rules: checkRules(doc, extra), shape: checkShape(doc, extra), knowledge: checkKnowledge(doc, extra),
+    rules: checkRules(doc, extra), shape: checkShape(doc, extra), tasks: checkTasks(doc, extra), knowledge: checkKnowledge(doc, extra),
     cards: checkCards(doc, extra), repo: checkRepo(doc, extra), kept: checkKept(doc), earlier: checkEarlier(doc, extra), source: checkSource(doc), gone: checkGone(doc),
   };
   const rec = reconcile(doc, proposal.items || [], extra);
@@ -655,11 +761,11 @@ export function doctor(dir, { work, cli = DEFAULT_CLI, board = true, env = proce
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   const a = process.argv.slice(2);
   const flag = (n) => { const i = a.indexOf('--' + n); return i >= 0 ? a.splice(i, 2)[1] : undefined; };
-  const work = flag('work'); const cli = flag('cli');
-  if (!a[0] || a[0] === '--help') { console.log('node checks.mjs <project dir> [--work <dir>] [--cli <path>]'); process.exit(a[0] ? 0 : 1); }
+  const work = flag('work'); const cli = flag('cli'); const who = flag('who');
+  if (!a[0] || a[0] === '--help') { console.log('node checks.mjs <project dir> [--work <dir>] [--cli <path>] [--who <name>]'); process.exit(a[0] ? 0 : 1); }
   if (!existsSync(a[0])) { console.error('checks: no folder ' + a[0]); process.exit(1); }
   const started = Date.now();
-  const d = doctor(a[0], { work, cli: cli || DEFAULT_CLI });
+  const d = doctor(a[0], { work, cli: cli || DEFAULT_CLI, who: who || null });
   if (d.entry === 'onboard') { console.log('not on the board yet: run askerdo:onboard'); process.exit(1); }
   if (d.entry === 'unread') { console.error('checks: the board reads failed, so the doctor cannot tell whether the project is on the board: ' + d.errors.join('; ')); process.exit(2); }
   console.log('Doctor of ' + d.project.dir + ' (' + d.project.shared + ')');
@@ -670,6 +776,8 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   console.log((c.unread.length ? 'Checkup incomplete (' + c.unread.join(', ') + ' not read): ' : 'Checkup: ')
     + CHECKS.map((k) => k + ' ' + (c.counts[k].unread ? 'not read' : c.counts[k].found)).join(', ') + '; calls for the user ' + calls + (c.leftLast ? '; left last time ' + c.leftLast : ''));
   if (c.errors.length) console.log('Reads that failed: ' + c.errors.join('; '));
+  const off = await import('../../lib/pc-health.mjs').then((m) => m.promptOffNote()).catch(() => '');
+  if (off) console.log('This PC: ' + off);
   const own = c.own;
   const ownN = own ? Object.values(own).reduce((n, l) => n + l.length, 0) : 0;
   if (ownN) console.log('The import\'s own records whose source left (no finding; checkup.json own lists them): ' + own.moved.length + ' moved, ' + own.inGit.length + ' in git at their delete, '

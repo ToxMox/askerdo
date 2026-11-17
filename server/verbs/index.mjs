@@ -3,11 +3,12 @@
    verb file, so the in-process and HTTP transports run the same table. */
 import { UsageError, resolveLabel, resolveLegacy as legacyOf } from './labels.mjs';
 import {
-  addEdge, addItem, agentEnded, checkItem, moveItem, removeEdge, startTask,
+  addEdge, addItem, checkItem, moveItem, removeEdge, strikeItem,
 } from './graph.mjs';
+import { endRun, openRun, renewRuns, sessionRuns, taskRuns } from './runs.mjs';
 import { trackFound } from './found.mjs';
 import {
-  acquireLease, capture, dropTrack, finishTrack, foldBack, layOut, listTracks, newTrack, parkTrack, promoteTask, releaseLease,
+  acquireLease, capture, dropTrack, finishTrack, layOut, listTracks, newTrack, parkTrack, releaseLease,
   renewLease, reorder, splinter, takeOver, trackSummary, trackView, workstreamView,
 } from './tracks.mjs';
 import { boardSnapshot, workingSet } from './snapshot.mjs';
@@ -22,18 +23,20 @@ import {
 import { search } from './search.mjs';
 import { activity } from './activity.mjs';
 import {
-  effective, profileAdd, profileDefine, profileGuard, profileList, profileRemove, profileRule, resolveSession, rulesFor, settings, settingsRule, settingsSet, settingsUnset,
+  effective, profileAdd, profileDefine, profileDelete, profileGuard, profileList, profileRemove, profileRule, resolveSession, rulesFor, settings, settingsRule, settingsSet, settingsUnset,
 } from './profiles.mjs';
-import { procedureCards, recordRun, scanProject, triggerCards } from './procedures.mjs';
+import { procDrafts, procedureCards, recordRun, scanProject, triggerCards } from './procedures.mjs';
 import { decide, decisionTriggers, decisionsFor, decisionsSince } from './decisions.mjs';
 import { markRead, recordHistory } from './history.mjs';
-import { bandCalls, bandKeep, lookNotYet, upkeepDryRun, upkeepSwitch } from './upkeep.mjs';
+import { bandCalls, bandKeep, upkeepDryRun, upkeepSwitch } from './upkeep.mjs';
 import { applyPicture } from './picture.mjs';
 import { pictureOverview, pictureView } from './picture-view.mjs';
 import { overrideDecide, overrideRequest, overrideUnscrub, overrideView } from './override.mjs';
 import { projectsRename } from './projects.mjs';
 import { commitLink, commitMove, coverage, reviewCovers } from './coverage.mjs';
 import { conversionDrop, conversionMap, conversionPut } from './conversion.mjs';
+import { pcMap } from './pc-maps.mjs';
+import { taskBlock } from './task-block.mjs';
 
 /* A legacy brain id, { id, project, cwd } in: { key, entry } out, `entry.label` its record's label now. */
 const resolveLegacy = (db, input) => {
@@ -45,21 +48,23 @@ const GROUPS = [
   { register, answer, drop, snooze, wake, surface, subscribe, show, list, peekOpenQuestions, peekSessionScope, namesLine, editQuestion },
   /* a session's task names its place (work.mjs fileRecord); the board's own callers use createRecord */
   { createRecord: fileRecord, editRecord, taskUpdate, closeRecord, reopenRecord, noteRecord, createKnowledge, supersedeKnowledge, readRecord, listWork, waitsOn, heldTask },
-  { addEdge, removeEdge, startTask, agentEnded, addItem, checkItem, moveItem },
+  { addEdge, removeEdge, addItem, checkItem, moveItem, strikeItem },
+  /* the task shape's runs: one worker's go at one task or several */
+  { openRun, renewRuns, endRun, sessionRuns, taskRuns },
   {
-    newTrack, splinter, capture, layOut, reorder, parkTrack, finishTrack, dropTrack, promoteTask, foldBack,
+    newTrack, splinter, capture, layOut, reorder, parkTrack, finishTrack, dropTrack,
     acquireLease, renewLease, releaseLease, takeOver, trackSummary, trackView, listTracks, workstreamView, trackFound,
   },
   { writeHandoff, updateHandoff, resumeTrack, trackKickoff, trackHandoffs, readHandoff, shelf, resumeCutoff },
   { search, activity },
-  { effective, resolveSession, rulesFor, profileList, profileAdd, profileRemove, profileDefine, profileRule, profileGuard, settings, settingsSet, settingsUnset, settingsRule },
-  { scanProject, recordRun, procedureCards, triggerCards },
+  { effective, resolveSession, rulesFor, profileList, profileAdd, profileRemove, profileDefine, profileDelete, profileRule, profileGuard, settings, settingsSet, settingsUnset, settingsRule },
+  { scanProject, recordRun, procDrafts, procedureCards, triggerCards },
   { decide, decisionsFor, decisionsSince, decisionTriggers },
   { resolveLabel, resolveLegacy },
   { boardSnapshot, workingSet },
   /* amend, edit while unused, the read log and the text history */
   { amendKnowledge, editKnowledge, read: markRead, recordHistory },
-  { bandCalls, bandKeep, lookNotYet, upkeepDryRun, upkeepSwitch },
+  { bandCalls, bandKeep, upkeepDryRun, upkeepSwitch },
   { applyPicture },
   /* the redrawn workstream picture's reads */
   { pictureView, pictureOverview },
@@ -71,6 +76,10 @@ const GROUPS = [
   { commitLink, commitMove, reviewCovers, coverage },
   /* each project's conversion map, keyed by source */
   { conversionMap, conversionPut, conversionDrop },
+  /* each PC's project map, so a link opens on a PC whose folders differ */
+  { pcMap },
+  /* what a task holds now, for a dispatch or any reader */
+  { taskBlock },
 ];
 
 /* two groups adding the same name would shadow one verb silently */

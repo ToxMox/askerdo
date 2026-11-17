@@ -13,3 +13,14 @@ export function boardVersion(file = new URL('./version.json', import.meta.url)) 
     return UNKNOWN_VERSION;
   }
 }
+
+/* the commit of the server tree this board was built from. install.sh writes
+   build.json beside this file from its tag (the image holds no .git); none reads null. */
+export function boardCommit(file = new URL('./build.json', import.meta.url)) {
+  try {
+    const c = JSON.parse(readFileSync(file, 'utf8')).commit;
+    return typeof c === 'string' && /^[0-9a-f]{7,40}$/.test(c) ? c : null;
+  } catch {
+    return null;
+  }
+}

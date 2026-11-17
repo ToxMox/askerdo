@@ -1,20 +1,23 @@
 /* The redrawn workstream picture: the approved mock's drawing
-    at three zoom levels, every idea on, for
+   at three zoom levels, every idea on, for
    the board page and the pane. Pure: P is picture-model.mjs's data, text widths come from the caller. */
-import { ENDED_NEXT, PANE_DARK, PANE_FONT, PANE_LIGHT, esc } from './draw.mjs';
+import { HOLD_WORDS, PANE_DARK, PANE_FONT, PANE_LIGHT, PORTAL_ICON, esc, leftWords, longWords as longAt, runnerOf, whenWords as whenAt, wordWords } from './draw.mjs';
+
+// a track's amber flag: the user's hold before a stall
+function flagOf(t) { return t.hold ? HOLD_WORDS : t.stalled; }
 
 /* ================= skins: the web board's and the pane's colours and type ================= */
 var WEB = { font: 'Geist, "Segoe UI", system-ui, sans-serif', title: 16, name: 15, small: 12.5, idfs: 11.5, lh: 19.5, slh: 17,
   c: { bg: '#141428', text: '#EAEDF5', sec: '#9BA3B5', dim: '#737C92', line: '#59637E', sky: '#26C3FF', ready: '#4CC9FF', wait: '#7E89A6', cross: '#9BB0D3', crit: '#F4F6FB',
     amber: '#FFD966', lav: '#C4B5FD', card: 'rgba(255,255,255,0.045)', card2: 'rgba(255,255,255,0.075)', skyBg: 'rgba(38,195,255,0.10)', lavBg: 'rgba(196,181,253,0.07)',
-    amberBg: 'rgba(255,217,102,0.08)', edge: 'rgba(255,255,255,0.13)', edge2: 'rgba(255,255,255,0.24)', link: '#4CC9FF' } };
+    amberBg: 'rgba(255,217,102,0.08)', edge: 'rgba(255,255,255,0.13)', edge2: 'rgba(255,255,255,0.24)', link: '#4CC9FF', hole: '#08081a', arrow: '#EAEDF5' } };
 // the pane's colours are p-<name> tokens its own style resolves per theme; an img's Svg loads no web font
 var PANE_KEYS = ['bg', 'text', 'sec', 'dim', 'line', 'sky', 'ready', 'wait', 'cross', 'crit', 'amber', 'lav'];
 var PANE_MORE = {
   dark: { card: 'rgba(255,255,255,0.035)', card2: 'rgba(255,255,255,0.07)', skyBg: 'rgba(38,195,255,0.10)', lavBg: 'rgba(185,174,240,0.07)', amberBg: 'rgba(219,147,0,0.10)',
-    edge: 'rgba(255,255,255,0.12)', edge2: 'rgba(255,255,255,0.22)', link: '#6da7ec' },
+    edge: 'rgba(255,255,255,0.12)', edge2: 'rgba(255,255,255,0.22)', link: '#6da7ec', hole: '#0b0b0a', arrow: '#f0efec' },
   light: { card: 'rgba(11,11,11,0.03)', card2: 'rgba(11,11,11,0.06)', skyBg: 'rgba(2,132,199,0.08)', lavBg: 'rgba(109,91,208,0.07)', amberBg: 'rgba(166,106,0,0.08)',
-    edge: 'rgba(11,11,11,0.12)', edge2: 'rgba(11,11,11,0.24)', link: '#184f95' }
+    edge: 'rgba(11,11,11,0.12)', edge2: 'rgba(11,11,11,0.24)', link: '#184f95', hole: '#3d3c39', arrow: '#ffffff' }
 };
 var PANE = { font: PANE_FONT, title: 15, name: 14, small: 12, idfs: 11, lh: 19, slh: 16.5, c: {} };
 PANE_KEYS.concat(Object.keys(PANE_MORE.dark)).forEach(function (k) { PANE.c[k] = 'p-' + k; });
@@ -66,6 +69,9 @@ function joinAnd(a) { return a.length < 2 ? a.join('') : a.slice(0, -1).join(', 
 var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function two(n) { return (n < 10 ? '0' : '') + n; }
 function lookWords(P) { if (!P.look) return ''; var d = new Date(P.look); return MON[d.getMonth()] + ' ' + d.getDate() + ', ' + two(d.getHours()) + ':' + two(d.getMinutes()); }
+// how long since a stamp, and when it was, by the data's own clock P.at (draw.mjs words both)
+function longWords(P, since) { return longAt(P.at, since); }
+function whenWords(P, at) { return whenAt(P.at, at); }
 function sinceCount(v) { return Array.isArray(v) ? v.length : v || 0; }
 // the critical path's steps, each a task and the one after it on the counted chain
 function critSteps(Wd) {
@@ -143,12 +149,19 @@ function stationMark(t, x, y, C, sel) {
     return s + '<path d="' + d + '" fill="' + C.bg + '" stroke="' + (t.st === 'ready' ? C.ready : t.st === 'gated' ? C.amber : C.wait) + '" stroke-width="2.4" stroke-linejoin="round"/>';
   }
   if (t.st === 'now') return s + '<circle cx="' + x + '" cy="' + y + '" r="11" fill="' + C.sky + '" opacity="0.22"/><circle cx="' + x + '" cy="' + y + '" r="7.5" fill="' + C.sky + '"/>';
-  if (t.st === 'held' || t.st === 'left') return s + '<circle cx="' + x + '" cy="' + y + '" r="7.5" fill="' + C.bg + '" stroke="' + C.sky + '" stroke-width="2.2"/><path d="M' + x + ' ' + (y - 5.5) + 'A5.5 5.5 0 0 0 ' + x + ' ' + (y + 5.5) + 'Z" fill="' + C.sky + '"/>';
+  if (t.st === 'left') return s + '<circle cx="' + x + '" cy="' + y + '" r="7.5" fill="' + C.bg + '" stroke="' + C.sky + '" stroke-width="2.2"/><path d="M' + x + ' ' + (y - 5.5) + 'A5.5 5.5 0 0 0 ' + x + ' ' + (y + 5.5) + 'Z" fill="' + C.sky + '"/>';
   if (t.st === 'ready') return s + '<circle cx="' + x + '" cy="' + y + '" r="7.5" fill="' + C.bg + '" stroke="' + C.ready + '" stroke-width="2.6"/>';
   // waiting on an answer of yours: amber, as today's map draws it
   if (t.st === 'gated') return s + '<circle cx="' + x + '" cy="' + y + '" r="7.5" fill="' + C.bg + '" stroke="' + C.amber + '" stroke-width="2.6"/><circle cx="' + x + '" cy="' + y + '" r="2.2" fill="' + C.amber + '"/>';
   if (t.st === 'done') return s + '<circle cx="' + x + '" cy="' + y + '" r="6.5" fill="' + C.bg + '" stroke="' + C.wait + '" stroke-width="2"/><circle cx="' + x + '" cy="' + y + '" r="10" fill="none" stroke="' + C.crit + '" stroke-width="1.3"/>';
   return s + '<circle cx="' + x + '" cy="' + y + '" r="6.5" fill="' + C.bg + '" stroke="' + C.wait + '" stroke-width="2.2"/>';
+}
+// side work put aside, unlike the finished run's solid pill: a dashed outline holding three open stations
+function sideFoldMark(x, y, w, h, C, sw) {
+  var across = w > h, r = Math.min(w, h) / 2, d = Math.max(w, h) / 4, dr = n1(r * 0.36), s = '';
+  s += '<rect x="' + n1(x) + '" y="' + n1(y) + '" width="' + n1(w) + '" height="' + n1(h) + '" rx="' + n1(r) + '" fill="' + C.bg + '" stroke="' + C.wait + '" stroke-width="' + n1(sw) + '" stroke-dasharray="3 2.5"/>';
+  for (var k = 1; k <= 3; k++) s += '<circle cx="' + n1(across ? x + k * d : x + w / 2) + '" cy="' + n1(across ? y + h / 2 : y + k * d) + '" r="' + dr + '" fill="none" stroke="' + C.wait + '" stroke-width="' + n1(sw * 0.7) + '"/>';
+  return s;
 }
 // a mark drawn at k of its size about its anchor: the rails draw them at two thirds
 function scaled(s, x, y, k) { return k === 1 ? s : '<g transform="matrix(' + k + ' 0 0 ' + k + ' ' + n1((1 - k) * x) + ' ' + n1((1 - k) * y) + ')">' + s + '</g>'; }
@@ -194,12 +207,21 @@ function iconSvg(X, name, x, y, size) {
   }).trim();
 }
 
+// the tunnel mouth from the icon set, in the line's own colour, its hole dark; the same arch at both ends,
+// its light arrow pointing down at the dive and up at the exit
+function portalSvg(X, x, y, size, col, lw, end) {
+  var body = String((X.icons && X.icons.portal) || PORTAL_ICON).replace(/class="hole"/g, 'fill="' + X.C.hole + '" stroke="none"');
+  body = body.replace(end === 'dive' ? /<path class="up"[^>]*\/>/g : /<path class="dn"[^>]*\/>/g, '').replace(/class="(dn|up)"/g, 'fill="' + X.C.arrow + '" stroke="none"');
+  return '<svg x="' + n1(x - size / 2) + '" y="' + n1(y - size / 2) + '" width="' + size + '" height="' + size + '" viewBox="0 0 16 16" overflow="visible"><g fill="none" stroke="' + col + '" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + body + '</g></svg>';
+}
+
 /* ================= the trace: what a selection waits on and frees ================= */
 export function traceSet(P, V, key) {
   var lit = {}, T = P.tasks || {};
-  if (!key) return null;
+  if (!key || key.indexOf('grp:') === 0) return null;
   var i = key.indexOf(':'), kind = key.slice(0, i), id = key.slice(i + 1);
   lit[key] = 1;
+  if (kind === 'prt') { var pi = portIds(key); pi.ends.forEach(function (x) { lit['stn:' + x] = 1; var tt = T[x]; if (tt) lit['tr:' + tt.tr] = 1; }); return lit; }
   if (kind === 'stn') {
     var up = [id], dn = [id];
     while (up.length) { var u = T[up.pop()]; if (u) waitsOf(u).forEach(function (w) { if (!lit['stn:' + w]) { lit['stn:' + w] = 1; up.push(w); } }); }
@@ -407,8 +429,8 @@ function drawOverview(X) {
     var o = b.o, p = pos[o.id], k = 'ws:' + o.id, sel = V.sel === k;
     var stroke = o.state === 'active' ? C.sky : o.state === 'parked' ? C.lav : o.state === 'new' ? C.text : C.cross;
     var fill = o.state === 'active' ? C.skyBg : o.state === 'parked' ? C.lavBg : C.card;
-    var rx = Math.min(26, p.h / 2);
-    var g = '<g' + cls(k, lit, o.state === 'parked' ? 'pk' + (sel ? ' selg' : '') : '') + '>' + hitG(X, k, p.x, p.y, p.w, p.h, '', rx);
+    var rx = Math.min(26, p.h / 2), up = o.changed ? 9 : o.train ? 6 : 0;
+    var g = '<g' + cls(k, lit, o.state === 'parked' ? 'pk' + (sel ? ' selg' : '') : '') + '>' + hitG(X, k, p.x, p.y - up, p.w, p.h + up, '', rx);
     g += '<rect x="' + n1(p.x) + '" y="' + n1(p.y) + '" width="' + n1(p.w) + '" height="' + n1(p.h) + '" rx="' + rx + '" fill="' + fill + '" stroke="' + (sel ? C.sky : stroke) + '" stroke-width="' + (sel ? 2.6 : 1.6) + '"' + (o.state === 'new' ? ' stroke-dasharray="6 4"' : '') + '/>';
     if (o.state === 'active') g += '<rect x="' + n1(p.x) + '" y="' + n1(p.y) + '" width="' + n1(p.w) + '" height="' + n1(p.h) + '" rx="' + rx + '" fill="none" stroke="' + C.sky + '" stroke-width="6" opacity="0.12"/>';
     var tx = p.x + 20, ty = p.y + 26;
@@ -429,11 +451,11 @@ function drawOverview(X) {
       g += iconSvg(X, 'fav', tx, ty + 3, 16);
       b.extra.forEach(function (l) { ty += sk.slh; g += txt(tx + 22, ty, l, sk.small, C.amber, { wt: 600 }); });
     }
-    g += '</g>';
+    // the train rides the top edge inside the pill's press, its zone reaching up over it
     if (o.train) g += trainSvg(p.x + 22, p.y, o.train.agents || 0, C);
-    // the pill's tag counts what is new; the since line and the strip carry the rest
+    // the pill's tag counts what is new, inside its press, the zone reaching 9 px up over it; the since line and the strip carry the rest
     if (o.changed) { var ct = o.changed.split(',')[0]; g += freshTag(X, p.x + p.w - f(ct, sk.idfs, 700) - 30, p.y, ct); }
-    out.push(g + '</g>');
+    out.push(g + '</g></g>');
   });
   var H = rows ? rowY[rows - 1] + rowH(rows - 1) + (nL[rows - 1] ? hG[rows - 1] : 0) + 24 : top + 24;
   return finish(X, W, H, links.join('') + counts.join('') + out.join(''), pos);
@@ -454,9 +476,9 @@ function trackDepths(Wd) {
   for (var i = 0; i < Wd.tracks.length; i++) kept.forEach(function (l) { d[l.to] = Math.max(d[l.to], d[l.from] + 1); });
   return d;
 }
-// a track's running count, then its tasks whose agent ended ("1 running, 1 landing, ")
+// a track's running count, then its unconfirmed ones
 function runParts(t, sp) {
-  return [[t.running, 'running'], [t.landing, 'landing'], [t.stopped, 'stopped']].filter(function (p) { return p[0]; })
+  return [[t.running, 'running'], [t.unconfirmed, 'unconfirmed']].filter(function (p) { return p[0]; })
     .map(function (p) { return p[0] + (sp || ' ') + p[1] + ', '; }).join('');
 }
 function pillText(X, t, inner) {
@@ -470,7 +492,7 @@ function pillText(X, t, inner) {
     if (cut) head = [cut]; else { own = true; head = wrap(X, words, inner, sk.small, 500, 2); }
   }
   // the stall stands beside the progress where it fits, else on a row of its own
-  var stallOwn = !!t.stalled && X.tw(prog, sk.small, 400) + 10 + X.tw(t.stalled, sk.small, 600) > inner;
+  var stallOwn = !!flagOf(t) && X.tw(prog, sk.small, 400) + 10 + X.tw(flagOf(t), sk.small, 600) > inner;
   return { title: title, head: head, own: own, counts: wrap(X, counts, inner, sk.small, 400), prog: prog, stallOwn: stallOwn };
 }
 // the rows of a pill's text, without the lines of words under it
@@ -479,8 +501,8 @@ function pillSvg(X, Wd, t, p, extraLines) {
   var C = X.C, sk = X.sk, k = 'pill:' + t.id, sel = X.V.sel === k, lit = X.lit;
   var stroke = t.state === 'active' ? C.sky : t.state === 'parked' ? C.lav : t.state === 'new' ? C.text : C.cross;
   var fill = t.state === 'active' ? C.skyBg : t.state === 'parked' ? C.lavBg : C.card;
-  var rx = Math.min(30, p.h / 2);
-  var g = '<g' + cls(k, lit, t.state === 'parked' ? 'pk' + (sel ? ' selg' : '') : '') + '>' + hitG(X, k, p.x, p.y, p.w, p.h, '', rx);
+  var rx = Math.min(30, p.h / 2), up = t.changed ? 9 : t.train ? 6 : 0;
+  var g = '<g' + cls(k, lit, t.state === 'parked' ? 'pk' + (sel ? ' selg' : '') : '') + '>' + hitG(X, k, p.x, p.y - up, p.w, p.h + up, '', rx);
   g += '<rect x="' + n1(p.x) + '" y="' + n1(p.y) + '" width="' + n1(p.w) + '" height="' + n1(p.h) + '" rx="' + rx + '" fill="' + fill + '" stroke="' + (sel ? C.sky : stroke) + '" stroke-width="' + (sel ? 2.6 : 1.6) + '"' + (t.state === 'new' && !sel ? ' stroke-dasharray="6 4"' : '') + '/>';
   // in one column the links between pills are words, so a ring marks the pills the counted chain runs through (the mock's)
   if (onCrit(X.P, Wd, t.id) && !sel && p.narrow) g += '<rect x="' + n1(p.x - 3.5) + '" y="' + n1(p.y - 3.5) + '" width="' + n1(p.w + 7) + '" height="' + n1(p.h + 7) + '" rx="' + (rx + 3.5) + '" fill="none" stroke="' + C.crit + '" stroke-width="1.4" opacity="0.55"/>';
@@ -500,38 +522,34 @@ function pillSvg(X, Wd, t, p, extraLines) {
   pt.counts.forEach(function (l) { ty += sk.slh; g += txt(tx, ty, l, sk.small, C.sec); });
   ty += sk.slh;
   g += txt(tx, ty, pt.prog, sk.small, C.sec);
-  if (pt.stallOwn) { ty += sk.slh; g += txt(tx, ty, t.stalled, sk.small, C.amber, { wt: 600 }); }
-  else if (t.stalled) g += txt(tx + X.tw(pt.prog, sk.small, 400) + 10, ty, t.stalled, sk.small, C.amber, { wt: 600 });
+  if (pt.stallOwn) { ty += sk.slh; g += txt(tx, ty, flagOf(t), sk.small, C.amber, { wt: 600 }); }
+  else if (flagOf(t)) g += txt(tx + X.tw(pt.prog, sk.small, 400) + 10, ty, flagOf(t), sk.small, C.amber, { wt: 600 });
   (extraLines || []).forEach(function (e) { ty += sk.slh; g += txt(tx, ty, e.s, sk.small, e.c || C.cross, { wt: 600 }); });
-  g += '</g>';
+  // the train rides the top edge inside the pill's press, its zone reaching up over it
   if (t.train) g += trainSvg(p.x + 24, p.y, t.train.agents || 0, C);
+  // its tag rides the top edge inside the press too, the zone reaching 9 px up over it
   if (t.changed) { var s = t.changed.split(',')[0]; g += freshTag(X, p.x + p.w - X.tw(s, sk.idfs, 700) - 30, p.y, s); }
-  return g + '</g>';
+  return g + '</g></g>';
 }
 function pillHeight(X, Wd, pw, extra) {
   var sk = X.sk, h = 0;
   Wd.tracks.forEach(function (t) { h = Math.max(h, pillRows(X, pillText(X, t, pw - 44)) + ((extra && extra[t.id]) || 0) * sk.slh); });
   return h;
 }
-// one chip per task waited on and workstream waiting, never one per waiting task: the entries of a group and its count's words
+// one chip per task waited on and workstream waiting, never one per waiting task: the entries of a group and its count's words;
+// the count is the tasks that wait: a parked track there opens on the task instead, as its own workstream's picture says
 function waitGroups(arr, keyOf, isTrack) {
   var by = {}, out = [];
   list(arr).forEach(function (o) {
     var k = keyOf(o);
-    if (!by[k]) out.push(by[k] = { o: o, all: [], tasks: 0, tracks: 0 });
+    if (!by[k]) out.push(by[k] = { o: o, all: [], tasks: 0 });
     by[k].all.push(o);
-    if (isTrack(o)) by[k].tracks++; else by[k].tasks++;
+    if (!isTrack(o)) by[k].tasks++;
   });
   return out;
 }
 function countWords(g) { var c = countLine(g); return c ? ' (' + c + ')' : ''; }
-function countLine(g) {
-  if (g.tasks + g.tracks < 2) return '';
-  var p = [];
-  if (g.tasks) p.push(g.tasks + ' task' + (g.tasks === 1 ? '' : 's'));
-  if (g.tracks) p.push(g.tracks + ' track' + (g.tracks === 1 ? '' : 's'));
-  return p.join(', ');
-}
+function countLine(g) { return g.tasks < 2 ? '' : g.tasks + ' tasks'; }
 var outGroups = function (Wd) { return waitGroups(Wd.out, function (o) { return o.from + '|' + o.ws + '|' + (o.task || o.text); }, function (o) { return !!o.waiter; }); };
 // a link to another workstream under a pill: Out on its right, In on its left; the mock's words, their count on a line of its own
 function edgeLinks(Wd) {
@@ -908,6 +926,7 @@ function trackModel(P, Wd, tr) {
   var heads = off.filter(function (i) { return !preds[i].some(function (q) { return isOff(q) && nextOff(q) === i; }); });
   var chains = heads.map(function (h) { var c = [h], n = nextOff(h); while (n && c.indexOf(n) < 0) { c.push(n); n = nextOff(n); } return c; });
   chains.sort(function (x, y) { return y.length - x.length || col[x[0]] - col[y[0]]; });
+  var crowded = false;
   chains.forEach(function (c) {
     // where a chain turns to another row, the column beside the turn holds no other station of its row, so no line seems to run on into it
     var h = c[0], tl = c[c.length - 1], keep = [];
@@ -919,16 +938,197 @@ function trackModel(P, Wd, tr) {
       var free = c.every(function (i) { var q = col[i] + ':' + r; return !taken[q] && !room[q] && !resv[q]; }) && keep.every(function (x) { return !taken[x + ':' + r]; });
       if (free) { c.forEach(function (i) { rows[i] = r; taken[col[i] + ':' + r] = 1; }); keep.forEach(function (x) { resv[x + ':' + r] = 1; }); break; }
     }
+    // a chain with no row left would stand on another station: the track draws as the list instead
+    if (k === tries.length) crowded = true;
   });
   var ncol = 0; ids.forEach(function (i) { if (loose.indexOf(i) < 0) ncol = Math.max(ncol, col[i] + 1); });
-  return { ids: ids, preds: preds, succs: succs, col: col, rows: rows, loose: loose, ncol: ncol };
+  return { ids: ids, preds: preds, succs: succs, col: col, rows: rows, loose: loose, ncol: ncol, crowded: crowded };
 }
-function stateWords(t) {
-  if (t.st === 'now' && t.ended) return t.ended + ': ' + t.agent + ', ' + ENDED_NEXT[t.ended];
-  if (t.st === 'now') return 'running: ' + (t.agent || 'the session');
-  if (t.st === 'held') return 'in progress: the session';
-  if (t.st === 'left') return 'in progress, nobody on it';
-  if (t.st === 'ready') return 'ready';
+
+/* the list's rails. The main line first: its trunk the critical path, every fan into
+   a trunk station one captioned box. Then the side work in groups, each under a heading saying how it
+   connects, drawn by the same rules one level deep. A link draws on the surface only between neighbouring
+   rows; any other runs as a tunnel between two portals. */
+var FOLD_AT = 8;
+// a folded group's tasks counted by state in the rows' own words, so a fold of open work never reads as finished
+var FOLD_ORDER = ['running', 'unconfirmed', 'ready', 'gated', 'waiting', 'review'];
+function foldState(t) {
+  if (t.st === 'now') return 'running';
+  if (t.st === 'left') return 'unconfirmed';
+  if (t.review) return 'review';
+  return t.st === 'ready' || t.st === 'gated' || t.st === 'done' ? t.st : 'waiting';
+}
+function foldStates(ts) {
+  var n = {};
+  ts.forEach(function (t) { if (t) { var k = foldState(t); n[k] = (n[k] || 0) + 1; } });
+  return FOLD_ORDER.concat('done').filter(function (k) { return n[k]; }).map(function (k) { return [n[k], k]; });
+}
+function foldWords(states) {
+  return states.map(function (p) {
+    var n = p[0], w = { gated: 'waiting on your answer', review: n === 1 ? 'review' : 'reviews' }[p[1]] || p[1];
+    return n + ' ' + w;
+  }).join(', ');
+}
+function railPlan(M, spine, T, sel) {
+  var ids = M.ids.filter(function (i) { return M.loose.indexOf(i) < 0; });
+  var on = function (i) { return ids.indexOf(i) >= 0; };
+  var sp = spine.filter(on);
+  var reach = {};
+  var down = function (a) {
+    if (reach[a]) return reach[a];
+    var r = reach[a] = {};
+    M.succs[a].filter(on).forEach(function (s) { r[s] = 1; var d = down(s); for (var k in d) r[k] = 1; });
+    return r;
+  };
+  ids.forEach(down);
+  // a wait another wait already implies is not drawn
+  var rs = {}, rp = {};
+  ids.forEach(function (i) { rs[i] = []; rp[i] = []; });
+  ids.forEach(function (i) {
+    M.succs[i].filter(on).forEach(function (s) {
+      if (M.succs[i].some(function (m) { return m !== s && on(m) && reach[m][s]; })) return;
+      rs[i].push(s); rp[s].push(i);
+    });
+  });
+  var num = function (id) { var m = /(\d+)$/.exec(id); return m ? +m[1] : 0; };
+  var rank = function (i) { var st = (T[i] || {}).st; return st === 'now' || st === 'left' ? 0 : st === 'ready' ? 1 : 2; };
+  // one block: its trunk, a box for each fan of two or more into a trunk station, the rest after the trunk
+  var lay = function (S, tk) {
+    var inS = function (i) { return S.indexOf(i) >= 0; }, isTk = function (i) { return tk.indexOf(i) >= 0; };
+    var sS = function (i) { return rs[i].filter(inS); }, pS = function (i) { return rp[i].filter(inS); };
+    var nextOf = function (i) { var n = sS(i); return !isTk(i) && n.length === 1 && !isTk(n[0]) && pS(n[0]).length === 1 ? n[0] : null; };
+    var units = [], unitOf = {};
+    S.forEach(function (i) {
+      if (isTk(i)) { units.push([i]); return; }
+      var p = pS(i); if (p.length === 1 && nextOf(p[0]) === i) return;
+      var c = [i], n = nextOf(i);
+      while (n && c.indexOf(n) < 0) { c.push(n); n = nextOf(n); }
+      units.push(c);
+    });
+    units.forEach(function (u) { u.forEach(function (i) { unitOf[i] = u; }); });
+    var boxes = [], boxOf = {};
+    tk.forEach(function (w, k) {
+      var us = [];
+      pS(w).forEach(function (p) { var u = unitOf[p]; if (u && u[u.length - 1] === p && !boxOf[p] && us.indexOf(u) < 0 && (!isTk(u[0]) || (k && u[0] === tk[k - 1]))) us.push(u); });
+      if (us.length < 2) return;
+      var b = { to: w, crit: k && us.some(function (u) { return u[0] === tk[k - 1]; }) ? tk[k - 1] : null, units: us };
+      us.forEach(function (u) { u.forEach(function (i) { boxOf[i] = b; }); });
+      boxes.push(b);
+    });
+    // in a box: the critical one first, then those waiting on a station outside, running, ready, waiting, those leading elsewhere last
+    var boxRank = function (b, u) { var foot = u[u.length - 1]; if (u[0] === b.crit) return 0; return rs[foot].some(function (s) { return s !== b.to; }) ? 9 : rp[u[0]].length ? 1 : 2 + rank(u[0]); };
+    var seq = [], put = function (u) { u.forEach(function (i) { if (seq.indexOf(i) < 0) seq.push(i); }); };
+    tk.forEach(function (w) {
+      boxes.forEach(function (b) { if (b.to === w) b.units.slice().sort(function (x, y) { return boxRank(b, x) - boxRank(b, y) || num(x[0]) - num(y[0]); }).forEach(put); });
+      if (!boxOf[w]) put([w]);
+    });
+    var rest = units.filter(function (u) { return !isTk(u[0]) && !boxOf[u[0]]; });
+    rest.sort(function (x, y) { return M.col[x[0]] - M.col[y[0]] || rank(x[0]) - rank(y[0]) || num(x[0]) - num(y[0]); });
+    return { seq: seq, tk: tk.slice(), boxes: boxes, boxOf: boxOf, units: units, rest: rest };
+  };
+  var main = lay(ids, sp);
+  var inMain = {}; main.seq.forEach(function (i) { inMain[i] = 1; });
+  var mrow = function (i) { return main.seq.indexOf(i); };
+  // a side station's group: its nearest side station before it, so a chain stays together; else the latest
+  // main-line station it branches off, else the first it feeds, else on its own
+  var walk = function (i, nb) { var hit = {}, st = [i], seen = {}; while (st.length) { var c = st.pop(); nb[c].forEach(function (x) { if (inMain[x]) hit[x] = 1; else if (!seen[x]) { seen[x] = 1; st.push(x); } }); } return Object.keys(hit).sort(function (a, b) { return mrow(a) - mrow(b); }); };
+  var groups = [], gOf = {};
+  var side = ids.filter(function (i) { return !inMain[i]; }).sort(function (a, b) { return M.col[a] - M.col[b] || num(a) - num(b); });
+  side.concat(M.loose).forEach(function (i) {
+    var near = (rp[i] || []).filter(function (p) { return !inMain[p] && gOf[p]; }).sort(function (a, b) { return M.col[b] - M.col[a] || rs[a].length - rs[b].length; })[0];
+    var g = near ? gOf[near] : null;
+    if (!g) {
+      var up = (rp[i] || []).filter(function (p) { return inMain[p]; }).sort(function (a, b) { return mrow(a) - mrow(b); }), dn = rs[i] ? walk(i, rs) : [];
+      var key = up.length ? 'off:' + up[up.length - 1] : dn.length ? 'feeds:' + dn[0] : 'own';
+      g = groups.filter(function (x) { return x.key === 'grp:' + key; })[0];
+      if (!g) groups.push(g = { key: 'grp:' + key, kind: key.split(':')[0], root: key.split(':')[1] || '', members: [] });
+    }
+    g.members.push(i); gOf[i] = g;
+  });
+  var kOrd = { off: 0, feeds: 1, own: 2 };
+  groups.sort(function (a, b) { return kOrd[a.kind] - kOrd[b.kind] || mrow(a.root) - mrow(b.root); });
+  groups.forEach(function (g) {
+    var offs = {}, feeds = {};
+    g.members.forEach(function (i) { (rp[i] || []).forEach(function (x) { if (inMain[x]) offs[x] = 1; }); (rs[i] || []).forEach(function (x) { if (inMain[x]) feeds[x] = 1; }); });
+    var o = Object.keys(offs).sort(function (a, b) { return mrow(a) - mrow(b); }), f = Object.keys(feeds).sort(function (a, b) { return mrow(a) - mrow(b); });
+    var w = (o.length ? 'Branches off ' + joinAnd(o) : '') + (f.length ? (o.length ? ', feeds ' : 'Feeds ') + joinAnd(f) : '');
+    // only loose tasks are on their own; a group whose tasks wait on each other is just off the main line
+    g.words = w || (g.members.every(function (i) { return M.loose.indexOf(i) >= 0; }) ? 'On their own: nothing waits on them' : 'Off the main line');
+    g.states = foldStates(g.members.map(function (i) { return T[i]; }));
+    // its own trunk: its longest chain, when two or more long
+    var S = g.members.filter(on), dp = {}, prev = {};
+    S.slice().sort(function (a, b) { return M.col[a] - M.col[b] || num(a) - num(b); }).forEach(function (i) {
+      dp[i] = 1; rp[i].forEach(function (p) { if (S.indexOf(p) >= 0 && dp[p] + 1 > dp[i]) { dp[i] = dp[p] + 1; prev[i] = p; } });
+    });
+    var end = null; S.forEach(function (i) { if (!end || dp[i] > dp[end] || (dp[i] === dp[end] && num(i) < num(end))) end = i; });
+    var tk = []; for (var c = end; c && dp[end] > 1; c = prev[c]) tk.unshift(c);
+    g.lay = lay(S, tk);
+    g.lay.rest = g.lay.rest.concat(g.members.filter(function (i) { return !on(i); }).map(function (i) { return [i]; }));
+    g.lay.rest.forEach(function (u) { u.forEach(function (i) { if (g.lay.seq.indexOf(i) < 0) g.lay.seq.push(i); }); });
+  });
+  // the surface: the trunks, a chain's links, a box's fan, and a link between neighbouring rows in one box or none
+  var surf = {};
+  [main].concat(groups.map(function (g) { return g.lay; })).forEach(function (L) {
+    for (var k = 1; k < L.tk.length; k++) surf[L.tk[k - 1] + '>' + L.tk[k]] = 'trunk';
+    L.units.forEach(function (u) { for (var k = 1; k < u.length; k++) surf[u[k - 1] + '>' + u[k]] = 'pair'; });
+    L.boxes.forEach(function (b) { b.units.forEach(function (u) { surf[u[u.length - 1] + '>' + b.to] = surf[u[u.length - 1] + '>' + b.to] || 'box'; }); });
+    for (var n = 1; n < L.seq.length; n++) {
+      var a = L.seq[n - 1], s = L.seq[n];
+      if (rs[a] && rs[a].indexOf(s) >= 0 && L.boxOf[a] === L.boxOf[s] && !surf[a + '>' + s]) surf[a + '>' + s] = 'pair';
+    }
+  });
+  var tunnels = [];
+  ids.forEach(function (a) { rs[a].forEach(function (s) { if (!surf[a + '>' + s]) tunnels.push([a, s]); }); });
+  // past FOLD_AT side stations every group folds to its count; the ones a press reaches open: the heading
+  // pressed, the selected station's, or every group holding an end of the pressed portal's tunnels
+  var nSide = groups.reduce(function (s, g) { return s + g.members.length; }, 0), open = {};
+  if (sel) {
+    var reachI = sel.indexOf('stn:') === 0 ? [sel.slice(4)] : sel.indexOf('prt:') === 0 ? portIds(sel).ends : [];
+    if (sel.indexOf('grp:') === 0) open[sel] = 1;
+    reachI.forEach(function (i) { if (gOf[i]) open[gOf[i].key] = 1; });
+  }
+  groups.forEach(function (g) {
+    g.folded = nSide > FOLD_AT && !open[g.key] && g.members.length > 1;
+    if (!g.folded) return;
+    // a folded group's row carries a portal for each end of a tunnel inside it, naming the outside ends;
+    // lands lists the members a tunnel reaches, which its id list marks
+    var inG = function (i) { return gOf[i] === g; }, ex = [], dv = [], lands = {};
+    tunnels.forEach(function (l) {
+      if (inG(l[1]) && !inG(l[0])) { ex.push(l); lands[l[1]] = 1; }
+      if (inG(l[0]) && !inG(l[1])) { dv.push(l); lands[l[0]] = 1; }
+    });
+    g.ports = { exit: ex, dive: dv };
+    g.lands = Object.keys(lands);
+  });
+  var boxOf = {}; [main].concat(groups.map(function (g) { return g.lay; })).forEach(function (L) { for (var i in L.boxOf) boxOf[i] = L.boxOf[i]; });
+  return { main: main, groups: groups, gOf: gOf, tunnels: tunnels, surf: surf, boxOf: boxOf, nSide: nSide, trunk: sp };
+}
+// a track's rail plan under a selection, as the narrow picture lays it
+export function railOf(P, V) {
+  var tr = trackOf(P, V.tr), Wd = tr && P.ws[tr.ws];
+  return tr && Wd ? railPlan(trackModel(P, Wd, tr), list(tr.spine), P.tasks || {}, V.sel || null) : null;
+}
+/* a portal's key: prt:dive:A>B+C at A diving to B and C, prt:exit:A+B>C at C surfacing from A and B (a plus, since the rig joins presses with commas) */
+function portKey(end, i, others) { return 'prt:' + end + ':' + (end === 'dive' ? i + '>' + others.join('+') : others.join('+') + '>' + i); }
+// a folded group's portal: prt:fdive: or prt:fexit: and its tunnels A>B joined by a plus
+function foldKey(end, links) { return 'prt:f' + end + ':' + links.map(function (l) { return l.join('>'); }).join('+'); }
+// ins are the pressed end's stations, others the far ends', ends both
+function portIds(k) {
+  var none = { end: null, at: null, ins: [], others: [], ends: [], links: [] };
+  var fm = /^prt:f(dive|exit):(.+)$/.exec(k || '');
+  if (fm) {
+    var fl = fm[2].split('+'), d = fm[1] === 'dive', ins = [], outs = [];
+    fl.forEach(function (l) { var ab = l.split('>'), a = d ? ab[0] : ab[1], b = d ? ab[1] : ab[0]; if (ins.indexOf(a) < 0) ins.push(a); if (outs.indexOf(b) < 0) outs.push(b); });
+    return { end: fm[1], at: null, fold: true, ins: ins, others: outs, ends: ins.concat(outs), links: fl };
+  }
+  var m = /^prt:(dive|exit):(.*)>(.*)$/.exec(k || ''); if (!m) return none;
+  var dive = m[1] === 'dive', at = dive ? m[2] : m[3], others = (dive ? m[3] : m[2]).split('+');
+  return { end: m[1], at: at, ins: [at], others: others, ends: [at].concat(others), links: others.map(function (o) { return dive ? at + '>' + o : o + '>' + at; }) };
+}
+// a station's word in the room a row has; running, unconfirmed and ready in draw.mjs's one wording
+var WORD_OF = { now: 'running', left: 'unconfirmed', ready: 'ready' };
+function stateWords(t, P) {
+  if (WORD_OF[t.st]) return wordWords(t, P ? P.at : null, null, WORD_OF[t.st]);
   if (t.st === 'gated') return 'waits on your answer';
   if (t.st === 'done') return 'done';
   return 'waits on ' + waitsOf(t).length;
@@ -938,7 +1138,7 @@ function drawTrack(X) {
   var Wd = tr && P.ws[tr.ws];
   if (!tr || !Wd) return finish(X, W, 40, txt(16, 26, 'Nothing open here.', sk.small, C.sec), {});
   var M = trackModel(P, Wd, tr), lit = X.lit, steps = critSteps(Wd), sel = V.sel;
-  var parts = [], under = [], pos = {}, railMode = false, RK = 1, spine = list(tr.spine);
+  var parts = [], under = [], pos = {}, railMode = false, RK = 1, spine = list(tr.spine), trains = [];
   var pad = W < 420 ? 6 : 20, top = X.top;
   var inWs = function (id) { var t = T[id]; return !!(t && Wd.tracks.some(function (x) { return x.id === t.tr; })); };
   var lin = function (a, b) { return lit ? (lit['stn:' + a] && lit['stn:' + b] ? 'lit' : 'dimmed') : ''; };
@@ -953,15 +1153,31 @@ function drawTrack(X) {
     var s = '<g' + cls(k, lit) + '>' + hitG(X, k, b.x, b.y, b.r - b.x, b.b - b.y, '', 8) + '<rect x="' + (x - 14) + '" y="' + (y - 14) + '" width="28" height="28" fill="transparent"/>' + scaled(stationMark(t, x, y, C, on), x, y, RK) + (L ? L.s : '') + '</g>';
     // its zone goes under the answer chip's in its words, so it is laid first
     if (X.hits.length - 1 > n0) X.hits.splice(n0, 0, X.hits.pop());
-    if (!railMode && !t.ended && (t.st === 'now' || t.st === 'held')) s += t.session ? engine(x - 44, y, C) : car(x - 36, y, C);
+    if (!railMode && t.st === 'now') trains.push({ k: k, x: x, y: y, session: t.session });
     return s + '</g>';
+  };
+  // a train rides the line into its station, inside the zone of the station before it, so it is drawn last in a zone of its own
+  // reaching its station's, which a press on it finds on the board and in the pane
+  var trainsLast = function () {
+    trains.forEach(function (tn) {
+      var tx = tn.x - (tn.session ? 44 : 36), th = tn.session ? 12 : 10, g = hitG(X, tn.k, tx, tn.y - th / 2, tn.x - 14 - tx, th, '', 4);
+      X.hits[X.hits.length - 1].train = true;
+      parts.push('<g' + cls(tn.k, lit) + '>' + g + (tn.session ? engine(tx, tn.y, C) : car(tx, tn.y, C)) + '</g></g>');
+    });
   };
   // the words beside a station: id and its tags, the name, its state
   // measured at the selected weight, so a selection never rewraps or overruns the gap
   // on the rails the train rides in the words, ahead of the state line
-  var trainW = function (t) { return railMode && !t.ended && (t.st === 'now' || t.st === 'held') ? (t.session ? 26 : 15) * RK + 5 : 0; };
-  var labLines = function (t, w) { return { name: wrap(X, t.name, w, sk.name, 600, w < 150 ? 4 : 3), st: wrap(X, stateWords(t), w - trainW(t), sk.small, 500, 2) }; };
-  var labH = function (t, w) { var L = labLines(t, w); return 15 + L.name.length * sk.lh + L.st.length * sk.slh + 4; };
+  var trainW = function (t) { return railMode && t.st === 'now' ? (t.session ? 26 : 15) * RK + 5 : 0; };
+  // the word takes a third line where it needs one (an unconfirmed row's who, where and when at 238 px), never a cut
+  var labLines = function (t, w) { return { name: wrap(X, t.name, w, sk.name, 600, w < 150 ? 4 : 3), st: wrap(X, stateWords(t, P), w - trainW(t), sk.small, 500, 3) }; };
+  // the rail sets portsLine, which draws a station's portals on its id line after its id
+  var portsLine = null;
+  var idEnd = function (t, x) {
+    var a = t.ans && P.ans && P.ans[t.ans];
+    return x + f(t.id, sk.idfs, 700) + 8 + (t.fresh ? f(t.fresh, sk.idfs, 700) + 18 : 0) + (a ? ansW(X, a) + 8 : 0);
+  };
+  var labH = function (t, w) { var L = labLines(t, w), e = portsLine ? portsLine(t, idEnd(t, 0), 0, w, 0, true).extra : 0; return 15 + e + L.name.length * sk.lh + L.st.length * sk.slh + 4; };
   // the words drawn, their right edge and their foot
   var label = function (t, x, y, w) {
     var L = labLines(t, w), s = '', yy = y, r = x + f(t.id, sk.idfs, 700) + 2;
@@ -970,8 +1186,9 @@ function drawTrack(X) {
     if (t.fresh) { s += freshTag(X, tx, yy - 4, t.fresh); r = tx + f(t.fresh, sk.idfs, 700) + 12; tx += f(t.fresh, sk.idfs, 700) + 18; }
     var a = t.ans && P.ans && P.ans[t.ans];
     if (a) { s += ansChip(X, tx, yy - 4, a, 'ans:' + t.ans); r = tx + ansW(X, a); }
+    if (portsLine) { var pl = portsLine(t, idEnd(t, x), yy, x + w, x, false); s += pl.s; r = Math.max(r, pl.r); yy += pl.extra; }
     L.name.forEach(function (l) { yy += sk.lh; s += txt(x, yy, l, sk.name, C.text, { wt: sel === 'stn:' + t.id ? 600 : 450 }); r = Math.max(r, x + f(l, sk.name, 600)); });
-    var sc = t.st === 'now' || t.st === 'held' || t.st === 'left' ? C.sky : t.st === 'ready' ? C.ready : t.st === 'gated' ? C.amber : C.sec;
+    var sc = t.st === 'now' || t.st === 'left' ? C.sky : t.st === 'ready' ? C.ready : t.st === 'gated' ? C.amber : C.sec;
     var ti = trainW(t);
     L.st.forEach(function (l, n) { yy += n ? sk.slh - 2 : sk.slh; if (!n && ti) s += scaled(t.session ? engine(x, yy - 4, C) : car(x, yy - 4, C), x, yy - 4, RK); s += txt(x + ti, yy, l, sk.small, sc, { wt: 500 }); r = Math.max(r, x + ti + f(l, sk.small, 500)); });
     return { s: s, r: r, b: yy + 5 };
@@ -998,7 +1215,7 @@ function drawTrack(X) {
   M.ids.forEach(function (i) {
     var t = T[i]; inline[i] = [];
     // waits across workstreams come from in and out, the ones inside it from cross and frees
-    list(t.cross).forEach(function (c) { if (!inWs(c)) return; (topChips[i] = topChips[i] || []).push({ s: c + ' (' + shortOfTask(P, c) + ')', k: 'jump:' + c }); inline[i].push({ s: 'waits on ' + c + ' (' + shortOfTask(P, c) + ')', k: 'jump:' + c }); });
+    list(t.cross).forEach(function (c) { if (!inWs(c)) return; (topChips[i] = topChips[i] || []).push({ s: c + ' (' + shortOfTask(P, c) + ')', nm: shortOfTask(P, c), k: 'jump:' + c }); inline[i].push({ s: 'waits on ' + c + ' (' + shortOfTask(P, c) + ')', k: 'jump:' + c }); });
     list(Wd.in).forEach(function (o) { if (o.task !== i) return; var s = 'waits on ' + o.on + ' (' + o.ws + ')'; (topChips[i] = topChips[i] || []).push({ s: s, k: 'ws:' + o.ws }); inline[i].push({ s: s, k: 'ws:' + o.ws }); });
     // what waits on it elsewhere: one chip a waiting track or workstream, the press going to the first task
     var freed = {};
@@ -1006,7 +1223,7 @@ function drawTrack(X) {
     Object.keys(freed).forEach(function (on) {
       var xs = freed[on], x = xs[0], nm = shortOfTask(P, x), who = xs.length > 1 ? xs.length + ' tasks' : x;
       if (M.col[i] === M.ncol - 1 && spine.indexOf(i) >= 0) rightChips.push({ a: 'frees ' + who + ' on', b: nm, nm: nm, k: 'jump:' + x, from: i });
-      else (topChips[i] = topChips[i] || []).push({ s: 'frees ' + who + ' (' + nm + ')', k: 'jump:' + x });
+      else (topChips[i] = topChips[i] || []).push({ s: 'frees ' + who + ' (' + nm + ')', nm: nm, k: 'jump:' + x });
       inline[i].push({ s: 'frees ' + who + ' (' + nm + ')', k: 'jump:' + x });
     });
     // a park opening on it: a right chip from the line's last station, else a chip right above it, so no line runs along the spine
@@ -1014,7 +1231,7 @@ function drawTrack(X) {
       if (l.kind !== 'order' || l.from !== tr.id || l.on !== i) return;
       var nm = trName(P, l.to), ch = { k: 'trk:' + l.to, order: true, ans: l.ans };
       if (M.col[i] === M.ncol - 1 && spine.indexOf(i) >= 0) rightChips.push(Object.assign({ a: nm + ' opens', b: 'when this completes', nm: nm, from: i }, ch));
-      else (topChips[i] = topChips[i] || []).push(Object.assign({ s: 'opens ' + nm }, ch));
+      else (topChips[i] = topChips[i] || []).push(Object.assign({ s: 'opens ' + nm, nm: nm }, ch));
       inline[i].push(Object.assign({ s: nm + ' opens when this completes' }, ch));
     });
     outGroups(Wd).forEach(function (g) {
@@ -1026,10 +1243,12 @@ function drawTrack(X) {
       inline[i].push({ s: g.o.ws + ' waits on ' + b, k: 'ws:' + g.o.ws });
     });
   });
-  // a track's name in an edge chip gives way with an ellipsis past 140 px, its words kept, so a long name never drops the line to one column
-  var fitLine = function (s, nm, wt) { return giveWay(X, s, nm, 140, sk.small, wt) || s; };
-  var lineA = function (ch) { return fitLine(ch.a, ch.nm, 500); };
-  var lineB = function (ch) { return fitLine(ch.b, ch.nm, 650); };
+  // a track's name in an edge chip gives way with an ellipsis past the cap (140 px, raised below while every column keeps 150),
+  // its words kept, so a long name never drops the line to one column; it always takes the room its chip's other line gives
+  var cap = 140;
+  var fitLine = function (s, nm, wt, other, owt) { return giveWay(X, s, nm, Math.max(cap, nm && other.indexOf(nm) < 0 ? f(other, sk.small, owt) : 0), sk.small, wt) || s; };
+  var lineA = function (ch) { return fitLine(ch.a, ch.nm, 500, ch.b, 650); };
+  var lineB = function (ch) { return fitLine(ch.b, ch.nm, 650, ch.a, 500); };
   var chip2W = function (ch) { return Math.max(f(lineA(ch), sk.small, 500), f(lineB(ch), sk.small, 650)) + 28; };
   // an edge chip lights with the trace when its station and the task it names are both on it
   var edgeLit = function (ch) { return !!(lit && ch.from && lit['stn:' + ch.from] && (ch.k.indexOf('jump:') !== 0 || lit['stn:' + ch.k.slice(5)])); };
@@ -1043,20 +1262,30 @@ function drawTrack(X) {
   var chip1 = function (ch, x, yc, maxW, lk) {
     var a = ch.order && ansOf(ch), aw = a ? ansW(X, a) + 6 : 0, w = Math.min(maxW - aw, f(ch.s, sk.small, 600) + 26), lc = lit ? (lk ? 'lit' : 'dimmed') : '';
     return hitG(X, ch.k, x, yc - 11, w, 22, lc, 11) + '<rect x="' + n1(x) + '" y="' + n1(yc - 11) + '" width="' + n1(w) + '" height="22" rx="11" fill="' + C.bg + '" stroke="' + (ch.order ? C.lav : C.cross) + '" stroke-width="1.2"' + (ch.order ? ' stroke-dasharray="4 3"' : '') + '/>' +
-      txt(x + 13, yc + 4.3, wrap(X, ch.s, w - 22, sk.small, 600, 1)[0], sk.small, ch.order ? C.lav : C.link, { wt: 600 }) + '</g>' +
+      txt(x + 13, yc + 4.3, (ch.nm && giveWay(X, ch.s, ch.nm, w - 22, sk.small, 600)) || wrap(X, ch.s, w - 22, sk.small, 600, 1)[0], sk.small, ch.order ? C.lav : C.link, { wt: 600 }) + '</g>' +
       (a ? '<g' + (lc ? ' class="' + lc + '"' : '') + '>' + ansChip(X, x + w + 6, yc, a, 'ans:' + ch.ans) + '</g>' : '');
   };
   var chipLit = function (i, ch) { return !!(lit && lit['stn:' + i] && (ch.k.indexOf('jump:') !== 0 || lit['stn:' + ch.k.slice(5)])); };
   var leaves = function (t) { return t.leaves ? trName(P, t.leaves) : ''; };
   var doneSince = sinceCount(tr.doneSince);
   var prefix = [];
-  if (tr.doneRun) prefix.push({ kind: 'bead', w: 96 });
+  // a running first station's engine (44 left of it) starts 4 px past the bead, so the train's zone, 4 px out on the board, stops at its edge
+  if (tr.doneRun) prefix.push({ kind: 'bead', w: 104 });
   list(tr.junctions).forEach(function (j) { if (T[j]) prefix.push({ kind: 'junction', id: j, w: 92 }); });
   var preW = prefix.reduce(function (s, p) { return s + p.w; }, 0);
-  var edgeL = leftChips.length ? Math.max.apply(null, leftChips.map(chip2W)) + 40 : 0;
-  // a right chip's answer stands beside it, so its room counts in
-  var edgeR = rightChips.length ? Math.max.apply(null, rightChips.map(function (ch) { var a = ansOf(ch); return chip2W(ch) + (ch.order && a ? 6 + ansW(X, a) : 0); })) + 40 : 0;
-  var avail = W - 2 * pad - preW - edgeL - edgeR, per = Math.max(1, M.ncol), foldL = 0, conns = [];
+  var edgeL, edgeR, avail, per = Math.max(1, M.ncol), foldL = 0, conns = [];
+  var edges = function () {
+    edgeL = leftChips.length ? Math.max.apply(null, leftChips.map(chip2W)) + 40 : 0;
+    // a right chip's answer stands beside it, so its room counts in
+    edgeR = rightChips.length ? Math.max.apply(null, rightChips.map(function (ch) { var a = ansOf(ch); return chip2W(ch) + (ch.order && a ? 6 + ansW(X, a) : 0); })) + 40 : 0;
+    avail = W - 2 * pad - preW - edgeL - edgeR;
+    return avail / per >= 150;
+  };
+  // where the plain grid holds at 140, the cap rises by 10s up to the longest whole line while every column keeps 150
+  if (edges() && W >= 700 && !M.crowded) {
+    var whole = Math.max.apply(null, [0].concat(leftChips, rightChips).map(function (ch) { return ch ? Math.max(f(ch.a, sk.small, 500), f(ch.b, sk.small, 650)) : 0; }));
+    while (cap < whole) { cap += 10; if (!edges()) { cap -= 10; edges(); break; } }
+  }
   var colW = Math.min(250, avail / per);
   var bandOf = function (i) { return Math.floor(M.col[i] / per); }, lcOf = function (i) { return M.col[i] % per; };
   var onSpine = function (i) { return spine.indexOf(i) >= 0; };
@@ -1067,7 +1296,7 @@ function drawTrack(X) {
     M.ids.forEach(function (i) { M.preds[i].forEach(function (p) { if (bandOf(p) !== bandOf(i) && !(onSpine(p) && onSpine(i))) c.push({ p: p, i: i, k: 1 + c.filter(function (x) { return x.k; }).length }); }); });
     return c;
   };
-  if (colW < 150 && W >= 700) {
+  if (colW < 150 && W >= 700 && !M.crowded) {
     for (var pass = 0; pass < 2; pass++) {
       per = Math.ceil(M.ncol / Math.ceil(M.ncol / Math.max(1, Math.floor((avail - foldL) / 165))));
       conns = connsOf(); foldL = 24 + 10 * conns.reduce(function (m, c) { return Math.max(m, c.k); }, 0);
@@ -1076,17 +1305,32 @@ function drawTrack(X) {
     // a band holds four columns at least, else the rail reads better
     if (per < 4) { per = M.ncol; conns = []; foldL = 0; colW = 0; }
   }
-  if (colW >= 150 && W >= 700) {
+  if (colW >= 150 && W >= 700 && !M.crowded) {
     var labW = colW - 30, nB = Math.ceil(Math.max(1, M.ncol) / per), nK = conns.reduce(function (m, c) { return Math.max(m, c.k + 1); }, 0);
     var rowIds = {}, rlo = [], rhi = [];
     for (var b0 = 0; b0 < nB; b0++) { rlo.push(0); rhi.push(0); }
     M.ids.forEach(function (i) { if (M.loose.indexOf(i) >= 0) return; var r = M.rows[i] || 0, b = bandOf(i); (rowIds[b + ':' + r] = rowIds[b + ':' + r] || []).push(i); rlo[b] = Math.min(rlo[b], r); rhi[b] = Math.max(rhi[b], r); });
     var x0 = pad + edgeL + preW + foldL, xOf = function (i) { return x0 + lcOf(i) * colW + 16; };
     // a top chip stops short of the turn a wait takes in its column's gap, so the line never runs behind it
-    var turns = {}; M.ids.forEach(function (i) { M.preds[i].forEach(function (p) { if ((M.rows[p] || 0) !== (M.rows[i] || 0)) turns[M.col[p]] = 1; }); });
+    // turns: per column, each line down its gap, as an offset from that column's station, and the rows whose chips it passes (lo < r <= hi)
+    var turns = {}, turn = function (col, off, lo, hi) { (turns[col] = turns[col] || []).push({ off: off, lo: lo, hi: hi }); };
+    M.ids.forEach(function (i) { M.preds[i].forEach(function (p) { var a = M.rows[p] || 0, b = M.rows[i] || 0; if (a !== b && bandOf(p) === bandOf(i)) turn(M.col[p], colW - 25, Math.min(a, b), Math.max(a, b)); }); });
     // a line on to a later band runs down its column's gap in each band it passes, and lands down the gap before its station's column
-    conns.forEach(function (c) { for (var b = bandOf(c.p); b < bandOf(c.i); b++) turns[b * per + lcOf(c.p)] = 1; if (lcOf(c.i)) turns[M.col[c.i] - 1] = 1; });
-    var chipMax = function (i) { return colW - (turns[M.col[i]] ? 34 : 6); };
+    conns.forEach(function (c) {
+      for (var b = bandOf(c.p); b < bandOf(c.i); b++) turn(b * per + lcOf(c.p), colW - 17, b === bandOf(c.p) ? M.rows[c.p] || 0 : -Infinity, Infinity);
+      if (lcOf(c.i)) turn(M.col[c.i] - 1, colW - 31 - 4 * Math.min(c.k, 2), -Infinity, M.rows[c.i] || 0);
+    });
+    // the leftmost line down a column's gap that passes a chip of row r
+    var turnAt = function (col, r) { var o; (turns[col] || []).forEach(function (t) { if (t.lo < r && r <= t.hi) o = o === undefined ? t.off : Math.min(o, t.off); }); return o; };
+    // a top chip takes the columns after its own while no line runs down a gap it crosses and no chip stands there in its row,
+    // and ends 8 px short of a line down the gap where it stops
+    var chipMax = function (i) {
+      var b = bandOf(i), lc = lcOf(i), r = M.rows[i] || 0, last = Math.min(per, M.ncol - b * per) - 1, c = lc;
+      var taken = (rowIds[b + ':' + r] || []).filter(function (j) { return j !== i && topChips[j]; }).map(lcOf);
+      while (c < last && turnAt(b * per + c, r) === undefined && taken.indexOf(c + 1) < 0) c++;
+      var t = turnAt(b * per + c, r);
+      return (c - lc) * colW + (t === undefined ? colW - 6 : t + 4);
+    };
     var chipW = function (ch, i) { var a = ch.order && ansOf(ch); return Math.min(chipMax(i), f(ch.s, sk.small, 600) + 26 + (a ? ansW(X, a) + 6 : 0)); };
     // a station's chips stand right above it, so a row starts low enough for them to clear what stands above in their column
     var y = top + 18, rowY = {}, gapAt = [], laneY = function (b, k) { return gapAt[b] + 6 + k * 10; };
@@ -1180,14 +1424,16 @@ function drawTrack(X) {
     var rx = x0 + Math.min(per, M.ncol) * colW + 14;
     rightChips.forEach(function (ch, n) {
       var yc = yL + (n - (rightChips.length - 1) / 2) * 48, fx = ch.from && pos[ch.from] ? pos[ch.from].x : lastX, a = ansOf(ch);
-      under.push('<path' + edgeCls(ch) + ' d="M' + (fx + 10) + ' ' + yL + 'C' + (fx + 34) + ' ' + yL + ' ' + (rx - 26) + ' ' + yc + ' ' + rx + ' ' + yc + '" fill="none" stroke="' + (ch.order ? C.lav : C.cross) + '" stroke-width="2" stroke-dasharray="4 4"/>');
+      // each line leaves the station already turned toward its own chip, so two never run along each other from one start
+      under.push('<path' + edgeCls(ch) + ' d="M' + (fx + 10) + ' ' + yL + 'C' + (fx + 34) + ' ' + n1(yL + (yc - yL) / 2) + ' ' + (rx - 26) + ' ' + yc + ' ' + rx + ' ' + yc + '" fill="none" stroke="' + (ch.order ? C.lav : C.cross) + '" stroke-width="2" stroke-dasharray="4 4"/>');
       parts.push(chip2(ch, rx, yc));
       if (ch.order && a) parts.push('<g' + edgeCls(ch) + '>' + ansChip(X, rx + chip2W(ch) + 6, yc, a, 'ans:' + ch.ans) + '</g>');
     });
     var firstX = prefix.length ? pad + edgeL : (sp.length ? pos[sp[0]].x : x0);
     leftChips.forEach(function (ch, n) {
       var yc = y0 + (n - (leftChips.length - 1) / 2) * 48, w = chip2W(ch), x = pad, a = ansOf(ch);
-      under.push('<path' + edgeCls(ch) + ' d="M' + (x + w) + ' ' + yc + 'C' + (x + w + 22) + ' ' + yc + ' ' + (firstX - 30) + ' ' + y0 + ' ' + (firstX - 10) + ' ' + y0 + '" fill="none" stroke="' + (ch.order ? C.lav : C.cross) + '" stroke-width="2" stroke-dasharray="4 4"/>');
+      // and each arrives at the line's start still turned from its own chip
+      under.push('<path' + edgeCls(ch) + ' d="M' + (x + w) + ' ' + yc + 'C' + (x + w + 22) + ' ' + yc + ' ' + (firstX - 30) + ' ' + n1(y0 + (yc - y0) / 2) + ' ' + (firstX - 10) + ' ' + y0 + '" fill="none" stroke="' + (ch.order ? C.lav : C.cross) + '" stroke-width="2" stroke-dasharray="4 4"/>');
       parts.push(chip2(ch, x, yc));
       if (ch.order && a) parts.push('<g' + edgeCls(ch) + '>' + ansChip(X, x + 6, yc + 34, a, 'ans:' + ch.ans) + '</g>');
     });
@@ -1204,23 +1450,21 @@ function drawTrack(X) {
       });
       H = ly + 30 + maxH + 16;
     }
+    trainsLast();
     return finish(X, W, H, under.join('') + parts.join(''), pos);
   }
   // narrow: one station a row; the spine a straight rail, other waits on rails beside it, the words to the right
   // the marks two thirds of the line's, the rails closer, so the words start further left
   railMode = true; RK = W < 300 ? 0.62 : 0.68;
-  var railX = {}, rowsUsed = [0], RS = W < 300 ? 9 : 11;
-  M.ids.forEach(function (i) { var r = M.rows[i]; if (r !== undefined && rowsUsed.indexOf(r) < 0) rowsUsed.push(r); });
-  rowsUsed.sort(function (a, b) { return Math.abs(a) - Math.abs(b) || a - b; }).forEach(function (r, n) { railX[r] = pad + 10 + n * RS; });
-  var x0n = railX[0], nameX = pad + 10 + (rowsUsed.length - 1) * RS + (W < 300 ? 12 : 15), lw = W - nameX - pad;
-  var seq = M.ids.filter(function (i) { return M.loose.indexOf(i) < 0; }).sort(function (a, b) {
-    var ra = M.rows[a] || 0, rb = M.rows[b] || 0;
-    return M.col[a] - M.col[b] || (ra === 0 ? 0 : 1) - (rb === 0 ? 0 : 1) || ra - rb;
-  });
+  // every station on the trunk's column, the words one rail gap and a margin right of it; a portal is
+  // 16 px at every width, since it sits in the id line's type
+  var RS = W < 300 ? 9 : 11, R = railPlan(M, spine, T, sel), PS = 16;
+  var x0n = pad + 10, xs = x0n + RS;
+  var nameX = xs + (W < 300 ? 12 : 15), lw = W - nameX - pad;
   var yN = top + 12, firstY = null;
   // a chip on the rails, from its top edge; two lines when one does not fit, its answer beside it or under it
-  var chipRow = function (ch, y1, x, lk) {
-    var room = W - x - pad, L = wrap(X, ch.s, room - 26, sk.small, 600, 2), h = L.length > 1 ? 38 : 22, col = ch.order ? C.lav : C.cross, lc = lit ? (lk ? 'lit' : 'dimmed') : '';
+  var chipRow = function (ch, y1, x, lk, inner) {
+    var room = W - x - pad - (inner || 0), L = wrap(X, ch.s, room - 26, sk.small, 600, 2), h = L.length > 1 ? 38 : 22, col = ch.order ? C.lav : C.cross, lc = lit ? (lk ? 'lit' : 'dimmed') : '';
     var w = Math.min(room, Math.max.apply(null, L.map(function (l) { return f(l, sk.small, 600); })) + 26), a = ansOf(ch);
     var s = hitG(X, ch.k, x, y1, w, h, lc, 11) + '<rect x="' + n1(x) + '" y="' + n1(y1) + '" width="' + n1(w) + '" height="' + h + '" rx="11" fill="' + C.bg + '" stroke="' + col + '" stroke-width="1.2"' + (ch.order ? ' stroke-dasharray="4 3"' : '') + '/>';
     L.forEach(function (l, n) { s += txt(x + 13, y1 + 15.3 + n * 16, l, sk.small, ch.order ? C.lav : C.link, { wt: 600 }); });
@@ -1232,7 +1476,7 @@ function drawTrack(X) {
     }
     return { s: s, h: h };
   };
-  var addChip = function (ch, y1, x, lk) { var c = chipRow(ch, y1, x, lk); parts.push(c.s); return c.h; };
+  var addChip = function (ch, y1, x, lk, inner) { var c = chipRow(ch, y1, x, lk, inner); parts.push(c.s); return c.h; };
   leftChips.forEach(function (ch) { yN += addChip({ s: ch.a + ' ' + ch.b, k: ch.k, order: ch.order, ans: ch.ans }, yN - 11, pad) + 8; });
   if (leftChips.length) yN += 8;
   if (tr.doneRun) {
@@ -1253,42 +1497,172 @@ function drawTrack(X) {
     if (firstY === null) firstY = yN + 8;
     yN += 48;
   });
-  seq.forEach(function (i) {
-    var t = T[i], x = railX[M.rows[i]] !== undefined ? railX[M.rows[i]] : x0n;
-    pos[i] = { x: x, y: yN + 8, w: 0, h: 0 };
-    parts.push(stn(t, x, yN + 8, { x: nameX, y: yN + 4, w: lw }));
-    yN += labH(t, lw) + 4;
-    inline[i].forEach(function (ch) { yN += addChip(ch, yN + 1, nameX, chipLit(i, ch)) + 4; });
-    yN += 18;
-  });
+  // each station's tunnels: its exits in one portal and its dives in another, both on its id line
+  var ports = {};
+  var portOf = function (i) { return (ports[i] = ports[i] || { dive: [], exit: [] }); };
+  R.tunnels.forEach(function (l) { portOf(l[0]).dive.push(l[1]); portOf(l[1]).exit.push(l[0]); });
+  // portAt keeps where each tunnel's two ends are drawn, end:A>B, for a pressed route
+  var selP = portIds(sel), selL = {}, portAt = {}, lastFoot = 0;
+  selP.links.forEach(function (k) { selL[k] = 1; });
+  var portLit = function (links) {
+    if (!lit) return '';
+    if (selP.end) return links.some(function (k) { return selL[k]; }) ? 'lit' : 'dimmed';
+    return links.some(function (k) { var ab = k.split('>'); return lit['stn:' + ab[0]] && lit['stn:' + ab[1]]; }) ? 'lit' : 'dimmed';
+  };
+  var byNum = function (a, b) { var m = /(\d+)$/; return +(m.exec(a) || [0, 0])[1] - +(m.exec(b) || [0, 0])[1]; };
+  // a station's portals after its id: exits then dives, each its arch, a count when it stacks and the other ends' ids;
+  // one that does not fit after what is there starts a line of its own, its ids wrapping under their first
+  portsLine = function (t, px, yb, xr, xl, dry) {
+    var pp = ports[t.id];
+    return portsRow(pp ? ['exit', 'dive'].filter(function (end) { return pp[end].length; }).map(function (end) {
+      var others = pp[end].slice().sort(byNum);
+      return { end: end, at: t.id, others: others, links: others.map(function (o) { return end === 'dive' ? t.id + '>' + o : o + '>' + t.id; }), key: portKey(end, t.id, others) };
+    }) : [], px, yb, xr, xl, dry);
+  };
+  // a folded group's portals: one per end, the outside stations' ids beside it
+  var foldSpecs = function (g) {
+    return ['exit', 'dive'].filter(function (end) { return g.ports[end].length; }).map(function (end) {
+      var ls = g.ports[end].slice().sort(function (a, b) { return byNum(a[0], b[0]) || byNum(a[1], b[1]); }), others = [];
+      ls.forEach(function (l) { var o = end === 'exit' ? l[0] : l[1]; if (others.indexOf(o) < 0) others.push(o); });
+      return { end: end, at: g.key, others: others.sort(byNum), links: ls.map(function (l) { return l.join('>'); }), key: foldKey(end, ls), whole: true };
+    });
+  };
+  var XP = { tw: function (s, px, wt) { return X.tw(s, px, wt) + 0.3 * String(s).length; } };
+  var portsRow = function (specs, px, yb, xr, xl, dry) {
+    var s = '', r = px, line = 0, cx = px;
+    if (!specs.length) return { s: '', r: px, extra: 0 };
+    specs.forEach(function (sp) {
+      var end = sp.end, i = sp.at, others = sp.others, links = sp.links;
+      var cnt = links.length > 1 ? String(links.length) : '', cw = cnt ? f(cnt, sk.idfs, 700) + 10 : 0, head = PS + 4 + (cw ? cw + 5 : 0);
+      // a fold row's words run long, so its portal keeps its ids on one line or takes a line of its own
+      // measured with the 0.3 px a character the ids are drawn spaced by, as wl below
+      var ids = joinAnd(others), need = sp.whole ? f(ids, sk.idfs, 700) + 0.3 * ids.length : f(others[0] + ',', sk.idfs, 700);
+      if (cx > xl && cx + head + need > xr) { line++; cx = xl; }
+      // the ids break by their spaced width too, so no line runs past xr
+      var yl = yb + line * 16, lx = cx + head, L = wrap(XP, joinAnd(others), xr - lx, sk.idfs, 700, 3);
+      var wl = L.map(function (l) { return f(l, sk.idfs, 700) + 0.3 * l.length; }), right = lx + Math.max.apply(null, wl);
+      if (!dry) {
+        var key = sp.key, crit = links.some(function (k) { return steps[k]; }), col = crit ? C.crit : C.line, lwd = n1((crit ? 5 : 3) * RK);
+        // the arch's base sits half a px under the id's baseline
+        var yc = yl + 0.5 - 12.6 + PS / 2, lc = portLit(links), tip = others.map(function (o) { return o + ' ' + (T[o] ? T[o].name : ''); }).join('; ');
+        var x1 = cx - 3, y1 = yl - 13, h = 18 + (L.length - 1) * 16;
+        s += '<g data-m="prt ' + end + ' ' + i + ' ' + n1(cx + PS / 2) + ' ' + n1(yc) + ' ' + PS + ' ' + n1(lx) + ' ' + n1(right) + ' ' + others.join(',') + '">' + hitG(X, key, x1, y1, right - x1 + 3, h, lc, 6);
+        X.hits[X.hits.length - 1].tip = tip;
+        if (X.skin !== 'pane') s += '<title>' + esc(tip) + '</title>';
+        // a pressed pair: each portal ringed in sky with its ids
+        if (lit && selP.end && lc === 'lit') s += '<rect x="' + n1(x1) + '" y="' + n1(y1) + '" width="' + n1(right - x1 + 3) + '" height="' + h + '" rx="6" fill="none" stroke="' + C.sky + '" stroke-width="1.6" opacity="0.9"/>';
+        s += portalSvg(X, cx + PS / 2, yc, PS, col, lwd, end);
+        if (cnt) s += '<rect x="' + n1(cx + PS + 4) + '" y="' + n1(yl - 11.5) + '" width="' + n1(cw) + '" height="15" rx="7.5" fill="' + C.bg + '" stroke="' + col + '" stroke-width="1.2"/>' + txt(cx + PS + 4 + cw / 2, yl, cnt, sk.idfs, C.text, { wt: 700, anchor: 'middle' });
+        L.forEach(function (l, n) { s += txt(lx, yl + n * 16, l, sk.idfs, C.dim, { wt: 700, ls: 0.3 }); });
+        s += '</g></g>';
+        links.forEach(function (k) { portAt[end + ':' + k] = { x: cx + PS / 2, y: yc }; });
+      }
+      line += L.length - 1; cx = lx + wl[wl.length - 1] + 12; r = Math.max(r, right);
+    });
+    return { s: s, r: r, extra: line * 16 };
+  };
+  var BI = 6, BL = x0n - 12, BR = W - (pad < 10 ? 4 : 14), boxes = [];
+  // a heading in spaced capitals: the letter spacing measured per line, so a line is cut only past three;
+  // heads keeps each side group heading's band, which a pressed route skips
+  var heads = [];
+  var XS ={ tw: function (s, px, wt) { return X.tw(s, px, wt) + 1.1 * String(s).length; } };
+  // one block's rows: a box's caption at its head, then each station, its portals on its id line
+  var drawBlock = function (L) {
+    L.boxes.forEach(function (b) { var ms = L.seq.filter(function (i) { return L.boxOf[i] === b; }); b.first = ms[0]; b.last = ms[ms.length - 1]; });
+    L.seq.forEach(function (i) {
+      var bx = L.boxOf[i], inner = bx ? BI : 0, t = T[i];
+      if (bx && i === bx.first) {
+        yN += 6; bx.top = yN - 14; bx.hi = X.hits.length;
+        var bs = ('Any order, all before ' + bx.to).toUpperCase(), bl = wrap(XS, bs, lw - BI, sk.idfs, 700, 3);
+        bl.forEach(function (l, n) { parts.push(txt(nameX, yN + 2 + n * 15, l, sk.idfs, C.dim, { wt: 700, ls: 1.1 })); });
+        yN += 22 + (bl.length - 1) * 15;
+      }
+      pos[i] = { x: x0n, y: yN + 8, w: 0, h: 0 };
+      parts.push(stn(t, x0n, yN + 8, { x: nameX, y: yN + 4, w: lw - inner }));
+      yN += labH(t, lw - inner) + 4; lastFoot = yN - 15;
+      // the first chip stands 8 px under its station's words and 17 over the next id, so it reads as its own station's
+      inline[i].forEach(function (ch, n) { var y1 = n ? yN + 1 : yN - 8, hh = addChip(ch, y1, nameX, chipLit(i, ch), inner); yN = y1 + hh + 3; lastFoot = y1 + hh; });
+      // the box closes 10 px under its last words, chip or portal, and the next words start 19 px under it
+      if (bx && i === bx.last) { bx.bot = lastFoot + 10; yN = bx.bot + 5; }
+      yN += 18;
+    });
+  };
+  drawBlock(R.main);
   rightChips.filter(function (ch) { return ch.order && !ch.from; }).forEach(function (ch) { yN += addChip({ s: ch.a + ' ' + ch.b, k: ch.k, order: true, ans: ch.ans }, yN - 11, pad) + 8; });
-  var sp2 = spine.filter(function (i) { return pos[i]; });
-  if (firstY !== null && sp2.length) under.push('<path d="M' + x0n + ' ' + firstY + 'V' + pos[sp2[0]].y + '" stroke="' + C.line + '" stroke-width="' + n1(3.5 * RK) + '"/>');
-  for (var s2 = 1; s2 < sp2.length; s2++) { var lc2 = lineCol(sp2[s2 - 1], sp2[s2]); under.push('<path class="' + lin(sp2[s2 - 1], sp2[s2]) + '" d="M' + x0n + ' ' + pos[sp2[s2 - 1]].y + 'V' + pos[sp2[s2]].y + '" stroke="' + lc2[0] + '" stroke-width="' + n1(lc2[1] * RK) + '"/>'); }
-  M.ids.forEach(function (i) {
-    M.preds[i].forEach(function (p) {
-      if (spine.indexOf(i) >= 0 && spine.indexOf(p) >= 0) return;
-      var a = pos[p], b = pos[i]; if (!a || !b) return;
-      // a turn no wider than the rails are apart
-      var q = Math.min(10, Math.abs(a.x - b.x));
-      var dd = a.x === b.x ? 'M' + a.x + ' ' + a.y + 'V' + b.y
-        : b.x < a.x ? 'M' + a.x + ' ' + a.y + 'V' + (b.y - q - 2) + 'Q' + a.x + ' ' + b.y + ' ' + (a.x - q) + ' ' + b.y + 'H' + b.x
-        : 'M' + a.x + ' ' + a.y + 'H' + (b.x - q) + 'Q' + b.x + ' ' + a.y + ' ' + b.x + ' ' + (a.y + q + 2) + 'V' + b.y;
-      under.push('<path class="' + lin(p, i) + '" d="' + dd + '" fill="none" stroke="' + C.line + '" stroke-width="' + n1(3 * RK) + '"/>');
-    });
-  });
-  if (M.loose.length) {
+  // the side work: each group under a heading saying how it connects; folded, its count, which a press opens
+  R.groups.forEach(function (g) {
     yN += 14;
-    var hd = 'ON THEIR OWN: NOTHING WAITS ON THEM', hdL = f(hd, sk.idfs, 700) + hd.length * 1.1 > W - 2 * pad - 4 ? ['ON THEIR OWN:', 'NOTHING WAITS ON THEM'] : [hd];
-    hdL.forEach(function (l, n) { parts.push(txt(pad + 2, yN + n * 15, l, sk.idfs, C.dim, { wt: 700, ls: 1.1 })); });
-    yN += 24 + (hdL.length - 1) * 15;
-    M.loose.forEach(function (i) {
-      var t = T[i]; pos[i] = { x: x0n, y: yN + 8, w: 0, h: 0 };
-      parts.push(stn(t, x0n, yN + 8, { x: nameX, y: yN + 4, w: lw }));
-      yN += labH(t, lw) + 22;
-    });
-  }
-  return finish(X, W, yN + 8, under.join('') + parts.join(''), pos);
+    var hs = g.words.toUpperCase(), hl = wrap(XS, hs, W - 2 * pad - 4, sk.idfs, 700, 3), y0 = yN;
+    var head = hl.map(function (l, n) { return txt(pad + 2, yN + n * 15, l, sk.idfs, C.dim, { wt: 700, ls: 1.1 }); }).join('');
+    yN += 24 + (hl.length - 1) * 15;
+    heads.push([y0 - 12, y0 + (hl.length - 1) * 15 + 5]);
+    if (!g.folded) { parts.push('<g data-m="head ' + g.key + '">' + head + '</g>'); drawBlock(g.lay); return; }
+    // its portals follow its count on the count's line; its ids name the stations a tunnel reaches bright
+    var n = g.members.length, w1 = n + (n === 1 ? ' task, folded' : ' tasks, folded') + (g.states.length ? ': ' + foldWords(g.states) : '');
+    var wl1 = wrap(X, w1, lw, sk.small, 650), dl = (wl1.length - 1) * sk.slh, il = wrap(X, joinAnd(g.members.slice().sort(byNum)), lw, sk.small, 700);
+    var specs = foldSpecs(g), px = nameX + f(wl1[wl1.length - 1], sk.small, 650) + 10, pe = portsRow(specs, px, 0, nameX + lw, nameX, true).extra;
+    var bxw = n1(11 * RK), bh = n1(34 * RK), zb = yN + 9 + dl + pe + sk.slh * il.length + 6, yIds = yN + 9 + dl + pe;
+    X.sideFold = true;
+    var idLine = function (l, y) {
+      return '<text x="' + n1(nameX) + '" y="' + n1(y) + '" font-size="' + sk.small + '">' + l.split(/([A-Za-z]+-\d+)/).filter(Boolean).map(function (p) {
+        var on = g.lands.indexOf(p) >= 0;
+        return '<tspan fill="' + (on ? C.text : C.dim) + '" font-weight="' + (on ? 700 : 500) + '">' + esc(p) + '</tspan>';
+      }).join('') + '</text>';
+    };
+    parts.push('<g data-m="fold ' + g.key + ' ' + n + ' ' + pad + ' ' + n1(y0 - 12) + ' ' + g.lands.join(',') + '">' + hitG(X, g.key, pad, y0 - 12, W - 2 * pad, zb - y0 + 12, lit ? 'dimmed' : '', 8) + head +
+      sideFoldMark(x0n - bxw, yN - 4, 2 * bxw, bh, C, 1.6 * RK) +
+      wl1.map(function (l, k) { return txt(nameX, yN + 9 + k * sk.slh, l, sk.small, C.sec, { wt: 650 }); }).join('') + il.map(function (l, k) { return idLine(l, yIds + sk.slh * (k + 1)); }).join('') + '</g></g>');
+    parts.push(portsRow(specs, px, yN + 9 + dl, nameX + lw, nameX, false).s);
+    g.foldY = yN + 8;
+    yN = zb + 14;
+  });
+  // the trunks: the main line's from the finished run, each group's its own; a box's at its top and bottom edges
+  var inY = function (i) { var b = R.boxOf[i]; return b && b.crit === i ? b.top : pos[i].y; };
+  var outY = function (i) { var b = R.boxOf[i]; return b && b.crit === i ? b.bot : pos[i].y; };
+  var trunkOf = function (L, isMain) {
+    var s2 = L.tk.filter(function (i) { return pos[i]; });
+    if (isMain && firstY !== null && s2.length) under.push('<path d="M' + x0n + ' ' + firstY + 'V' + inY(s2[0]) + '" stroke="' + C.line + '" stroke-width="' + n1(3.5 * RK) + '"/>');
+    for (var k = 1; k < s2.length; k++) {
+      var a2 = s2[k - 1], b2 = s2[k], lc2 = lineCol(a2, b2), st2 = '" stroke="' + lc2[0] + '" stroke-width="' + n1(lc2[1] * RK) + '"/>';
+      var bx2 = outY(a2) !== pos[a2].y ? R.boxOf[a2] : null;
+      var lk2 = bx2 && lit ? (lit['stn:' + b2] && L.seq.some(function (i) { return R.boxOf[i] === bx2 && lit['stn:' + i]; }) ? 'lit' : 'dimmed') : lin(a2, b2);
+      // a box its station waits on with no trunk station in it: the trunk stops at its top and starts again at its bottom
+      var pass = L.boxes.filter(function (b) { return b.to === b2 && !b.crit && b.top !== undefined; })[0];
+      if (pass) under.push('<path class="' + lin(a2, b2) + '" d="M' + x0n + ' ' + outY(a2) + 'V' + pass.top + 'M' + x0n + ' ' + pass.bot + 'V' + inY(b2) + st2);
+      else under.push('<path class="' + lk2 + '" d="M' + x0n + ' ' + outY(a2) + 'V' + inY(b2) + st2);
+      if (outY(a2) !== pos[a2].y) under.push('<path class="' + lin(a2, b2) + '" d="M' + x0n + ' ' + n1(pos[a2].y - 12) + 'V' + n1(pos[a2].y + 12) + '" stroke-linecap="round' + st2);
+    }
+  };
+  trunkOf(R.main, true);
+  R.groups.forEach(function (g) { if (!g.folded) trunkOf(g.lay, false); });
+  // the surface links off the trunk: a chain's and neighbouring rows', each straight down the column
+  var wd = n1(3 * RK);
+  Object.keys(R.surf).forEach(function (k) {
+    if (R.surf[k] !== 'pair') return;
+    var ab = k.split('>'), a = pos[ab[0]], b = pos[ab[1]];
+    if (a && b) under.push('<path class="' + lin(ab[0], ab[1]) + '" d="M' + x0n + ' ' + a.y + 'V' + b.y + '" fill="none" stroke="' + C.line + '" stroke-width="' + wd + '"/>');
+  });
+  // a pressed portal: the route underground, faint and dashed, down the gap between the marks and the words from
+  // its station's id line to each twin's
+  if (selP.end) selP.links.forEach(function (k) {
+    var ab = k.split('>'), da = portAt['dive:' + k], ex = portAt['exit:' + k];
+    var fy = function (i) { var g = R.gOf[i]; return g && g.foldY !== undefined ? g.foldY : null; };
+    var y1 = da ? da.y : fy(ab[0]), y2 = ex ? ex.y : fy(ab[1]);
+    if (y1 === null || y2 === null) return;
+    // broken where it passes a side group's heading, so its words stay clear
+    var lo = Math.min(y1, y2), hi = Math.max(y1, y2), d = 'M' + n1(xs) + ' ' + n1(lo);
+    heads.forEach(function (h) { if (h[0] > lo && h[1] < hi) d += 'V' + n1(h[0]) + 'M' + n1(xs) + ' ' + n1(h[1]); });
+    under.push('<path class="lit" data-m="route ' + k + '" d="' + d + 'V' + n1(hi) + '" fill="none" stroke="' + (steps[k] ? C.crit : C.cross) + '" stroke-width="1.6" stroke-dasharray="3 4" opacity="0.55"/>');
+  });
+  // each box under everything, its press under its stations' so each presses itself and the rest of it the station it waits for
+  var allBoxes = R.main.boxes.concat.apply(R.main.boxes, R.groups.filter(function (g) { return !g.folded; }).map(function (g) { return g.lay.boxes; }));
+  allBoxes.slice().reverse().forEach(function (b) {
+    if (b.top === undefined) return;
+    var g = hitG(X, 'stn:' + b.to, BL, b.top, BR - BL, b.bot - b.top, lit ? (lit['stn:' + b.to] ? 'lit' : 'dimmed') : '', 10);
+    X.hits[X.hits.length - 1].box = true; X.hits.splice(b.hi, 0, X.hits.pop());
+    boxes.unshift(g + '<rect data-m="box ' + b.to + ' ' + n1(BL) + ' ' + n1(b.top) + ' ' + n1(BR) + ' ' + n1(b.bot) + '" x="' + n1(BL) + '" y="' + n1(b.top) + '" width="' + n1(BR - BL) + '" height="' + n1(b.bot - b.top) + '" rx="10" fill="' + C.card + '" stroke="' + C.edge2 + '" stroke-width="1"/></g>');
+  });
+  return finish(X, W, yN + 8, boxes.join('') + under.join('') + parts.join(''), pos);
 }
 
 /* ================= the picture ================= */
@@ -1296,10 +1670,11 @@ function finish(X, W, H, inner, pos) {
   var w = Math.round(W), h = Math.round(H), font = X.sk.font.replace(/'/g, '');
   var svg = '<svg xmlns="http://www.w3.org/2000/svg" class="apic" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" font-family=\'' + font + '\' role="img" aria-label="Where we stand">' +
     styleOf(X.skin, inner) + inner + '</svg>';
-  return { svg: svg, w: w, h: h, pos: pos, hits: X.hits };
+  // sideFold: a side group drew folded, so the legend names its mark
+  return { svg: svg, w: w, h: h, pos: pos, hits: X.hits, sideFold: !!X.sideFold };
 }
 /* opt: { skin: 'web' | 'narrow' | 'pane', width, measure(text, px, weight), icons: { fav, quiet, block }, hover, top }.
-   hits list every press zone in picture px, the later ones drawn over the earlier. */
+   hits list every press zone in picture px, the later ones drawn over the earlier; a line's (line: true) lies over the stations it passes. */
 export function drawPicture(P, V, opt) {
   opt = opt || {};
   var skin = opt.skin || 'web', sk = skinOf(skin), m = opt.measure;
@@ -1323,6 +1698,11 @@ function outText(P, ws, task, fallback) {
 // the track page's review readout in the strip's words: code finished that no review covers yet
 // a line said once, however many waits it stands for
 function uniq(a) { return a.filter(function (x, i) { return a.indexOf(x) === i; }); }
+// the own group's name as its heading words it: loose tasks on their own, else side work off the main line
+function ownName(P, V) {
+  var R = railOf(P, V), g = R && R.groups.filter(function (x) { return x.key === 'grp:own'; })[0];
+  return g && g.words === 'Off the main line' ? 'Side work off the main line' : 'Side work on its own';
+}
 function reviewWords(n) { return n + ' finished code task' + (n === 1 ? ' waits' : 's wait') + ' for a review'; }
 export function detail(P, V, key) {
   if (!key) return null;
@@ -1332,13 +1712,19 @@ export function detail(P, V, key) {
   if (kind === 'stn') {
     var t = T[id]; if (!t) return null;
     var tr = trackOf(P, t.tr), Wd = (tr && P.ws[tr.ws]) || { links: [], out: [], in: [] }, d = { id: id, name: t.name, chips: [], facts: [], acts: [] };
-    var st = { now: ['running', 'active'], held: ['in progress', 'active'], left: ['in progress, nobody on it', ''], ready: ['ready', 'active'], gated: ['waits on your answer', 'gated'], done: ['done', ''] }[t.st] || ['waiting', ''];
-    if (t.st === 'now' && t.ended) st = [t.ended === 'stopped' ? 'stopped, next leg due' : 'finished, landing', 'active'];
+    var tw = t.word || {}, nx = { start: 'ready to start', 'continue': 'ready to continue', settle: 'ready to settle' }[tw.next];
+    var st = { now: ['running', 'active'], left: ['unconfirmed', ''], ready: [nx || 'ready', 'active'], gated: ['waits on your answer', 'gated'], done: ['done', ''] }[t.st] || ['waiting', ''];
     d.chips.push(st);
     if (list(Wd.crit && Wd.crit.path).indexOf(id) >= 0) d.chips.push(['critical path', 'crit']);
     if (t.review) d.chips.push(['review', '']);
     d.facts.push(['On', t.tr + ' ' + (tr ? shortName(tr) + ', ' + tr.ws : '')]);
-    if (t.st === 'now') d.facts.push(['Who', t.agent ? 'the ' + t.agent + ' agent, sent by the session' + (t.ended ? ', ' + (t.ended === 'stopped' ? 'stopped before its end' : 'finished') : '') : 'the session']);
+    // running: who and how long; unconfirmed: who, where and since when; ready to continue or settle: the last run and its end
+    var whoOf = function () { return tw.worker === 'agent' || (!tw.worker && t.agent) ? 'the ' + runnerOf(t) + ' agent' : 'the session'; };
+    var at = function (s) { var h = s ? whenWords(P, s) : ''; return h ? (h.indexOf(':') > 0 ? ' at ' : ' on ') + h : ''; };
+    var lw = tw.since ? longWords(P, tw.since) : '', hw = tw.since ? whenWords(P, tw.since) : '';
+    if (t.st === 'now') d.facts.push(['Who', whoOf() + (t.agent ? ', sent by the session' : '') + (lw ? ', running for ' + lw : '')]);
+    else if (t.st === 'left') d.facts.push(['Who', whoOf() + (tw.pc ? ' on ' + tw.pc : '') + (hw ? ', not heard since ' + hw : ', not heard lately')]);
+    else if (t.st === 'ready' && tw.worker) d.facts.push(['Who', (tw.next === 'settle' ? whoOf() + ' finished' : leftWords(whoOf(), tw.how)) + at(tw.ended)]);
     else if (t.by) d.facts.push(['Run by', t.by]);
     var w = list(t.waits).map(named).concat(list(t.cross).map(function (x) { return named(x) + onTrack(x); }));
     list(Wd.in).forEach(function (o) { if (o.task === id) w.push(o.text); });
@@ -1354,11 +1740,22 @@ export function detail(P, V, key) {
     d.hint = 'Press the station again to open it. Press the ground to clear.';
     return d;
   }
+  // a portal names both ends of its tunnels; a group's heading opens it
+  if (kind === 'prt') {
+    var pi = portIds(key); if (!pi.ins.length || !pi.ins.every(function (x) { return T[x]; })) return null;
+    var dv = pi.end === 'dive', at = joinAnd(pi.ins);
+    return { id: '', name: dv ? at + ' runs underground to ' + joinAnd(pi.others) : joinAnd(pi.others) + ' surfaces at ' + at, chips: [[pi.links.length > 1 ? pi.links.length + ' tunnels' : 'tunnel', '']],
+      facts: [[dv ? 'Frees' : 'Waits on', pi.others.map(named)]], acts: pi.others.slice(0, 2).map(function (o) { return { label: 'Open ' + o, k: 'open:' + o }; }), hint: 'The other end is lit, the route underground dashed. Press the ground to clear.' };
+  }
+  if (kind === 'grp') {
+    var gk = id.split(':');
+    return { id: '', name: gk[0] === 'off' ? 'Side work that branches off ' + gk[1] : gk[0] === 'feeds' ? 'Side work that feeds ' + gk[1] : ownName(P, V), chips: [], facts: [['Shows', 'this group open, the other groups folded to their counts']], acts: [] };
+  }
   if (kind === 'pill') {
     var tr2 = trackOf(P, id); if (!tr2) return null;
     var W2 = P.ws[tr2.ws], d2 = { id: id, name: tr2.name, chips: [], facts: [], acts: [] };
     d2.chips.push([tr2.state, tr2.state === 'parked' ? 'parked' : tr2.state === 'active' ? 'active' : '']);
-    if (tr2.stalled) d2.chips.push([tr2.stalled, 'stalled']);
+    if (flagOf(tr2)) d2.chips.push([flagOf(tr2), 'stalled']);
     d2.facts.push(['Where it stands', tr2.open + ' open: ' + runParts(tr2, ' ') + (tr2.ready ? tr2.ready + ' ready, ' : '') + (tr2.waiting || 0) + ' waiting; longest chain ' + tr2.chain + '; ' + tr2.done + ' of ' + (tr2.done + tr2.open) + ' done']);
     var ins = [], outs = [];
     var orderWhy = function (l) { var a2 = l.ans && P.ans && P.ans[l.ans]; return '(' + (a2 ? a2.tok + ', ' : '') + 'the track order)'; };
@@ -1438,11 +1835,16 @@ export function legend(P, V, skin, opt) {
   var pillMk = function (fill, stroke, dash) { return box(30, 16, '<rect x="1" y="2" width="28" height="12" rx="6" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1.4"' + (dash ? ' stroke-dasharray="4 3"' : '') + '/>'); };
   var it = [];
   if (V.level === 2) {
-    it.push([mk('now'), 'running now'], [mk('ready'), 'ready to start'], [mk('waits'), 'waits on the tasks before it']);
-    var T = P.tasks || {};
-    if (Object.keys(T).some(function (k) { return T[k].tr === V.tr && T[k].st === 'gated'; })) it.push([mk('gated'), 'waits on your answer']);
+    var T = P.tasks || {}, drawn = function (st) { return Object.keys(T).some(function (k) { return T[k].tr === V.tr && T[k].st === st; }); };
+    it.push([mk('now'), 'running']);
+    // a legend names what is drawn: the half mark only where a station is unconfirmed
+    if (drawn('left')) it.push([mk('left'), 'unconfirmed: not heard for three minutes']);
+    it.push([mk('ready'), 'ready to start, continue or settle'], [mk('waits'), 'waits on the tasks before it']);
+    if (drawn('gated')) it.push([mk('gated'), 'waits on your answer']);
     it.push([mk('review'), 'a review'], [mk('done'), 'done, kept where a side track leaves']);
     it.push([box(34, 18, '<rect x="2" y="3" width="30" height="12" rx="6" fill="' + C.card2 + '" stroke="' + C.line + '" stroke-width="2"/>'), 'a finished run, folded']);
+    // opt.sideFold: the drawn picture's sideFold, a side group drawn folded
+    if (opt.sideFold) it.push([box(34, 18, sideFoldMark(2, 3, 30, 12, C, 1.4)), 'side work, folded']);
   } else {
     it.push([pillMk(C.skyBg, C.sky), 'active'], [pillMk(C.card, C.cross), 'waiting for a session'], [pillMk('none', C.text, true), 'new'], [pillMk(C.lavBg, C.lav), 'parked, dimmed']);
     it.push([rail(C.cross, 2.4), 'a wait, with its count'], [rail(C.lav, 2.2, '6 5'), 'opens when the one before ends']);
@@ -1467,7 +1869,8 @@ export function crumbs(P, V, opt) {
   var short = opt && opt.pane, out = [];
   out.push({ words: 'Overview', k: V.level === 0 ? null : 'lvl:0' });
   if (V.level >= 1) out.push({ words: V.ws + (short ? '' : ' ' + wsShort(P, V.ws)).replace(/\s+$/, ''), k: V.level === 1 ? null : 'lvl:1' });
-  if (V.level === 2) { var tr = trackOf(P, V.tr); out.push({ words: V.tr + (tr ? ' ' + shortName(tr) : ''), k: null }); }
+  // a track whose words are still its workstream's short name shows its id alone
+  if (V.level === 2) { var tr = trackOf(P, V.tr), nm = tr ? shortName(tr) : ''; out.push({ words: V.tr + (nm && nm.toLowerCase() !== wsShort(P, V.ws).toLowerCase() ? ' ' + nm : ''), k: null }); }
   return out;
 }
 // the since line: null with no last look; moved says whether anything here changed

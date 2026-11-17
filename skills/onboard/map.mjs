@@ -106,7 +106,7 @@ export function evidenceOf(ev) {
   if (e.call) out.call = String(e.call);
   return out;
 }
-const DONE = ['completed', 'dropped'];
+const DONE = ['done', 'dropped'];
 const TRACK_ENDED = ['finished', 'dropped', 'done', 'folded'];
 /* null while the event has not come, else why it has (or why it cannot be watched) */
 export function eventCame(until, { tasks = new Map(), tracks = new Map(), answered = new Set(), today = new Date().toISOString().slice(0, 10) } = {}) {

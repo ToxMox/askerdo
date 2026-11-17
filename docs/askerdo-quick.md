@@ -1,9 +1,12 @@
 # AskerDo quick reference (read this at the first board touch)
 
-The calls a session makes every day. The rest is in
-[question-hub.md](question-hub.md) (the board, every question flag,
-labels, `login`) and [work-system.md](work-system.md) (read levels,
-outcomes, checklists, the handoff payload, loose files, profiles).
+The calls a session makes on most days. The rest is in
+[question-hub.md](question-hub.md), "Every question call, in full"
+(engagement, a question's lane, rulings, the names line), and
+[work-system.md](work-system.md), "Every task and track call, in full"
+(found work and parked tracks, wakes and the inbox, moving steps,
+closing with another task, a look, knowledge, overrides, capture and splinter, order and
+edges, reviews, the sweep offer, upkeep, timings, folders).
 
 ```bash
 node ~/.claude/askerdo/cli.mjs <verb> [args] --json
@@ -16,213 +19,125 @@ node ~/.claude/askerdo/cli.mjs <verb> [args] --json
   failure in the CLI or the local server. "It may have run" means read
   before trying again.
 - Pass `--session <own-id>` (the id in the scratchpad path) on every
-  write that takes it.
-- `show T-13` prints the brief form, NOT the whole record; its last line
-  names what it left out (`--full` is all of it). When the work needs
-  what a cut read left out, read that part before acting on it.
-  `<verb> --help` prints one verb.
+  write that takes it. `<verb> --help` prints one verb.
+- `show T-13` prints the task's block, its first line the task's word
+  (running, unconfirmed, waiting, ready) with who and since when; its
+  last line names what it left out (`--full` is all of it, `--history`
+  the old texts).
 
 ## Questions
 
-- **Engaged or not:** a session engages the board only through the
-  user's own acts (an `/askerdo` command, a board id typed in a prompt,
-  acting on a board item) or a kickoff that hands it an id; its own
-  question never engages it. Until then the `ask` tool keeps a question
-  with the session under a local label (`L1`, answered `L1a`) on the
-  card and the band, the mod records an answer given there with no CLI
-  call, a typed `L1a` goes through the `answer` tool, and
-  on engagement files it on the board (answered ones with their answer)
-  and tells its new label once. The mod refuses a CLI `register` from a
-  session not engaged and points at `ask`. One left unanswered when the
-  session closes is gone.
-- **Register before the first telling:** the mod's `ask` tool where it
-  runs, else `register --json < payload.json`. Required: `name`, `ask`,
-  `gist`, `projectDir`, `session`, `blocking`. `ask` is one plain
-  question ending in `?` naming the options by letter with the pick
-  marked ("... (a, my pick), or ... (b)?"); `gist` is why it came up,
-  carrying what answering needs (the items, counts and consequences),
-  never a pointer to a report. Usual: `crux`, `stakes`, `options` as
-  `{type, option, getsYou, costsYou}`, `pick` (a letter, or `null` on
-  purpose), `gates` (`T-n`).
-- **Its lane:** left out, the track is the one you hold and the
-  workstream that track's, else that of the tasks you have in hand,
-  else your subscriptions'; several are refused naming the tasks (name
-  one), none files it in the project's inbox. The board adds `pc`, the
-  asking PC's name. A question belongs to the session holding its
-  track, so the session that resumes the track owns it.
-- **Rulings:** reopening an answered question takes `revisits:
-  ["Q512"]` and a `reversal`, and may share a reply with other questions;
-  one that only mentions it takes `cites: ["Q498"]`. An answered
-  label bare in the free text without either is refused; an old
-  queue's question is named by its title, and a label inside a file
-  name or path is not read as one.
-- **Answered in chat:** the token is the number plus the letter
-  (`106b`), each token typed its own answer: the mod's `answer` tool
-  (`id`, `pick`, `note`; `drop` for a decline) where it runs, a local
-  label only there, else `answer Q106 --pick 106b --note "..." --session
-  <own-id>`; a decline `drop Q106 --note "..."`; a deferral ruled aloud `snooze
-  Q106 --trigger "next session"` (or `--until YYYY-MM-DD`, `--wake-on
-  T-12:completed`).
-- **Fix one, never re-register:** `question edit Q106 --workstream
-  WS-3` (`--track TR-3`, `--pick b`, `--add-gate T-12`). An open one
-  whose ask or options must change is reworded in place, keeping its
-  number: the `ask` tool with `edits: "Q106"`, or `question edit Q106`
-  with the whole reworded payload on stdin; tell it again in full.
-  Telling one you did not register: `surface Q106 --session <own-id>`
-  first.
-- An answer made anywhere else reaches your inbox the moment the board
-  records it. The web pages take no answers.
+Where the mod runs, its tools (`ask`, `answer`, `decide`) do each of
+these; a session not yet engaged with the board keeps its question
+local (`L1`) until it engages.
 
-## The names line
-
-Not where the mod runs (its band carries the queue). Elsewhere, once the
-session has engaged the board (above), end the reply with exactly the line
-`list --project <dir> --session <own-id> --names-line` prints; when it
-prints nothing, write nothing, never "no open questions".
+- **Ask:** register before the first telling: `register --json <
+  payload.json` with `name`, `ask` (one plain question ending in `?`,
+  options by letter, the pick marked "(a, my pick)"), `gist`,
+  `projectDir`, `session`, `blocking`; usually `crux`, `stakes`,
+  `options` (`{type, option, getsYou, costsYou}`), `pick`, `gates`.
+  Reopening an answered one takes `revisits` and a `reversal`; one that
+  only mentions it takes `cites`.
+- **Answered in chat:** each token (`106b`) its own answer: `answer Q106
+  --pick 106b --note "..." --session <own-id>`; a decline `drop Q106
+  --note "..."`; a deferral `snooze Q106 --trigger "next session"`.
+- **Fix one, never re-register:** `question edit Q106` (`--workstream`,
+  `--track`, `--pick`, `--add-gate`, or the whole reworded payload on
+  stdin); `surface Q106 --session <own-id>` before telling one you did
+  not register.
+- **A ruling the user makes in chat** is recorded that turn: `decide
+  --session <own-id> --json < decision.json` (`title`, only what the user
+  chose; `words`, theirs, whole; `body`, your picks named as yours; what
+  it governs; `question`, the Q-n it answers; `confirmed` when the user
+  said yes to the title as worded). The title, with the restatement in
+  its body, is the statement the user confirmed: tasks, briefs and notes
+  carry it and the K-n, and the words stay in the record.
 
 ## Tasks
 
-- Status: `open`, `in_progress` from the first dispatch, `completed`
-  when it lands where its Intent says, `dropped`. A session flips it;
-  what a task waits on is a "depends on" edge or a gate, never a status.
-- `task update T-13 --status in_progress --session <own-id>` (the mod's
-  `task_update` tool): `--agent "<job name>"` tags the agent and starts
-  it, `--reason "..."` starts one that is not ready, `--note "..."`
-  journals it, `--in-hand` takes it in hand (a session may hold
-  several; one another session holds is refused naming the holder, and
-  moves only with `--take-over` once the user says so, the holder told).
-- `task edit T-13 --close "with T-12"` closes it when T-12 completes
-  (`--close look` waits on the user's press, `--close "when <fact>"`
-  names a checkable fact); `task edit T-13 --landed` reports a look
-  task's work landed, so the user's band offers Close.
+- A task's status is `open`, `done` or `dropped`; its word (running,
+  unconfirmed, waiting, ready) is read, never set. Start one yourself
+  with `task update T-13 --in-hand --session <own-id>`; a dispatch
+  naming it opens its agent's run. Close it `--status done` when it
+  lands where its Intent says, `--status dropped` otherwise.
+- **A task ready to settle** ("ready to settle: home-nodes finished, 2
+  steps open") is the track holder's: each open step done
+  (`--check-done 2`), struck with a word why (`--check-strike "2:
+  why"`), or filed as its own task (a leftover naming the step), in the
+  close's own call. A close with a step open is refused.
+- **Found work gets its home the turn it is found.** Only a real place
+  on the track you hold is free; anywhere else is the user's call:
+
+|Where it goes|The call|
+|-|-|
+|an open task that already covers it|`note T-13 --body "..."`|
+|a plain defect in the work in hand, one right fix, this turn|fix it, file nothing|
+|a step on the task whose worker will do it, in hand or not|`task update T-13 --check-add "..."`; a step of yours someone else does moves with `--move-steps`|
+|a real place on the track you hold|`task create --tier 2 --before T-n` (and `--after`): filed at once. With nothing else open on the track it files at once and is taken next|
+|last on your track, or anywhere off it (another track, a new or parked track, another workstream or project, an inbox, a later session)|the same call with the place you want (`--last "<why>"`; `--tier 3 --track TR-5` or `--unpark-when "task-completes T-20"`; `--tier 4 --workstream WS-2` with `--track` there or `--wake`; `--wake next-session`), its reason (`--why-elsewhere "<why>"` off the track) and `--here-before T-n` (and `--here-after`), the real place on your track it would otherwise take: nothing is created; the user's question shows both places and presses do it on this track, put it where asked, let's talk where it fits, or drop it|
+|anything only the user can decide or do|a question (`gates` names the task)|
+
+- The press creates the task with no model turn. After "let's talk",
+  file the settled place with `--question Q-n --words "<the user's
+  settling words>"`. A track is not finished while a placement question
+  of its work is open. A session that holds no track files as before.
 - `task create --json < payload.json` (`name`, `description`; usual
-  `intent`, `workstream`). `note T-13 --body "..." --session <own-id>`
-  journals a task, workstream, track or knowledge record.
-- **Found work names its place.** A task you file mid-arc goes where it
-  belongs, judged from what the work is and what it blocks: this track,
-  another track, before or after the release, or unplaced with the reason
-  no plan reaches it. `task create --track TR-4 --before T-20` (or
-  `--after T-n`), or `--unplaced "why"`; a filing with neither is refused
-  and names the board's hint, the open track whose labels, files or words
-  it shares, as one input beside your judgment, never a default.
-  `track capture` into the inbox takes `--unplaced` too, and every inbox
-  filing, from a session or not, names its `--wake` (below). `task edit T-21
-  --track TR-5 --before T-30` (or `--unplaced "why"`) moves one later.
-- **Work for later goes on a parked track**, never the inbox: `track new
-  --workstream WS-3 --name "..." --goal "..."`, then `track park TR-n
-  --reason "..." --unpark-when "task-completes T-13"`, then place the task
-  there. An unplaced reason that says no track carries the work is refused
-  with those commands. Every inbox filing names its wake, or the board
-  refuses it with both ways out: `--wake "track-ends TR-5"`,
-  `"task-completes T-13"`, `"question-answered Q60"` or a date
-  `2026-12-01` still to come (a fired one is refused), on `task create`,
-  `task edit`, `track capture` and `track finish|drop --leftovers inbox`;
-  one with none stored is due 14 days after it entered the inbox. Once
-  its event ends or its date comes it is due: `task edit T-21 --wake ...`
-  wakes it again, and the third wake in one inbox stay goes to the user
-  as a question instead (place it, keep it with a new wake, or drop it).
-  `track found TR-4` (`--since handoff`) lists what the arc filed, each
-  with where it went and the command that moves it; the handoff, the
-  kickoff and a question gating a release task (named Release..., or
-  labelled `release`) show the same, so the user reviews it at each gate.
-- **A ruling the user makes in chat** is recorded the same turn: the mod's
-  `decide` tool, else `decide --session <own-id> --json < decision.json`
-  (`title`, `words` (theirs, quoted), what it governs: `tasks`, `files`,
-  `commands`; `supersedes` a K-n; `question`, the Q-n it answers: words
-  carrying `167a` or `Q167 a` record the answer, else the result says it
-  is still open); `decisions --task T-13` (`--track`,
-  `--workstream`, `--since`) lists the ones in force.
-- **Changing one once used:** `knowledge amend K-7 --body "..."` appends a
-  dated clarification and keeps the number; `supersede` is for a change of mind.
-- **In place only while unused:** `knowledge edit K-7 --name` or `--body` (and
-  `task edit T-13 --intent "..."` before its work starts) is refused once another
-  session read it; a record's refs, projects and files change at any time.
-- **A fact about one area of the code** names its files: `knowledge new --type
-  gotcha --title "..." --file 'src/db/**'` (repeatable; `knowledge edit K-7
-  --add-file` or `--remove-file` at any time). A session editing a matching
-  file is pointed at it, once.
-- **Override, the user's press:** `override request K-7 --kind fix|withdraw|scrub
-  --reason "..." --summary "..." --session <own-id>`, only for a bug's text, a
-  ruling never made or a secret; never wording, scope or a change of mind. A
-  subagent reports to its session and never asks. Where the mod runs, ask
-  with its `override_request` tool and tell the block it returns as written.
-- `override unscrub K-7 --user <session>` puts a scrubbed text back within 7 days.
-- `show K-7 --history` prints a record's old texts. `show` logs your read
-  under the session Claude Code names in the shell; `--session <own-id>`
-  where none is named.
+  `intent`) takes the flags above; a date `--wake` names why that date
+  in `--unplaced`. Where the mod runs, its `place` tool takes the same
+  fields (`here` for the real place). A refusal names the call that
+  fits: send it.
+- **A close carries its leftovers:** `--status done --leftovers`
+  reads a JSON list of steps (`{ "name", "description", "runBy" }`, or
+  `{ "check": 2, "runBy" }` for an open step, with its place:
+  `after`/`before` on your track, or the place asked with its reason
+  and `here`) on stdin. Each step follows the same rule: one at a real
+  place lands with the close, and each asked step becomes its own
+  placement question.
+- **A step someone else does** moves before the close: `--move-steps`
+  reads `[{ "check": 2, "onto": "T-20" }]` (or `"question": "Q60"`, or
+  a new task's `runBy` and its place) on stdin; a step moved onto a task
+  on another track is asked like any off-track filing.
+- **A look** is a task labelled `look` that ends in one question to the
+  user gating it. **A hold:** when the user says hold, `decide` with
+  labels `["hold"]` on the track, in their words. **A refused stop:**
+  settle the task it names, or write a note on it saying why it waits.
+- `note T-13 --body "..." --session <own-id>` journals a record; with
+  `--description`, `--intent` (a task) or `--goal` (a track) it rewrites
+  that text too, the old text kept in `show T-13 --history`.
 
 ## Tracks and handoffs
 
-A track (`TR-n`) is a line of work in a workstream; its handoffs
-(`TR-n.m`) are checkpoints. One session holds one track. Where the mod
-runs, `/askerdo resume`, `/askerdo track`, `/askerdo park`, `/askerdo
-handoff` and its `handoff_write` tool drive it; hand off at the 30
-percent window, and before anything else past 40. Elsewhere:
+One session holds one track (`TR-n`); its handoffs (`TR-n.m`) are
+checkpoints. Where the mod runs, `/askerdo resume`, `/askerdo park`,
+`/askerdo handoff` and its `handoff_write` tool drive it. The mod's
+board tools (`handoff_write`, `handoff_update`, `override_request`,
+`review_covers`, `coverage`) are deferred: load each first with
+ToolSearch, query `select:mcp__askerdo__<name>`. So is `drawn`, which
+reads what this session's pane, band and status row last drew, as text,
+before the user is asked to look at them (`docs/procedures/look-check.md`).
 
-- **Find:** `shelf`, `track list --workstream WS-3`, `track show TR-4`.
-- **Take:** `resume TR-4 --session <own-id>` prints its kickoff; judge
-  the loose files it lists first, and ask the user about each due one in
-  your own reply, a proposal per file through the ask tool. A held
-  one names its holder and `--take-over`, `--splinter "<name>"`,
-  `--read-only`; one unseen past `tracks.quietHours` (12) reads "held,
-  quiet since". **Start:** `track new --workstream WS-3 --name "..."
-  --session <own-id>`.
+- **Take:** `resume TR-4 --session <own-id>` prints its kickoff, an
+  index (to settle, to continue, ready to start) that gives nothing back
+  in hand; take what you judge, settling first, and ask nothing about leftover files or worktrees:
+  its one kept line says what stays and why. `track new --workstream WS-3
+  --name "..."` starts one; `track layout TR-4 --json < steps.json` lays
+  out its steps.
+- **Merge:** merging an agent's lane removes its worktree and deletes its
+  branch then, with no question.
 - **Hand off:** `handoff write TR-4 --session <own-id> --json <
-  handoff.json` (`focus`, `state`, `verifyFirst` per repo with a
-  disposition per untracked file); the reply hands the user `/askerdo
-  resume TR-4` alone in a copy block. Talk that goes on after it is
-  patched in, keeping its id: `handoff update TR-4 --session <own-id>
-  --json < ops.json` (the mod's `handoff_update`); once another session
-  holds the track, `note TR-4 --body "..."` reaches it at its next prompt.
-- **End:** `track park TR-4 --reason "..."` (`--unpark-when
-  "task-completes T-13"`, `"track-ends TR-5"` or `"question-answered
-  Q60"` unparks it then), `track finish TR-4 --outcome "..."`.
-- **A new idea:** `track capture --track TR-4 --name "..."` and carry
-  on, or `track splinter TR-4 --name "..."` to move onto it now. A
-  separable area of existing tasks branches with `--no-park --at T-n
-  --task T-n`: TR-4 stays open, the side's first tasks wait on T-n.
-- **Order:** lay a line of work out before starting it: `track layout
-  TR-4 --session <own-id> --json < steps.json` (`{ "steps": [{ "name":
-  "...", "after": [1], "before": ["T-20"] }] }`, `after` naming T-n ids
-  or earlier step numbers, `before` the T-n ids that wait on the step;
-  a name matching an open task there is that task); a
-  handoff's steps left go in its `leftovers`, the same list, never as a
-  Next list in the state; each leftover names its `runBy` (`orchestrator`,
-  `fork`, `agent:<model>`), which the kickoff prints, and
-  `task edit T-14 --run-by orchestrator` changes it. A leftover for later
-  work names `newTrack` (a name) and `unparkWhen` (`"task-completes 2"`
-  may name a leftover by its number): the write makes that track in the
-  workstream and parks it until the event. `edge add T-14 T-13 --reason "..."` (T-14
-  waits on T-13); `track reorder T-14 --before T-13 --reason "..."` (or
-  `--after`, `--position N`) moves a task in its track's order. A
-  handoff's result and the kickoff name the open tasks nothing waits on
-  but the longest chain's end: confirm each in the reply as an end on
-  purpose, or wire it with `edge add`.
-- **Reviews:** name the task in every commit message (`T-13: ...`); the
-  mod links each commit to its task. A review task (labelled `review`,
-  or named "Review ...") covers, on completion, the code tasks on its
-  track finished before it started (`--review-scope project`: the
-  project's since the last project-wide review); `review covers T-30
-  T-21` sets the list, `coverage TR-4` lists what waits unreviewed, and
-  `commit move <sha> --to T-n --reason "..."` relinks a commit. At
-  `review.depth` `full` a done review reopens when work it read changes,
-  and `track finish` waits for a review (`--waive "<reason>"`).
-- **Inbox:** the kickoff lists every open task on no track in the
-  project's open workstreams, each with its wake; put each on a track
-  (`track capture --track TR-4 --task T-20`), move it (`task edit T-20
-  --workstream WS-5`), give it a new wake (`task edit T-20 --wake ...`),
-  or ask the user. A due one of any workstream in the project leads every
-  kickoff in its own "Due for a home" line. At a track finish, drop or
-  handoff write, a due inbox task of the closing track's workstream is
-  placed or woken again by the turn's end; naming it in the reply settles
-  one not yet due, another workstream's, or one the user is asked about.
-- **Upkeep:** `upkeep --dry-run` lists what automatic upkeep would
-  unpark, close, set back to open and put on the band; `upkeep on`.
-- **Speed:** `timings` prints p50 and p95 per verb from this PC's local
-  server and the board, and the board's last check.
-- **Folders:** the board names a project only by its shared name (its
-  git remote, else its main checkout's path); `projects` lists this PC's
-  folder for each, learned at session start, and `projects scan
-  <folder>` maps a checkout (or the checkouts in a folder) the kickoff
-  says has no folder here. The listing marks an entry whose folder is
-  gone or is now another project; `projects forget <name>` drops it.
+  handoff.json` (`goal`, `focus`, `state`, `verifyFirst`, `leftovers`)
+  restates the track's goal (a changed one replaces the stored goal, the
+  old text kept in its history), places the leftovers under the found
+  work rule, ends your
+  runs as handed on, names each branch not on the remote (push it, or
+  say why it waits), and removes each merged, clean agent worktree and
+  merged agent branch still left;
+  ask the user about the rest (unmerged work, a file with no disposition)
+  in that reply. The reply hands the user `/askerdo resume TR-4` alone in
+  a copy block. Later talk goes in with `handoff update TR-4 --json <
+  ops.json`.
+- **End:** `track park TR-4 --reason "..."` (`--unpark-when ...`) or
+  `track finish TR-4 --outcome "..."`. A track's goal describes what
+  the track is doing and is never a reason to put work off it or to call
+  it finished.
+- Lead every commit's subject with its task id (`T-13: ...`).

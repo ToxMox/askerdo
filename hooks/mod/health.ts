@@ -28,18 +28,19 @@ export function healthDue(sig: string, now: number): boolean {
 
 /* The first problem a status run lists, null for none, undefined when its output is not the readout
    (it exits 1 with problems listed, so the code says nothing) */
-export function firstProblem(r: Ran | null): HealthProblem | null | undefined {
+export function firstProblem(r: Ran | null, keep?: (p: HealthProblem) => boolean): HealthProblem | null | undefined {
   let j: any
   try { j = JSON.parse(String((r && r.stdout) || '')) } catch { return undefined }
   if (!j || !Array.isArray(j.problems)) return undefined
-  const p = j.problems.find((x: any) => x && typeof x.says === 'string' && typeof x.fix === 'string')
+  /* keep filters before the first is taken, so a problem it drops hides none listed after it */
+  const p = j.problems.find((x: any) => x && typeof x.says === 'string' && typeof x.fix === 'string' && (!keep || keep(x)))
   if (!p) return null
   return { key: String(p.key || ''), says: p.says, fix: p.fix, ...(typeof p.command === 'string' ? { command: p.command } : {}), ...(typeof p.copy === 'string' ? { copy: p.copy } : {}) }
 }
 
 /* One check through each run in turn until one gives the readout (the route, then a process, since
    the route is what may be broken); true when what the band draws changed. No readout keeps the last. */
-export function checkHealth(sig: string, now: number, runs: Array<() => Promise<Ran>>): Promise<boolean> {
+export function checkHealth(sig: string, now: number, runs: Array<() => Promise<Ran>>, keep?: (p: HealthProblem) => boolean): Promise<boolean> {
   if (health.running) return health.running
   if (!health.first) health.local = UNSEEN
   health.stamp = health.local
@@ -48,7 +49,7 @@ export function checkHealth(sig: string, now: number, runs: Array<() => Promise<
     for (const run of runs) {
       let r: Ran | null = null
       try { r = await run() } catch {}
-      p = firstProblem(r)
+      p = firstProblem(r, keep)
       if (p !== undefined) break
     }
     health.checked = true

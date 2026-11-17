@@ -1,7 +1,7 @@
 /* The board's web pages: the three views, written
    on the server as plain HTML, plus record pages, search, the open set and sign in.
    The picture alone is drawn by the page's script, which knows the box's width. */
-import { esc, farText, mark, parkedWords, shortDate, wakeText, whoWords } from './draw.mjs';
+import { HOLD_WORDS, asleepWake, esc, farText, leftWords, mark, openSteps, parkedWords, readyWords, shortDate, stepsWords, waitingCount, wakeText } from './draw.mjs';
 import { shortTitle } from './data.mjs';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -103,7 +103,9 @@ const growthHtml = (lines) => (lines && lines.length ? '<div class="vf">' + line
 /* ---- what waits on you: one list, read by every view ---- */
 
 /* The band's presses as words, a press that opens a page as its link. */
-const pressWords = (i) => i.presses.map((p) => (p.url ? '<a class="link sky" href="' + esc(p.url) + '">' + esc(p.label) + '</a>' : esc(p.label))).join(' or ') + ' on the band in the app';
+/* an override is pressed on its card under the reply that asked, and on Home; every other call on Home */
+const pressWords = (i) => i.presses.map((p) => (p.url ? '<a class="link sky" href="' + esc(p.url) + '">' + esc(p.label) + '</a>' : esc(p.label))).join(' or ')
+  + (i.kind === 'override' ? ' on its card or on Home in the app' : ' on Home in the app');
 
 /* An item's own line: the question, the handoff's words, the request, the call. */
 function needLine(i) {
@@ -128,7 +130,7 @@ const PICTURE = '<div id="pic"><div class="since" hidden></div><div class="gbox"
   + '<div class="urlline"></div><div class="pslot"></div><div class="legend"></div></div>';
 
 /* The data a picture page carries: P, the page it is, and the real favicon the drawing nests. */
-export const pictureData = (kit, P, page) => ({ P, page, icons: { fav: kit.icons.fav } });
+export const pictureData = (kit, P, page) => ({ P, page, icons: { fav: kit.icons.fav, portal: kit.icons.portal } });
 
 export function overviewPage(kit, m) {
   let agents = 0; let stalled = 0; let parked = 0; let live = 0;
@@ -230,7 +232,7 @@ function trackRow(t, k, crit, side) {
   // the second line carries only what the short title left out
   if (t.full && t.full !== t.title) sub.push(esc(t.full.startsWith(t.title + ': ') ? t.full.slice(t.title.length + 2) : t.full));
   const on = waitsText(k);
-  if (k.kind !== 'pointer' && on.length) sub.push('<span class="' + (k.gates.length ? 'amber' : 'dim') + '">after ' + linkLabels(esc(on.join(', '))) + '</span>');
+  if (on.length) sub.push('<span class="' + (k.gates.length ? 'amber' : 'dim') + '">after ' + linkLabels(esc(on.join(', '))) + '</span>');
   if (k.needed && k.needed.length) sub.push('<span class="dim">needed by ' + linkLabels(esc(k.needed.map(farText).join(', '))) + '</span>');
   let right = side || '';
   if (t.checklist && t.checklist.total) {
@@ -280,22 +282,23 @@ export function trackPage(kit, m) {
   const ready = mine.filter((t) => D.tasks[t.id].kind === 'ready');
   const rest = mine.filter((t) => !['now', 'left', 'ready'].includes(D.tasks[t.id].kind)).sort((a, b) => (col(a) - col(b)) || (a.pos - b.pos));
 
+  const above = (li, html) => li.replace('<div class="t1">', '<div class="t2" style="margin:0 0 1px">' + html + '</div><div class="t1">');
+  /* running says who and since when; unconfirmed who, where and when it was last heard */
   const nowHtml = now.length ? '<ul class="tl-list">' + now.map((t) => {
     const k = D.tasks[t.id];
-    const who = k.kind === 'now' ? '<span class="agent">' + esc(whoWords(t, 'the session')) + '</span>' : '<span class="dim">nobody on it</span>';
-    const li = trackRow(t, k, crit.has(t.id), m.since[t.id] ? 'since ' + when(m.since[t.id], m.now) : '');
-    return li.replace('<div class="t1">', '<div class="t2" style="margin:0 0 1px">' + who + '</div><div class="t1">');
+    const w = t.word || {};
+    const since = m.since[t.id] ? when(m.since[t.id], m.now) : '';
+    const li = trackRow(t, k, crit.has(t.id), since ? (k.kind === 'now' ? 'since ' : 'heard ') + since : '');
+    return above(li, k.kind === 'now' ? '<span class="agent">' + esc(runnerWords(w) + ', running') + '</span>'
+      : '<span class="amber">' + esc(runnerWords(w) + (w.pc ? ' on ' + w.pc : '') + ', unconfirmed' + (since ? ': not heard since ' + since : '')) + '</span>');
   }).join('') + '</ul>' : '<p class="empty">Nothing running.</p>';
-  const readyHtml = ready.length ? '<ul class="tl-list">' + ready.map((t) => trackRow(t, D.tasks[t.id], crit.has(t.id))).join('') + '</ul>'
+  /* ready to start, to continue or to settle, and since when */
+  const readyHtml = ready.length ? '<ul class="tl-list">' + ready.map((t) => {
+    const li = trackRow(t, D.tasks[t.id], crit.has(t.id), m.since[t.id] ? 'ready ' + when(m.since[t.id], m.now) : '');
+    return above(li, '<span class="agent">' + esc(readyNext(t)) + '</span>');
+  }).join('') + '</ul>'
     : '<p class="empty">Nothing ready: everything left waits on something.</p>';
-  const restHtml = rest.length ? '<ul class="tl-list">' + rest.map((t) => {
-    const k = D.tasks[t.id];
-    let side = '';
-    if (k.kind === 'pointer' && t.progress) {
-      side = '<span class="meter"><i style="width:' + Math.round((100 * t.progress.done) / Math.max(1, t.progress.total)) + '%"></i></span>' + esc(t.promotedTo) + ' ' + t.progress.done + ' of ' + t.progress.total;
-    }
-    return trackRow(t, k, crit.has(t.id), side);
-  }).join('') + '</ul>' : '<p class="empty">Nothing else on this line.</p>';
+  const restHtml = rest.length ? '<ul class="tl-list">' + rest.map((t) => trackRow(t, D.tasks[t.id], crit.has(t.id), '')).join('') + '</ul>' : '<p class="empty">Nothing else on this line.</p>';
   const doneHtml = m.done.length ? '<details class="done-f" id="done"><summary>' + m.done.length + ' done</summary><ul class="tl-list" style="margin-top:6px">'
     + m.done.map((t) => '<li><span class="mk">' + mark('done') + '</span><div><div class="t1 dim">' + idLink(t.id, 'id', t.key) + ' ' + esc(t.name) + (t.status === 'dropped' ? ' <span class="dim3">(dropped)</span>' : '') + '</div></div><span class="side"></span></li>').join('')
     + '</ul></details>' : '';
@@ -311,19 +314,18 @@ export function trackPage(kit, m) {
 
   const qHtml = m.questions.length ? '<div class="rows">' + m.questions.map((q) => '<div class="r">' + mark(q.status === 'open' ? 'gated' : 'done') + '<span>' + idLink(q.id, 'id', q.key) + ' ' + esc(q.name) + ' '
     + (q.status === 'open' ? '<span class="amber">needs your answer' + (q.gates.length ? ', ' + holdsHtml(q.gates) : '') + '</span>'
-      : '<span class="dim">' + esc(statusWords(q.status)) + (q.pick ? ' ' + esc(q.pick) : '') + '</span>') + '</span></div>').join('') + '</div>'
+      : '<span class="dim">' + esc(statusWords(q.status)) + (q.chosen ? ' ' + esc(q.chosen) : '') + '</span>') + '</span></div>').join('') + '</div>'
     : '<p class="empty">No questions asked on this line.</p>';
 
-  const promoted = m.promoted;
   const jHtml = '<div class="rows">'
-    + (m.parent ? '<div class="r">' + mark(promoted ? 'pointer' : 'junction') + '<span>' + (promoted ? 'Promoted from' : 'Splintered from')
+    + (m.parent ? '<div class="r">' + mark('junction') + '<span>Splintered from'
       + (m.jtask ? ' ' + idLink(m.jtask.id, 'id', m.jtask.key) + ' ' + esc(m.jtask.name || '') : '') + ' on <a class="link" href="' + r(m.parent.key || m.parent.id) + '"><span class="id">' + esc(m.parent.id) + '</span> ' + esc(m.parent.name || '') + '</a>'
       + (m.parent.state === 'parked' ? ', which is <span class="lav">parked behind this</span>' : '')
       /* a closed parent takes no resume, as the finish and park results say */
       + (['done', 'dropped', 'folded'].includes(m.parent.state) ? ', which is <span class="dim">' + esc(m.parent.state) + '</span>. When this line finishes or parks, the board points you at the open tracks instead.</span></div>'
         : '. When this line finishes or parks, the board hands you that junction to go back on track.</span></div>')
       : '<div class="r">' + mark('waits') + '<span>A root line: no junction above it.</span></div>')
-    + m.sides.map((k) => '<div class="r">' + mark(k.promoted ? 'pointer' : 'junction') + '<span>Side track <a class="link" href="' + r(k.key || k.id) + '"><span class="id">' + esc(k.id) + '</span> ' + esc(k.name) + '</a>'
+    + m.sides.map((k) => '<div class="r">' + mark('junction') + '<span>Side track <a class="link" href="' + r(k.key || k.id) + '"><span class="id">' + esc(k.id) + '</span> ' + esc(k.name) + '</a>'
       + (k.at ? ' leaves at ' + idLink(k.at, 'id', k.atKey) : '') + ': <span class="' + (k.state === 'active' ? 'sky' : '') + '">' + esc(k.state) + '</span>, ' + k.done + ' of ' + k.total + ' done</span></div>').join('')
     + '</div>';
 
@@ -337,6 +339,7 @@ export function trackPage(kit, m) {
   const trackOf = new Map(g.tasks.map((t) => [t.id, t.track]));
   const cp = T.path.map((id) => idLink(id) + (trackOf.has(id) && trackOf.get(id) !== tv.id ? ' <span class="dim">on ' + esc(trackOf.get(id)) + '</span>' : '')).join(' &rarr; ');
   const doneN = tv.done;
+  const waiting = waitingCount({ open: T.open, running: T.running, unconfirmed: T.left, ready: T.ready });
   // under the map, what the drawn review covered, each a link to its page
   const covered = g.tasks.filter((t) => t.track === tv.id && t.review && t.kept).map((t) => '<div class="r">' + mark('reviewed') + '<span>' + idLink(t.id, 'id', t.key) + ' ' + esc(shortTitle(t.full || t.title))
     + ' covered ' + ((t.covers || []).map((c) => idLink(c.id, 'id', c.key) + ' ' + esc(shortTitle(c.name))).join(', ') || 'nothing') + '</span></div>').join('');
@@ -345,7 +348,7 @@ export function trackPage(kit, m) {
   const graph = (W && W.tracks.some((x) => x.id === tv.id) ? PICTURE : '') + (covered ? '<div class="rows covered">' + covered + '</div>' : '');
 
   return pick
-    + '<div class="thead"><span class="id" style="font-size:15px">' + esc(tv.id) + '</span><h1 style="margin:0">' + esc(tv.name) + '</h1>' + stateChip(T) + '</div>'
+    + '<div class="thead"><span class="id" style="font-size:15px">' + esc(tv.id) + '</span><h1 style="margin:0">' + esc(tv.name) + '</h1>' + stateChip(T) + (tv.hold ? '<span class="chip stalled">' + HOLD_WORDS + '</span>' : '') + '</div>'
     + '<div class="chain"><span>' + stateLine + '</span>'
     + (tv.chain && tv.chain.includes(' under ') ? '<span>' + linkLabels(esc(tv.chain)) + '</span>' : '')
     + (m.record.goal && m.record.goal !== tv.name ? '<span class="dim3">' + esc(m.record.goal) + '</span>' : '')
@@ -353,8 +356,10 @@ export function trackPage(kit, m) {
     + (quiet ? '<div class="quiet-to">Its session has gone quiet: a new session can take the track over.' + copyCmd(tv.id, '--take-over') + '</div>' : '')
     + '<div class="stats">'
     + '<div class="stat"><b>' + T.open + '</b><span>open</span></div>'
-    + '<div class="stat sky"><b>' + (T.running || T.left) + '</b><span>' + (T.running || !T.left ? 'running' : 'in progress') + '</span></div>'
+    + '<div class="stat sky"><b>' + T.running + '</b><span>running</span></div>'
+    + (T.left ? '<div class="stat amber"><b>' + T.left + '</b><span>unconfirmed</span></div>' : '')
     + '<div class="stat sky"><b>' + T.ready + '</b><span>ready</span></div>'
+    + (waiting ? '<div class="stat"><b>' + waiting + '</b><span>waiting</span></div>' : '')
     + '<div class="stat"><b>' + T.toGo + '</b><span>longest chain</span></div>'
     + '<div class="stat"><b>' + doneN + '</b><span>done</span></div></div>'
     + (T.path.length ? '<p class="critline"><b>Critical path, the longest chain left, ' + plural(T.toGo, 'task', 'tasks') + ':</b> ' + cp + '</p>' : '')
@@ -394,10 +399,14 @@ export function md(text, { at = '', keys = null } = {}) {
     if (/^```/.test(line)) {
       flush();
       const buf = [];
-      for (i += 1; i < lines.length && !/^```/.test(lines[i]); i++) buf.push(lines[i]);
+      /* a fenced line reads as written, without the stored heading guard */
+      for (i += 1; i < lines.length && !/^```/.test(lines[i]); i++) buf.push(lines[i].replace(/^ (?= *#)/, ''));
       out.push('<pre><code>' + esc(buf.join('\n')) + '</code></pre>');
       continue;
     }
+    /* a stored text's guarded # line (records.mjs guardHeadings) is the writer's own heading, a level below the record's sections */
+    const g = /^ (#{1,4})\s+(\S.*)$/.exec(line);
+    if (g) { flush(); out.push('<h4 class="uh">' + inline(g[2]) + '</h4>'); continue; }
     const h = /^(#{1,4})\s+(.*)$/.exec(line);
     if (h) { flush(); if (h[2].trim()) out.push('<h3>' + inline(h[2]) + '</h3>'); continue; }
     if (/^\s*\|.*\|\s*$/.test(line)) {
@@ -432,7 +441,7 @@ export function md(text, { at = '', keys = null } = {}) {
 /* A stored section left out of the body when the page draws it itself. */
 function withoutSection(body, heading) {
   const lines = String(body || '').split('\n');
-  const at = lines.findIndex((l) => l.trim() === '## ' + heading);
+  const at = lines.findIndex((l) => l.trimEnd() === '## ' + heading);
   if (at < 0) return body;
   let end = at + 1;
   while (end < lines.length && !lines[end].startsWith('## ')) end++;
@@ -506,15 +515,31 @@ function factValue(k, v, at, keys) {
 const placeHtml = (d) => (d.track === 'the inbox' ? ' <span class="dim">in ' + (d.ws ? linkLabels(esc(d.ws)) + "'s" : 'the') + ' inbox</span>'
   : d.track ? ' <span class="dim">on ' + linkLabels(esc(d.track)) + (d.ws ? ' in ' + linkLabels(esc(d.ws)) : '') + '</span>' : '');
 
-/* ready, or what holds it: open tasks it depends on, its side track, the questions gating it. */
+/* a task's chip says its word, any other record its status */
+const chipOf = (m) => (m.kind === 'task' && m.front && m.front.word ? m.front.word.is : m.status);
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+/* who a run's word names: its agent's job, else the session */
+const runnerWords = (w) => (w.worker === 'agent' ? 'agent ' + (w.job || 'with no job name') : 'a session');
+/* a ready task's next: to start, to continue after the run that handed on, or to settle what it finished */
+function readyNext(t) {
+  const w = t.word || {};
+  if (w.next === 'settle') return 'ready to settle: ' + runnerWords(w) + ' finished' + (openSteps(t) ? ', ' + stepsWords(openSteps(t)) : '');
+  if (w.next === 'continue') return 'ready to continue: ' + leftWords(runnerWords(w), w.how);
+  return readyWords(t) === 'ready' ? 'ready to start' : readyWords(t).replace(/^ready/, 'ready to start');
+}
+
+/* ready, or what holds it: open tasks it depends on, the questions gating it. */
 function standsRow(m) {
-  const open = (m.dependsOn || []).filter((d) => !['completed', 'dropped'].includes(d.status));
+  const open = (m.dependsOn || []).filter((d) => !['done', 'dropped'].includes(d.status));
   const holds = open.map((d) => idLink(d.label, 'id', d.key) + placeHtml(d))
-    .concat(m.readiness.side ? ['its side track ' + linkLabels(esc(m.readiness.side))] : [])
     .concat((m.gatedBy || []).map((q) => idLink(q.label, 'id', q.key)));
-  const word = m.status === 'in_progress' ? 'In progress' : m.readiness.ready ? 'Ready to start' : '';
+  const w = m.readiness.word || {};
+  const runs = w.is === 'running' || w.is === 'unconfirmed';
+  const word = runs ? cap(runnerWords(w) + (w.is === 'running' ? ', running' : (w.pc ? ' on ' + w.pc : '') + ', unconfirmed'))
+    : w.is === 'ready' ? cap(readyNext({ word: w })) : '';
   if (!holds.length) {
-    return '<div class="r">' + mark(m.status === 'in_progress' ? 'now' : word ? 'ready' : 'waits') + (word ? '<span class="sky">' + word + ': nothing holds it.</span>'
+    if (w.is === 'waiting') return '<div class="r">' + mark('waits') + '<span>Waiting ' + esc(w.on.join(', ')) + '.</span></div>';
+    return '<div class="r">' + mark(w.is === 'running' ? 'now' : w.is === 'unconfirmed' ? 'left' : word ? 'ready' : 'waits') + (word ? '<span class="sky">' + esc(word) + ': nothing holds it.</span>'
       : '<span>Not ready: it is ' + esc(statusWords(m.status)) + '.</span>') + '</div>';
   }
   return '<div class="r">' + mark(m.gatedBy && m.gatedBy.length ? 'gated' : 'waits') + '<span>' + (word ? word + ', ' : 'Not ready: ') + 'waits on ' + holds.join(', ') + '</span></div>';
@@ -536,8 +561,12 @@ export function recordPage(kit, m, found) {
   if (m.neededBy && m.neededBy.length) extra.push('<div class="r">' + mark('waits') + '<span>Needed by ' + m.neededBy.map((d) => idLink(d.id, 'id', d.key) + ' ' + esc(d.name || '') + placeHtml(d)).join(', ') + '</span></div>');
   if (m.gatedBy && m.gatedBy.length) extra.push('<div class="r">' + mark('gated') + '<span>Gated by ' + m.gatedBy.map((q) => idLink(q.label, 'id', q.key) + ' ' + esc(q.title || '')
     + ' <span class="amber">' + (q.blocking ? 'blocks on you' : 'needs your answer') + '</span>').join(', ') + '</span></div>');
+  if (m.procedures && m.procedures.length) extra.push('<div class="r">' + mark('waits') + '<span>Procedures ' + m.procedures.map((c) => idLink(c.id, 'id', c.key) + ' ' + esc(c.name || '')
+    + ' <span class="' + (c.badge === 'fresh' ? 'dim' : 'amber') + '">' + esc(c.badge) + (c.reasons.length ? ': ' + esc(reasonsText(c.reasons)) : '') + '</span>').join(', ') + '</span></div>');
+  if (m.citedBy && m.citedBy.length) extra.push('<div class="r">' + mark('waits') + '<span>Open tasks citing it: ' + m.citedBy.map((t) => idLink(t.label, 'id', t.key) + ' ' + esc(t.title || '')
+    + ' <span class="dim">' + esc(statusWords(t.status)) + '</span>').join(', ') + '</span></div>');
   if (m.gates && m.gates.length) extra.push('<div class="r">' + mark('gated') + '<span>Holds ' + m.gates.map((g) => idLink(g.label, 'id', g.key)).join(', ') + '</span></div>');
-  if (m.override) extra.push('<div class="r">' + mark('gated') + '<span><a class="link" href="/override/' + m.override + '">Override #' + m.override + '</a> <span class="amber">waits on your Allow or Keep</span></span></div>');
+  if (m.override) extra.push('<div class="r">' + mark('gated') + '<span><a class="link" href="/override/' + m.override + '">Override #' + m.override + '</a> <span class="amber">waits on your ' + (OVERRIDE_ACT[m.overrideKind] || 'press') + ' or Keep</span></span></div>');
   const checklist = m.checklist && m.checklist.length ? '<section class="panel"><h2>Checklist, ' + m.checklist.filter((c) => c.done).length + ' of ' + m.checklist.length + '</h2><ul class="tl-list">'
     + m.checklist.map((c) => '<li><span class="mk">' + mark(c.done ? 'done' : 'waits') + '</span><div><div class="t1' + (c.done ? ' dim' : '') + '">' + esc(c.text) + '</div></div><span class="side"></span></li>').join('') + '</ul></section>' : '';
   const waiting = m.waitingOnUser && m.waitingOnUser.length ? '<section class="panel"><h2>Waits on you</h2><div class="rows">' + m.waitingOnUser.map((w) => '<div class="r">' + mark('gated') + '<span>' + linkLabels(esc(w), at) + '</span></div>').join('') + '</div></section>' : '';
@@ -546,7 +575,7 @@ export function recordPage(kit, m, found) {
   const stored = m.kind === 'question' ? questionBody(m.body) : m.body;
   const body = withoutEmpty(m.options && m.options.length ? withoutSection(stored, 'Options') : stored);
   const notes = m.notes && m.notes.length ? '<section class="panel"><h2>Journal</h2><ul class="notes">' + m.notes.map((n) => '<li><div class="nh">' + esc(n.at ? dateOf(n.at) + ' ' + clock(n.at) : '') + (n.actor ? ' &middot; ' + esc(n.actor) : '') + '</div>' + md(n.body, { at: dayOf(n.at) }) + '</li>').join('') + '</ul></section>' : '';
-  return '<div class="rec-h"><span class="id" style="font-size:15px">' + esc(m.label) + '</span><span class="chip">' + esc(m.kind) + '</span>' + (m.status ? '<span class="chip">' + esc(statusWords(m.status)) + '</span>' : '') + '</div>'
+  return '<div class="rec-h"><span class="id" style="font-size:15px">' + esc(m.label) + '</span><span class="chip">' + esc(m.kind) + '</span>' + (chipOf(m) ? '<span class="chip">' + esc(statusWords(chipOf(m))) + '</span>' : '') + '</div>'
     + '<h1>' + esc(m.title || m.label) + '</h1>' + also
     + '<div class="tgrid"><div class="col">'
     + (body.trim() ? '<section class="panel">' + md(body, { at }) + '</section>' : '') + optionsHtml(m) + checklist + notes + historyHtml(m.history) + '</div>'
@@ -569,6 +598,8 @@ function historyHtml(rows) {
 
 /* What the request does, in its own count: a fix rewrites text, whatever found it wrong */
 const OVERRIDE_CHIP = { fix: 'rewrite', withdraw: 'withdraw', scrub: 'scrub' };
+/* the press that carries a request out names its act */
+const OVERRIDE_ACT = { fix: 'Fix', withdraw: 'Withdraw', scrub: 'Scrub' };
 function overrideWords(m) {
   const kinds = [...new Set(m.records.map((x) => x.kind).filter(Boolean))];
   const n = m.records.length;
@@ -591,7 +622,7 @@ export function overridePage(kit, m) {
   return '<div class="rec-h"><span class="id" style="font-size:15px">Override #' + m.request + '</span><span class="chip">' + esc(OVERRIDE_CHIP[m.kind] || m.kind) + '</span>'
     + (m.reversal ? '<span class="chip stale">a reversal of a ruling</span>' : '') + (m.stale ? '<span class="chip stale">' + esc(m.stale) + '</span>' : '') + '</div>'
     + '<h1>' + esc(m.summary) + '</h1>'
-    + '<p class="lede">' + esc(overrideWords(m)) + '. Allow or Keep it on the card or the band in the app; this page only reads.</p>'
+    + '<p class="lede">' + esc(overrideWords(m)) + '. ' + esc(OVERRIDE_ACT[m.kind] || 'Press') + ' or Keep it on its card in the app; this page only reads.</p>'
     + '<section class="panel" style="margin-bottom:14px"><dl class="facts">' + facts + '</dl>'
     + (m.unreached ? '<p class="dim" style="margin:10px 0 0">A scrub cannot reach ' + esc(m.unreached.join('; ')) + '. If it was a secret, rotate it.</p>' : '') + '</section>'
     + '<div style="display:flex;flex-direction:column;gap:14px">' + recs + '</div>';
@@ -610,12 +641,27 @@ function needMeta(i) {
     i.kind === 'question' && i.gates.length ? holdsHtml(i.gates) : ''].filter(Boolean).join(' &middot; ');
 }
 
+/* a snoozed question by name, no id, its wake in the shared words with the waking record linked;
+   read only, so no Wake press. Its project shows where the page holds every project */
+function asleepRow(i, today, several) {
+  const w = asleepWake(i.snooze, today);
+  const words = w.pieces.map((x, n) => {
+    const t = n ? x.text : x.text.charAt(0).toUpperCase() + x.text.slice(1);
+    return x.record ? '<a class="nw" href="' + r(i.wakeKey || x.text) + '">' + esc(t) + '</a>' : esc(t);
+  }).join('');
+  return '<li><div><a href="' + r(i.key || i.id) + '">' + esc(i.text) + '</a></div><div class="t2 dim3">'
+    + [words, several && i.project ? esc(i.project) : ''].filter(Boolean).join(' &middot; ') + '</div></li>';
+}
+const asleepFold = (m) => (m.asleep && m.asleep.length ? '<details class="panel asleep" id="asleep"><summary>Asleep (' + m.asleep.length + ')</summary><ul class="hits">'
+  + m.asleep.map((i) => asleepRow(i, m.today, !m.project)).join('') + '</ul></details>' : '');
+
 export function needsYouPage(kit, m) {
   const rows = m.items.map((i) => '<li><div>' + needLine(i) + '</div><div class="t2 dim">' + needMeta(i) + '</div></li>').join('');
   return '<h1 class="fh" style="display:flex;align-items:center;gap:10px">' + kit.face(m.face, 24) + 'Needs you' + (m.project ? ' in ' + esc(m.project) : '') + '</h1>'
     + '<p class="lede">Everything that waits on you' + (m.project ? ' in this project' : '') + ': open questions, the blocking ones first; what live handoffs say waits on you; '
-    + 'then override requests and upkeep\'s calls, which you press on the band in the app.' + (m.project ? ' <a class="link sky" href="/needs-you">Every project</a>.' : '') + '</p>'
-    + '<section class="panel">' + (rows ? '<ul class="hits">' + rows + '</ul>' : '<p class="empty">Nothing waits on you.</p>') + '</section>';
+    + 'then override requests and upkeep\'s calls, which you press on Home in the app (an override also on its card).' + (m.asleep && m.asleep.length ? ' Asleep, folded below: snoozed questions and what wakes each; they wait on no one until then.' : '')
+    + (m.project ? ' <a class="link sky" href="/needs-you">Every project</a>.' : '') + '</p>'
+    + '<section class="panel">' + (rows ? '<ul class="hits">' + rows + '</ul>' : '<p class="empty">Nothing waits on you.</p>') + '</section>' + asleepFold(m);
 }
 
 export function searchPage(kit, m) {

@@ -25,7 +25,7 @@ const VERSION = '9.9.9';
    own argv parser. */
 const SETTINGS_URL = BASE + 'notifications';
 /* and the ROUTE the pause verb is posted to, which is NOT the page above it:
-   measured 2026-09-09, a POST to the settings page is a 404, since the route
+   measured, a POST to the settings page is a 404, since the route
    table gates the method */
 const NOTIFY_URL = BASE + 'api/notify';
 /* the Add a PC page */
@@ -125,13 +125,15 @@ function tray(over = {}) {
 
 const ON = { enabled: true, woken: true, closed: true, sound: true, tray: true };
 
-/* The guard on the committed artifacts over all SIX faces: the FORM the
+/* The guard on the committed artifacts over all TEN faces: the FORM the
    tray's loader can actually read, pinned here rather than through the
    manifest. It reads files and never loads an icon. */
-test('the six committed tray faces are five classic DIB frames each, and all six differ', () => {
+test('the ten committed tray faces are five classic DIB frames each, and all ten differ', () => {
   const names = [
     'tray-waiting.ico', 'tray-quiet.ico', 'tray-blocking.ico',
     'tray-light-waiting.ico', 'tray-light-quiet.ico', 'tray-light-blocking.ico',
+    'tray-asleep.ico', 'tray-light-asleep.ico',
+    'tray-waiting-asleep.ico', 'tray-light-waiting-asleep.ico',
   ];
 
   for (const name of names) {
@@ -154,10 +156,10 @@ test('the six committed tray faces are five classic DIB frames each, and all six
     }
   }
 
-  /* six distinct faces, all the same length: one design, one container, and
+  /* ten distinct faces, all the same length: one design, one container, and
      only the check's colour and the marker changing between them */
   const bytes = names.map((name) => readFileSync(join(pluginRoot, 'assets', name)));
-  assert.equal(new Set(bytes.map((b) => b.toString('base64'))).size, 6, 'six distinct faces');
+  assert.equal(new Set(bytes.map((b) => b.toString('base64'))).size, names.length, 'distinct faces');
   assert.equal(new Set(bytes.map((b) => b.length)).size, 1, 'one design, one container');
 
   /* the app identity is the OTHER shape: it keeps its 256 PNG frame, which is
@@ -216,8 +218,11 @@ test('nothing under lib or hooks spawns a process on an open path, and one survi
   }
   assert.ok(seen >= 25, 'the lib directory was not read: ' + seen + ' files');
   /* askerdo login opens the browser, and the local server sends it back to run in the caller;
-     board-host.mjs starts the board this PC hosts, and the local server on macOS and Linux */
-  assert.deepEqual(named, ['board-host.mjs', 'cli-commands.mjs', 'tray.mjs'], 'only the tray module, the board host and login start a child');
+     board-host.mjs starts the board this PC hosts, the local server on macOS and Linux,
+     and the restart of a local server whose code changed under it; status's bounded git fetch,
+     which runs in the caller only */
+  assert.deepEqual(named, ['board-host.mjs', 'cli-commands.mjs', 'pc-health.mjs', 'tray.mjs'], 'only the tray module, the board host, login and the status fetch start a child');
+  assert.ok((await import('../lib/cli-commands.mjs')).runsInCaller(['status']), 'status never runs in the server');
   const cliCode = strip(readFileSync(join(dir, 'cli-commands.mjs'), 'utf8'));
   const opener = [...cliCode.slice(0, cliCode.search(/\bspawn\s*\(/)).matchAll(/function ([A-Za-z0-9_]+)/g)].pop();
   assert.equal(opener && opener[1], 'openInBrowser');
@@ -228,8 +233,11 @@ test('nothing under lib or hooks spawns a process on an open path, and one survi
     .filter((n) => /\bspawnSync\s*\(/.test(strip(readFileSync(join(dir, n), 'utf8'))));
   /* procedures.mjs reads a project's git history for staleness;
      cli-commands.mjs finds a new knowledge record's repo root and runs the sync for
-     settings set, both in the caller's process */
-  assert.deepEqual(sync, ['board-ensure.mjs', 'cli-commands.mjs', 'procedures.mjs']);
+     settings set, both in the caller's process; board-call.mjs reads the
+     default route from System32's route.exe, hidden, only for the phone and join links;
+     pc-health.mjs reads a checkout's upstream for status, and branch-aim.mjs the
+     remote branch status and the live update take */
+  assert.deepEqual(sync, ['board-call.mjs', 'board-ensure.mjs', 'branch-aim.mjs', 'cli-commands.mjs', 'pc-health.mjs', 'procedures.mjs']);
   const trayCode = strip(readFileSync(join(dir, 'tray.mjs'), 'utf8'));
   const head = trayCode.slice(0, trayCode.search(/\bspawn\s*\(/));
   const start = [...head.matchAll(/function ([A-Za-z0-9_]+)/g)].pop();
@@ -266,7 +274,7 @@ test('the argv is the wire contract, in its order and with the loopback form', (
     '--add-pc', ADD_PC_URL,
   ]);
   /* the OS resolver does not know askerdo.localhost: the browsers
-     resolve it themselves (Chromium and Firefox, measured 2026-09-15), and the
+     resolve it themselves (Chromium and Firefox, measured), and the
      exe hands its board URL to ShellExecute */
   for (const v of nativeArgs()) assert.ok(!String(v).includes('askerdo.localhost'), v);
 
@@ -952,7 +960,7 @@ test('the URLs the tray is handed are absolute loopback URLs', () => {
   assert.equal(at('--settings'), BASE + 'notifications');
   assert.equal(at('--add-pc'), ADD_PC_URL);
   /* THE PAUSE IS POSTED TO THE API ROUTE, never to the page the link opens: a
-     POST to `<secret>/notifications` is a 404 (measured 2026-09-09), because
+     POST to `<secret>/notifications` is a 404 (measured), because
      the route table gates the method */
   assert.equal(at('--notify'), BASE + 'api/notify');
   assert.notEqual(at('--notify'), at('--settings'));

@@ -1,18 +1,18 @@
 # Troubleshooting
 
-What to check when AskerDo stops answering the way it should: the board is offline or will not start, a backup, restore or move went wrong, alerts stopped, a track belongs to another session, or this PC's local server is stuck. Every fix starts from a log; the table at the end says where each one lives.
+What to check when AskerDo stops answering the way it should: the board is offline or will not start, a backup, restore or move went wrong, alerts stopped, a phone gets no sign-in code, a track belongs to another session, or this PC's local server is stuck. Every fix starts from a log; the table at the end says where each one lives.
 
 The commands below use the launcher every PC on a board has, `node ~/.claude/askerdo/cli.mjs`. Setting up is covered in [Set up a board](board-setup.md) and [Add a PC](add-a-pc.md).
 
 ## Start with `askerdo status`
 
-One command checks AskerDo on this PC and prints a line for each part: the store, the saved settings and the board join, the board, this PC's local server, the tray (on Windows) and whether this session runs a copy a plugin update replaced. Every problem comes with the one command or step that fixes it, the most telling one first.
+One command checks AskerDo on this PC and prints a line for each part: the store, the saved settings and the board join, the board, this PC's local server, the tray (on Windows), whether this session runs a copy a plugin update replaced and, for an AskerDo installed as a git checkout, whether that checkout is behind its remote branch. Every problem comes with the one command or step that fixes it, the most telling one first.
 
 ```sh
 node ~/.claude/askerdo/cli.mjs status
 ```
 
-In the desktop app you rarely need to type it: while something is wrong, the band shows the first problem with its fix and the status row an amber monitor naming the part, and a press runs the fix where one command does it ([The band](daily-use.md#the-band)).
+In the desktop app you rarely need to type it: while something is wrong, the status row shows an amber monitor naming the part, its card the first problem with its fix, and a press runs the fix where one command does it; Home lists the problem with its fix ([The status line](daily-use.md#the-status-line)).
 
 When it says nothing is wrong and AskerDo still misbehaves, the sections below go further. `--json` gives the same readout as data.
 
@@ -30,7 +30,7 @@ Reads keep working from this PC's cache. Writes are never queued: a refused writ
    curl -s <board address>/health
    ```
 
-   An answer like `{"ok":true,"protocol":2,"seq":4182,"version":"0.8.16"}` means the board is up and the trouble is between it and this PC: check the address, the network, or a firewall on the server.
+   An answer like `{"ok":true,"protocol":3,"seq":4182,"version":"0.8.16"}` means the board is up and the trouble is between it and this PC: check the address, the network, or a firewall on the server.
 
 2. No answer: look where the board runs. A board on this PC: see [The board on this PC does not start](#the-board-on-this-pc-does-not-start). A Docker board: on its host, look at the container.
 
@@ -48,7 +48,7 @@ Reads keep working from this PC's cache. Writes are never queued: a refused writ
 |Message|Cause|Fix|
 |-|-|-|
 |`the board does not know this token (revoked or never issued)`|This PC's token was revoked or replaced (a `token new` for the same device name revokes the old one).|Rejoin: on another PC on the board, `join-code --device <this PC's name>`, then here `node ~/.claude/askerdo/cli.mjs join http://<server>:17480 <code>`, which writes the new token over the old one. Configure offers a join only to a PC with no token saved, so it skips this one. With no other PC on the board, mint a fresh token with `token new <this PC's name>` on the box and save it here with `join http://<server>:17480 --token <token>`.|
-|`update AskerDo on this PC: the board speaks protocol 2 and this PC 1, so the board refuses it`, or `update the board server: it speaks protocol 1 and this PC 2, ...`|The plugin and the board are on releases with different protocols, so the board refuses every call from this PC. The Needs you band shows it as one row, and `askerdo status` lists it.|Update the side the message names: on this PC `claude plugin update askerdo@askerdo`, then a new session; the board by its [Upgrade](board-setup.md#upgrade) steps (a board on this PC: `askerdo board --restart`).|
+|`update AskerDo on this PC: the board speaks protocol 3 and this PC 2, so the board refuses it`, or `update the board server: it speaks protocol 2 and this PC 3, ...`|The plugin and the board are on releases with different protocols, so the board refuses every call from this PC. The status row's amber chip and Home show it, and `askerdo status` lists it.|Update the side the message names: on this PC `claude plugin update askerdo@askerdo`, then a new session; the board by its [Upgrade](board-setup.md#upgrade) steps (a board on this PC: `askerdo board --restart`).|
 |`board not configured: join this PC with a code ...`|This PC has no board address saved.|[Add a PC](add-a-pc.md).|
 
 ## The board on this PC
@@ -76,7 +76,7 @@ Past those two, a run that stops part way keeps what it made, and `board here` r
 
 `node ~/.claude/askerdo/cli.mjs board` says so: `this PC hosts the board at http://127.0.0.1:<port> (not answering: its log is <folder>/board.log)`. The local server starts the board within a second of its own start, and starts it again whenever it exits: after 1 second, then twice as long each time, up to a minute. So a board that stays down keeps failing, or is held stopped on purpose. Read, in order:
 
-1. **`~/.claude/askerdo/board-host/board.log`**, the board server's own output: a database it cannot open, a disk full, a schema migration that failed. A Node older than 24 on the local server's `PATH` stops it here too, since the board runs on the same Node.
+1. **`~/.claude/askerdo/board-host/board.log`**, the board server's own output: a database it cannot open, a disk full, a schema migration that failed. A Node older than 24 running the local server stops it here too, since the board runs on the same Node (on Windows, the `node.exe` the logon task saved).
 2. **`~/.claude/askerdo/log`**, the local server's `board host:` lines:
 
    |Line|Meaning|
@@ -153,6 +153,15 @@ Alerts on Windows go through the tray's popup. They pass four gates in order, an
 
 The settings live in `~/.claude/askerdo/board/notify.json`; `pausedUntil` is the pause. On macOS and Linux there is no tray and every alert is dropped with one log line (`notify: unavailable on this platform`).
 
+## A phone gets no sign-in code
+
+`askerdo login --qr`, and **Show a sign-in code** under **Sign in a phone** on the Settings tab, draw a code only for an address a phone on the same network opens ([Settings and rules](settings-and-rules.md#this-pc)).
+
+|What you see|Why|What to do|
+|-|-|-|
+|`the board on this PC answers this PC alone (127.0.0.1), so no phone can reach it: ...`|A board on this PC listens on loopback only.|Put it on a server first, as the message says.|
+|`no address a phone can open: this PC reaches the board at <host>, ...`|This PC reaches the board on loopback or by a bare PC name, which phones do not resolve, and the board answers on none of this PC's network addresses. Addresses on virtual adapters (VMs, WSL, Docker, VPNs) are never offered. On a Hyper-V external switch the PC's network address sits on a `vEthernet` adapter, which counts only while it holds the default route and no physical adapter has a private address.|Check the board answers on this PC's network address: `curl -s http://<address>:<port>/health`. On a Hyper-V PC, `route print -4 0.0.0.0` should name that address in the Interface column of the default route with the lowest metric; a VPN that takes the default route hides it, so sign the phone in with the VPN off.|
+
 ## A track another session holds
 
 A track is held by one session at a time. Resuming one that another session holds tells you who holds it and since when (`TR-12 is held by a session on <device> (took it today 09:12, last active 11:40)`) and changes nothing until you choose a move:
@@ -167,11 +176,11 @@ A holder that has done nothing on the track for 12 hours reads `quiet since <tim
 
 ## A track will not finish: a review is due
 
-At the full review depth, `track finish` is refused while finished code on the track sits after its last completed review, or the track has no review at all; the refusal names the tasks. A completed review also reopens when a task it read gains a commit, so the tasks after it wait again.
+At the full review depth, `track finish` is refused while finished code on the track sits after its last done review, or the track has no review at all; the refusal names the tasks. A commit after a done review counts here too: the review stays done, and the track waits for a later review to read the new work.
 
 |Move|Command|What happens|
 |-|-|-|
-|Review it|a review task on the track (labelled `review`, or named "Review ..."), then complete it|It covers the unreviewed code tasks before it, and the finish goes ahead.|
+|Review it|a review task on the track (labelled `review`), then complete it|It covers the unreviewed code tasks before it, and the finish goes ahead.|
 |See what waits|`askerdo coverage TR-12`|Each code task with the review that covers it, and why a review is due.|
 |A commit on the wrong task|`askerdo commit move <sha> --to T-n --reason "..."`|The commit counts for the task it belongs to.|
 |Finish anyway|`askerdo track finish TR-12 --waive "<reason>"`|The track finishes; the reason goes to its journal and the activity log.|
@@ -189,11 +198,11 @@ node ~/.claude/askerdo/cli.mjs board
 |It says|Meaning|Fix|
 |-|-|-|
 |`board running at ...`|It answers and runs this plugin version.|Nothing to fix here.|
-|`board started at ...` or `board replaced at ...`|It was down, or an older version was running, and a fresh one started: on Windows through the scheduled task, on macOS and Linux as a detached process. An older version that does not stop when asked is ended by its process id.|Nothing to fix.|
+|`board started at ...` or `board replaced at ...`|It was down, or an older version was running, or one whose code changed under it since it started, and a fresh one started: on Windows through the scheduled task, on macOS and Linux as a detached process. An older version that does not stop when asked is ended by its process id.|Nothing to fix.|
 |`port <n> is held by another process`|Another program listens on this PC's AskerDo port (in `~/.claude/askerdo/board/port`).|Stop that program. Or delete `~/.claude/askerdo/board/` so a new port and secret are picked; links minted before then stop working.|
 |`a live update holds the board until it finishes`|A plugin update is swapping files.|Wait; the hold lapses on its own.|
 |`the scheduled task "AskerDo board" could not be registered` or `could not be run`|`schtasks` refused; its own words follow.|Check the task: `schtasks /query /tn "AskerDo board"`. Run it by hand: `schtasks /run /tn "AskerDo board"`.|
-|`the server did not answer within 3000ms`|The task ran, but no server came up.|Most often Node is missing from the `PATH` a logon task sees: `where.exe node` should name the installer's `node.exe`, not a version manager's. Then `board` again.|
+|`the server did not answer within 3000ms`|The task ran, but no server came up.|The task runs the `node.exe` saved when it was registered, or the one on the `PATH` a logon sees when that file is gone: `schtasks /query /tn "AskerDo board" /xml` shows the saved one after `--node`. While the local server is down, `board` saves the `node.exe` that runs it when that differs, so run `board` again; with none saved and none on that `PATH`, install Node with its installer, which puts it there.|
 
 **It answers but misbehaves** (the band stays stale, answers stop arriving): restart it.
 
@@ -201,7 +210,7 @@ node ~/.claude/askerdo/cli.mjs board
 node ~/.claude/askerdo/cli.mjs board --restart
 ```
 
-It says `board restarted at ...`. The restart asks the running server to stop through its own route, which closes the tray and every stream first and stops a board this PC hosts with it; a server that does not stop within a few seconds is ended by the process id in `~/.claude/askerdo/board/local.json`, once that process is Node running `board-server.mjs`. Then a fresh one starts on the same port, so links keep working, and it starts the board again within a second. On Windows, ending the scheduled task (`schtasks /end`) stops nothing: the task only launches the server and is over at once. In a session a plugin update replaced, `board --restart` refuses with `this copy was replaced by an update`: start a new session, which runs the installed copy, and run it there.
+It says `board restarted at ...`. The restart asks the running server to stop through its own route, which closes the tray and every stream first, lets the calls already running finish, and stops a board this PC hosts with it; a server that does not stop within a few seconds is ended by the process id in `~/.claude/askerdo/board/local.json`, once that process is Node running `board-server.mjs`. Then a fresh one starts on the same port, so links keep working, and it starts the board again within a second. On Windows, ending the scheduled task (`schtasks /end`) stops nothing: the task only launches the server and is over at once. When a file of the plugin copy it runs changes under it (a checkout of the plugin moving to new commits), the local server sends every later CLI call back to run in its caller, so no call answers from the old code; the live store's server then restarts itself through the same steps once the files settle, and `askerdo status` reports one that has not yet. In a session a plugin update replaced, `board --restart` refuses with `this copy was replaced by an update`: start a new session, which runs the installed copy, and run it there.
 
 **The tray is gone.** A tray closed with Exit comes back at the next session start, or at `board`; alerts raised before then are not shown.
 

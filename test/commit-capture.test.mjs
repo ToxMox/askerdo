@@ -20,9 +20,13 @@ const board = () => {
 };
 const pick = async (o) => { const b = board(); return linkCommit(b.send, linkPlan(o), { sha: 'x' }); };
 
-test('the task pick: a message id beats the agent, the agent beats the hand, two held guess the newest, an unknown id falls through', async () => {
+test('the task pick: the ids leading the subject beat the agent, the agent beats the hand, two held guess the newest, an unknown id falls through', async () => {
   const hand = [{ id: 'T-3', since: '2026-11-01T09:00:00Z' }, { id: 'T-4', since: '2026-11-02T09:00:00Z' }];
   assert.deepEqual(await pick({ message: 'T-1, T-2: fix\n\nT-5 in the body', agentTasks: ['T-3'], hand }), { linked: ['T-1', 'T-2'], via: 'message' });
+  /* an id cited after the lead owns nothing, so it marks no reviewed task unreviewed */
+  assert.deepEqual(await pick({ message: 'T-1: rebuild so the saved path (T-2) reaches the install', hand }), { linked: ['T-1'], via: 'message' });
+  assert.deepEqual(await pick({ message: 'fix the path T-1 broke', hand: hand.slice(0, 1) }), { linked: ['T-3'], via: 'in-hand' });
+  assert.deepEqual(await pick({ message: 'Revert "T-2 the path (T-1)"' }), { linked: ['T-2'], via: 'message' });
   assert.deepEqual(await pick({ message: 'T-99: a typo', agentTasks: ['T-3'], hand }), { linked: ['T-3'], via: 'agent' });
   assert.deepEqual(await pick({ message: 'fix', hand: hand.slice(0, 1) }), { linked: ['T-3'], via: 'in-hand' });
   assert.deepEqual(await pick({ message: 'fix', hand }), { linked: ['T-4'], via: 'guess' });

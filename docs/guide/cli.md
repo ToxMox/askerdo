@@ -21,7 +21,7 @@ Each entry below is the verb's own help, the text `askerdo help <verb>` and `ask
 - The first line is the call: `<...>` is a word you supply, `[<...>]` one you may leave out, `...` one or more.
 - The indented line under it says what the verb does; a `stdin:` line says what it reads on standard input (a JSON payload, or text).
 - Each `--flag <value>` takes a value and each bare `--flag` is a switch; `(repeatable)` flags add up across repeats, and every other flag keeps its last value.
-- `--json` prints one JSON object (an array for `list`), for scripts. `--session` is the calling session's id, which sessions pass so the board knows who wrote a record; you leave it off. `--user` marks a call as your own act (a press or an answer you typed) rather than a session's: the verbs that only you may run (`override decide`, `override unscrub`) need it.
+- `--json` prints one JSON object (an array for `list`), for scripts. `--session` is the calling session's id, which sessions pass so the board knows who wrote a record; you leave it off. `--user` marks a call as your own act (a press, an answer you typed or a command you ran) rather than a session's: the plugin sends it for you and a session never does, the board never asks about a call that carries it, and the verbs that only you may run (`override decide`, `override unscrub`) need it.
 
 Exit codes: `0` success, `1` bad input, a board refusal or no board set, `2` any other failure. Results go to stdout and diagnostics to stderr.
 
@@ -38,14 +38,15 @@ This page is built from the CLI's help by `node scripts/build.mjs`, so it matche
 - Questions: [register](#register), [answer](#answer), [drop](#drop), [snooze](#snooze), [wake](#wake), [surface](#surface), [list](#list), [question edit](#question-edit)
 - Any record: [show](#show), [read](#read), [resolve](#resolve), [search](#search), [activity](#activity), [note](#note), [reopen](#reopen), [subscribe](#subscribe)
 - Workstreams and tasks: [ws create](#ws-create), [ws edit](#ws-edit), [ws close](#ws-close), [task create](#task-create), [task edit](#task-edit), [task update](#task-update), [check add](#check-add), [check done](#check-done), [check move](#check-move), [edge add](#edge-add), [edge remove](#edge-remove)
-- Tracks and handoffs: [resume](#resume), [shelf](#shelf), [track list](#track-list), [track show](#track-show), [track mine](#track-mine), [track new](#track-new), [track park](#track-park), [track finish](#track-finish), [track drop](#track-drop), [track splinter](#track-splinter), [track capture](#track-capture), [track layout](#track-layout), [track promote](#track-promote), [track fold](#track-fold), [track reorder](#track-reorder), [track found](#track-found), [handoff write](#handoff-write), [handoff update](#handoff-update)
+- Tracks and handoffs: [resume](#resume), [shelf](#shelf), [track list](#track-list), [track show](#track-show), [track mine](#track-mine), [track new](#track-new), [track park](#track-park), [track finish](#track-finish), [track drop](#track-drop), [track splinter](#track-splinter), [track capture](#track-capture), [track layout](#track-layout), [track reorder](#track-reorder), [track found](#track-found), [handoff write](#handoff-write), [handoff update](#handoff-update), [sweep](#sweep)
 - Commits and reviews: [commit link](#commit-link), [commit move](#commit-move), [review covers](#review-covers), [coverage](#coverage)
 - Conversion map: [conversion](#conversion), [conversion put](#conversion-put), [conversion drop](#conversion-drop)
 - Knowledge and decisions: [knowledge new](#knowledge-new), [knowledge supersede](#knowledge-supersede), [knowledge amend](#knowledge-amend), [knowledge edit](#knowledge-edit), [decide](#decide), [decisions](#decisions), [decisions triggers](#decisions-triggers)
-- Settings and profiles: [settings](#settings), [settings set](#settings-set), [settings unset](#settings-unset), [settings rule](#settings-rule), [profile add](#profile-add), [profile remove](#profile-remove), [profile show-effective](#profile-show-effective), [profile rule-add](#profile-rule-add), [profile rule-drop](#profile-rule-drop), [profile rule-clear](#profile-rule-clear), [profile define](#profile-define), [profile list](#profile-list), [profile guard](#profile-guard)
-- Procedures: [proc scan](#proc-scan), [proc ran](#proc-ran), [proc find](#proc-find), [proc triggers](#proc-triggers)
+- Settings and profiles: [settings](#settings), [settings set](#settings-set), [settings unset](#settings-unset), [settings rule](#settings-rule), [profile add](#profile-add), [profile remove](#profile-remove), [profile show-effective](#profile-show-effective), [profile rule-add](#profile-rule-add), [profile rule-drop](#profile-rule-drop), [profile rule-clear](#profile-rule-clear), [profile define](#profile-define), [profile delete](#profile-delete), [profile list](#profile-list), [profile guard](#profile-guard)
+- Procedures: [proc scan](#proc-scan), [proc ran](#proc-ran), [proc drafts](#proc-drafts), [proc find](#proc-find), [proc triggers](#proc-triggers)
 - Overrides: [override request](#override-request), [override decide](#override-decide), [override unscrub](#override-unscrub)
 - This PC and the board: [board](#board), [board here](#board-here), [timings](#timings), [projects](#projects), [projects scan](#projects-scan), [projects forget](#projects-forget), [projects rename](#projects-rename), [login](#login), [join-code](#join-code), [join](#join), [upkeep](#upkeep), [upkeep on](#upkeep-on), [upkeep off](#upkeep-off), [status](#status), [board move](#board-move), [backup](#backup), [restore](#restore), [legacy](#legacy), [help](#help)
+- Other verbs: [check strike](#check-strike), [task block](#task-block)
 
 ## Questions
 
@@ -53,7 +54,7 @@ This page is built from the CLI's help by `node scripts/build.mjs`, so it matche
 
 ```text
 askerdo register
-  register a question; left out, the track is the one the session holds and the workstream is that track's (else the in_progress tasks', else the subscribed one)
+  register a question; left out, the track is the one the session holds and the workstream is that track's (else the workstream of the tasks it works, else the subscribed one)
   stdin: JSON payload (docs/question-hub.md, "Registration")
   --json: print JSON
 ```
@@ -100,6 +101,7 @@ askerdo snooze <question id>
 ```text
 askerdo wake <question id>
   a snoozed question back to open
+  --user <value>: the session the user pressed Wake in: their act
   --json: print JSON
 ```
 
@@ -157,13 +159,13 @@ askerdo question edit <question id>
 
 ```text
 askerdo show <record id>
-  one record (several with any level but --full) at a read level: the brief form by default, and the last line names what it left out and the flag that brings it back
+  one record (several with any level but --full) at a read level: the brief form by default, a task's block for a task (its typed notes since its last rewrite, the board's own lines counted), and the last line names what it left out and the flag that brings it back
   --journal-tail <value>: keep the last N journal notes
   --project <value>: the project slug an old brain id belongs to
   --section <value>: one section by name, such as Intent, Answer or Journal
   --session <value>: the session reading it (a read by another session makes it used)
   --json: print JSON: alone, the whole record (what scripts and the mod read), an array of them for several ids; with a level, that level
-  --brief: each text once, as plain text (the default)
+  --brief: each text once, as plain text (the default but for a task)
   --journal: the brief form with the journal too
   --since-resume: journal notes since the latest resume
   --head: one line each: label, name, status and what it waits on
@@ -213,6 +215,7 @@ askerdo activity
   --limit <value>: lines (50; 0 for all)
   --before <value>: a stamp or the cursor a page printed
   --project <value>: only this project's lines, by the board's rule
+  --workstream <value>: WS-n: only its lines, its records' and its tracks' handoffs'
   --json: print JSON
   --places: each line's workstream, project and link, as the tray's console shows them
 ```
@@ -221,10 +224,14 @@ askerdo activity
 
 ```text
 askerdo note <record id>
-  append a stamped paragraph to a record's journal
+  append a stamped paragraph to the journal of a workstream, task, track or knowledge record (WS-n, T-n, TR-n, K-n; never a question); with a new text it amends a task's or a track's text, the note being the why
   stdin: note body, when --body is absent
   --session <value>: your own session id
   --body <value>: the note text (else stdin)
+  --name <value>: a task's new title, the old kept in its history
+  --description <value>: a task's new description, likewise
+  --intent <value>: a task's new intent, likewise
+  --goal <value>: a track's new goal, likewise
   --json: print JSON
 ```
 
@@ -291,15 +298,26 @@ askerdo ws close <WS-n id>
 
 ```text
 askerdo task create
-  create a task; a session's names its place (track, with before or after a step, or unplaced with a reason and a wake), judged from what the work is and what it blocks
+  create a task; a session's names its tier and that tier's answer (--tier 2 on the track it holds, 3 another track or a parked one, 4 another workstream); a real place on the track the session holds files at once, and last or off that track creates nothing and asks the user where it goes
   stdin: JSON payload
+  --tier <value>: where the work goes, which a session's filing names: 2 the track the session holds (--before what must not finish without it files at once; --last with why nothing there needs it sooner is asked of the user first, with --here-before), 3 another track in its workstream (--track) or work that starts after an event (--unpark-when), 4 another workstream (--workstream, with --track there or --wake); the board refuses a tier that does not fit and names the call that does
   --track <value>: TR-n: the track it goes on
+  --workstream <value>: WS-n: the workstream it goes in (tier 4 names it, with --track there or --wake)
   --before <value> (repeatable): a T-n on that track that waits on it (repeatable)
   --after <value> (repeatable): a T-n on that track it waits on (repeatable)
   --unplaced <value>: why no plan reaches it, so it waits in the inbox (the found list shows it); work that starts later goes on a parked track instead
-  --wake <value>: what brings an inbox task back, "track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD after today; every filing to the inbox names one, and alone it wakes an inbox task again (a third wake in one inbox stay asks the user instead)
+  --wake <value>: what brings an inbox task back, "track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD after today; every filing to the inbox names one, and alone it wakes an inbox task again (a third wake in one inbox stay asks the user instead); next-session keeps a task on its track waiting until a session other than the one that files it takes the track (with --tier 2 on the track you hold, --tier 3 with --track on another, --tier 4 with --track in another workstream, or alone on a task on a track)
+  --new-track <value>: with --tier 3 and --unpark-when: the name of the parked track the event opens (left out, the task's name)
+  --unpark-when <value>: with --tier 3: the event that opens the new parked track, "track-ends TR-n", "task-completes T-n" or "question-answered Q-n"
+  --why-elsewhere <value>: with --tier 3 or 4 from a session that holds a track: one line on why that track does not cover the work, the reason the placement question shows the user; one parked on, or woken by, that track's own end, task or question adds after a semicolon why it cannot start sooner
+  --last <value>: with --tier 2 and no --before: one line on why nothing on the track you hold needs the task sooner, the reason the placement question shows the user; a tier 2 filing with neither --before nor --last is refused
   --review-scope <value>: a review task reads track (its own track, the default) or project (every code task in the project since the last project-wide review)
   --session <value>: your own session id
+  --here-before <value> (repeatable): with a filing the user is asked about (last, or off the track you hold): a T-n on that track that would wait on the work, the real place it takes if the user says do it here (repeatable)
+  --here-after <value> (repeatable): with --here-before: a T-n the work would wait on at that place (repeatable)
+  --question <value>: a placement question answered with let's talk (Q-n): this filing is the place the talk settled, let through once, with --words
+  --words <value>: with --question: the user's words that settled the place, quoted whole
+  --user <value>: the mark of the user's own command, which the board never asks about: the plugin sends it for a command the user ran, and a session never does
   --json: print JSON
 ```
 
@@ -308,8 +326,9 @@ askerdo task create
 ```text
 askerdo task edit <T-n id>
   flip a task's fields
+  stdin: with --leftovers: a JSON list of steps [{ "name", "tier", "track", "workstream", "runBy", "task", "after", "before", "description", "priority", "newTrack", "unparkWhen", "unplaced", "wake", "whyElsewhere", "last", "here", "check" }]; each names its tier (2, 3 with track or unparkWhen, 4 with workstream and a track there or a wake); a step at a real place on the track the session holds (before an open task there) files at once, while a step last on that track (last, with why nothing there needs it sooner) or off it (tier 3 or 4, with whyElsewhere) is asked of the user first and carries here ({ "before": ["T-n"], "after": ["T-n"] }), the real place on the held track it would otherwise take; every step carries its description (the job the new task holds and what done looks like) unless it names an existing task, and check names an open checklist step by its number in place of a name and description
   --name <value>
-  --status <value>: open, in_progress, blocked, deferred, dropped or completed
+  --status <value>: open, dropped or done; a start is --in-hand with --session
   --priority <value>: high, medium or low
   --ordinal <value>
   --workstream <value>
@@ -317,15 +336,25 @@ askerdo task edit <T-n id>
   --serves <value>: o1,o2: the outcomes of its workstream it serves
   --run-by <value>: who runs it: orchestrator, fork or agent:<model>
   --review-scope <value>: a review task reads track (its own track, the default) or project (every code task in the project since the last project-wide review)
-  --close <value>: "with T-n" (it closes when T-n completes), look (it closes at the look of the user) or "when <a checkable fact>"
+  --close <value>: "with T-n": it closes when T-n is done, while automatic upkeep is on, and never with a step open (a look is a task labelled look ending in one question, and a fact to check is the done clause of its description)
   --session <value>: your own session id
-  --intent <value>: rewrite its Intent in place, before its work starts (no session held it, no agent ran it, no journal note); after that note amends it
+  --intent <value>: rewrite its Intent in place, before its work starts (no session held it, no agent ran it); after that note T-n --intent with --body saying why amends it
   --description <value>: rewrite its Description in place, on the same terms as --intent
+  --tier <value>: where the work goes, which a session's filing names: 2 the track the session holds (--before what must not finish without it files at once; --last with why nothing there needs it sooner is asked of the user first, with --here-before), 3 another track in its workstream (--track) or work that starts after an event (--unpark-when), 4 another workstream (--workstream, with --track there or --wake); the board refuses a tier that does not fit and names the call that does
   --track <value>: TR-n: the track it goes on
   --before <value> (repeatable): a T-n on that track that waits on it (repeatable)
   --after <value> (repeatable): a T-n on that track it waits on (repeatable)
   --unplaced <value>: why no plan reaches it, so it waits in the inbox (the found list shows it); work that starts later goes on a parked track instead
-  --wake <value>: what brings an inbox task back, "track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD after today; every filing to the inbox names one, and alone it wakes an inbox task again (a third wake in one inbox stay asks the user instead)
+  --wake <value>: what brings an inbox task back, "track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD after today; every filing to the inbox names one, and alone it wakes an inbox task again (a third wake in one inbox stay asks the user instead); next-session keeps a task on its track waiting until a session other than the one that files it takes the track (with --tier 2 on the track you hold, --tier 3 with --track on another, --tier 4 with --track in another workstream, or alone on a task on a track)
+  --new-track <value>: with --tier 3 and --unpark-when: the name of the parked track the event opens (left out, the task's name)
+  --unpark-when <value>: with --tier 3: the event that opens the new parked track, "track-ends TR-n", "task-completes T-n" or "question-answered Q-n"
+  --why-elsewhere <value>: with --tier 3 or 4 from a session that holds a track: one line on why that track does not cover the work, the reason the placement question shows the user; one parked on, or woken by, that track's own end, task or question adds after a semicolon why it cannot start sooner
+  --last <value>: with --tier 2 and no --before: one line on why nothing on the track you hold needs the task sooner, the reason the placement question shows the user; a tier 2 filing with neither --before nor --last is refused
+  --here-before <value> (repeatable): with a filing the user is asked about (last, or off the track you hold): a T-n on that track that would wait on the work, the real place it takes if the user says do it here (repeatable)
+  --here-after <value> (repeatable): with --here-before: a T-n the work would wait on at that place (repeatable)
+  --question <value>: a placement question answered with let's talk (Q-n): this filing is the place the talk settled, let through once, with --words
+  --words <value>: with --question: the user's words that settled the place, quoted whole
+  --user <value>: the mark of the user's own command, which the board never asks about: the plugin sends it for a command the user ran, and a session never does
   --add-label <value> (repeatable)
   --remove-label <value> (repeatable)
   --add-ref <value> (repeatable)
@@ -335,31 +364,40 @@ askerdo task edit <T-n id>
   --clear-plan
   --clear-serves: it serves none
   --clear-run-by: nobody is named to run it
-  --clear-close: it closes by hand
-  --landed: a look task's work landed: the user's band offers Close
+  --clear-close: it closes by hand (an old look close takes its landed mark with it)
   --in-hand: with --session: this session takes it in hand (it may hold several)
   --let-go: nobody has it in hand
-  --take-over: with --in-hand: take it from the session that holds it, which is told
+  --take-over: with --in-hand, or --status done or dropped: take it from the session whose run holds it, which is told; only on the word of the user
+  --leftovers: with --status done or dropped: read the steps this close leaves from stdin, each a task filed with the close: on its track, on a new track parked until its unparkWhen (newTrack), or in the inbox with its wake (unplaced); a refused step closes nothing
 ```
 
 ### task update
 
 ```text
 askerdo task update <T-n id>
-  a task on the board; --agent tags the agent working it (the now set) and starts it
-  --agent <value>: the job name of the agent working it
+  a task on the board; --in-hand with --session starts it for the session that takes it (an agent's run opens at its dispatch); closing it carries its leftovers, so nothing found while doing it is left in the closing note
+  stdin: with --leftovers: a JSON list of steps [{ "name", "tier", "track", "workstream", "runBy", "task", "after", "before", "description", "priority", "newTrack", "unparkWhen", "unplaced", "wake", "whyElsewhere", "last", "here", "check" }]; each names its tier (2, 3 with track or unparkWhen, 4 with workstream and a track there or a wake); a step at a real place on the track the session holds (before an open task there) files at once, while a step last on that track (last, with why nothing there needs it sooner) or off it (tier 3 or 4, with whyElsewhere) is asked of the user first and carries here ({ "before": ["T-n"], "after": ["T-n"] }), the real place on the held track it would otherwise take; every step carries its description (the job the new task holds and what done looks like) unless it names an existing task, and check names an open checklist step by its number in place of a name and description; with --move-steps: a JSON list of moves, each naming an open step by its number (check) and one destination: { "check", "onto": "T-n" } adds it to that open task's steps, { "check", "question": "Q-n" } names a question already asked, and { "check", "runBy", "tier", ...the leftover fields } files it as a new task as a leftover is (its description left out, the step's number, task and text)
   --reason <value>: why it starts or is taken in hand before it is ready
-  --status <value>: open, in_progress, blocked, deferred, dropped or completed
+  --status <value>: open, dropped or done; a start is --in-hand with --session
   --priority <value>
-  --name <value>
+  --name <value>: its new title, the old kept in its history (with --note, the note is why)
   --session <value>: your own session id
   --add-label <value> (repeatable)
   --remove-label <value> (repeatable)
   --note <value>: a paragraph for the task's journal
+  --description <value>: with --note: the new description, the note being why (an amend; the old text stays in its history)
+  --intent <value>: with --note: the new intent, likewise
+  --check-add <value> (repeatable): a step for its checklist (repeatable)
+  --check-done <value> (repeatable): "<number>" or "<number>: word", a step done, with a word on it if you like (repeatable)
+  --check-strike <value> (repeatable): "<number>: why", a step that will not be done (repeatable); a close is refused while a step stays open, and a leftover naming check <number> files that step as a task
+  --continues <value>: with --in-hand and --take-over: the earlier id of this same session (after a /clear), which the mod sends; its agents' runs stay open under it
+  --user <value>
   --json: print JSON
-  --in-hand: with --session: this session takes it in hand (it may hold several)
+  --in-hand: with --session: this session takes it in hand and starts it (it may hold several)
   --let-go: nobody has it in hand
-  --take-over: with --in-hand: take it from the session that holds it, which is told
+  --take-over: with --in-hand or --status done or dropped: take it from the session whose run holds it, which is told; only on the user's word
+  --leftovers: with --status done or dropped: read the steps this close leaves from stdin, each a task filed with the close: on its track, on a new track parked until its unparkWhen (newTrack), or in the inbox with its wake (unplaced); a refused step closes nothing
+  --move-steps: read the moves of open steps this task's worker will not do from stdin: each step is struck with where it went; a refused move writes nothing, and a close with --leftovers goes in its own call
 ```
 
 ### check add
@@ -425,16 +463,18 @@ askerdo resume <TR-n id>
   --splinter <value>: a held track: start a side track of this name from it
   --goal <value>
   --reason <value>
+  --continues <value>: with --take-over: the earlier id of this same session (after a /clear); when that id holds the track, its hold made before keeps counting
   --json: print JSON
   --take-over: a held track: take it, the other session is told
   --read-only: the kickoff without taking it
+  --here: take it on this PC although its handoff names another PC for its next leg
 ```
 
 ### shelf
 
 ```text
 askerdo shelf
-  tracks waiting or parked across workstreams, oldest first
+  tracks waiting or parked across workstreams, oldest first, then tracks with ready work that no session ever held
   --json: print JSON
   --no-git: no git calls, so no "code moved" flag: the cheap read a poll makes
 ```
@@ -443,10 +483,11 @@ askerdo shelf
 
 ```text
 askerdo track list
-  a workstream's tracks with their state, and its inbox count
+  a workstream's tracks with their state and its inbox count, or with --open every open track
   --workstream <value>: WS-n
   --json: print JSON
   --all: closed tracks too
+  --open: the new, active and waiting tracks of every workstream (or the one named), each with its newest handoff's verify-first entries
 ```
 
 ### track show
@@ -470,7 +511,7 @@ askerdo track mine
 
 ```text
 askerdo track new
-  start a track in a workstream; with --session the session takes it
+  start a track in a workstream; with --session the session takes it, and a session's --task never carries a task off the track it holds (place it, which asks the user)
   --workstream <value>
   --name <value>
   --goal <value>
@@ -478,6 +519,7 @@ askerdo track new
   --label <value> (repeatable): a label it carries from birth (repeatable)
   --ref <value> (repeatable): a ref it carries from birth (repeatable)
   --session <value>: your own session id
+  --user <value>
   --json: print JSON
 ```
 
@@ -496,12 +538,13 @@ askerdo track park <TR-n id>
 
 ```text
 askerdo track finish <TR-n id>
-  finish a track; its junction comes back
+  finish a track; its junction comes back; refused while a placement question of the track is open
   --outcome <value>
-  --leftovers <value>: inbox or drop, for tasks still open
+  --leftovers <value>: inbox (the user's own command, which the plugin sends with --user and a session never does) or drop, for tasks still open
   --wake <value>: with --leftovers inbox: the wake each open task takes into the inbox ("track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD)
   --waive <value>: finish with finished code no review read (full review depth), and why; the reason goes to its journal and the activity log
   --session <value>: your own session id
+  --user <value>
   --json: print JSON
 ```
 
@@ -509,11 +552,12 @@ askerdo track finish <TR-n id>
 
 ```text
 askerdo track drop <TR-n id>
-  drop a track with a reason; its junction comes back
+  drop a track with a reason; its junction comes back; refused while a placement question of the track is open
   --reason <value>
-  --leftovers <value>: inbox or drop, for tasks still open
+  --leftovers <value>: inbox (the user's own command, which the plugin sends with --user and a session never does) or drop, for tasks still open
   --wake <value>: with --leftovers inbox: the wake each open task takes into the inbox ("track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD)
   --session <value>: your own session id
+  --user <value>
   --json: print JSON
 ```
 
@@ -525,9 +569,10 @@ askerdo track splinter <TR-n id (the parent)>
   --name <value>
   --at <value>: the T-n it leaves from (default: the one running)
   --goal <value>
-  --task <value> (repeatable): a T-n of the parent that moves with it (repeatable)
+  --task <value> (repeatable): a T-n of the parent that moves with it (repeatable; a session's call never carries one off the track it holds)
   --workstream <value>
   --session <value>: your own session id
+  --user <value>
   --json: print JSON
   --no-park: a branch: the parent stays open and keeps its session, and the first tasks of the side wait on --at
 ```
@@ -536,7 +581,8 @@ askerdo track splinter <TR-n id (the parent)>
 
 ```text
 askerdo track capture
-  a new idea, or an existing task, onto a track or the workstream's inbox; the session carries on
+  a new idea, or an existing task, onto a track or the workstream's inbox; the session carries on; a session that holds a track names the tier, and last or off that track asks the user
+  --tier <value>: where the work goes, which a session's filing names: 2 the track the session holds (--before what must not finish without it files at once; --last with why nothing there needs it sooner is asked of the user first, with --here-before), 3 another track in its workstream (--track) or work that starts after an event (--unpark-when), 4 another workstream (--workstream, with --track there or --wake); the board refuses a tier that does not fit and names the call that does
   --track <value>: TR-n
   --workstream <value>: WS-n: its inbox
   --name <value>
@@ -544,8 +590,17 @@ askerdo track capture
   --description <value>
   --priority <value>
   --unplaced <value>: into the inbox: why no plan reaches it (a session's capture says)
-  --wake <value>: what brings an inbox task back, "track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD after today; every filing to the inbox names one, and alone it wakes an inbox task again (a third wake in one inbox stay asks the user instead)
+  --wake <value>: what brings an inbox task back, "track-ends TR-n", "task-completes T-n", "question-answered Q-n" or a date YYYY-MM-DD after today; every filing to the inbox names one, and alone it wakes an inbox task again (a third wake in one inbox stay asks the user instead); next-session keeps a task on its track waiting until a session other than the one that files it takes the track (with --tier 2 on the track you hold, --tier 3 with --track on another, --tier 4 with --track in another workstream, or alone on a task on a track)
+  --why-elsewhere <value>: with --tier 3 or 4 from a session that holds a track: one line on why that track does not cover the work, the reason the placement question shows the user; one parked on, or woken by, that track's own end, task or question adds after a semicolon why it cannot start sooner
+  --last <value>: with --tier 2 and no --before: one line on why nothing on the track you hold needs the task sooner, the reason the placement question shows the user; a tier 2 filing with neither --before nor --last is refused
+  --before <value> (repeatable): a T-n on that track that waits on it (repeatable)
+  --after <value> (repeatable): a T-n on that track it waits on (repeatable)
   --session <value>: your own session id
+  --here-before <value> (repeatable): with a filing the user is asked about (last, or off the track you hold): a T-n on that track that would wait on the work, the real place it takes if the user says do it here (repeatable)
+  --here-after <value> (repeatable): with --here-before: a T-n the work would wait on at that place (repeatable)
+  --question <value>: a placement question answered with let's talk (Q-n): this filing is the place the talk settled, let through once, with --words
+  --words <value>: with --question: the user's words that settled the place, quoted whole
+  --user <value>: the mark of the user's own command, which the board never asks about: the plugin sends it for a command the user ran, and a session never does
   --json: print JSON
 ```
 
@@ -553,31 +608,10 @@ askerdo track capture
 
 ```text
 askerdo track layout <TR-n id>
-  lay a line of work out on its track: each step a task; after (T-n ids and earlier step numbers) and before (T-n ids alone, the tasks that wait on the step) are "depends on" edges, so the next task comes from the ready set
-  stdin: JSON payload { "steps": [{ "name", "task", "after", "before", "description", "priority", "runBy", "reviewScope" }] }
+  lay a line of work out on its track: each step a task; after (T-n ids and earlier step numbers) and before (T-n ids alone, the tasks that wait on the step) are "depends on" edges, so the next task comes from the ready set; on the track you hold with nothing else open it is laid whole, with work open there a step at a real place files and one last (last with its line, and here { after, before }) asks the user; onto a track you do not hold each step asks the user (whyElsewhere and here)
+  stdin: JSON payload { "steps": [{ "name", "task", "after", "before", "last", "description", "priority", "runBy", "reviewScope", "here", "whyElsewhere" }] }
   --session <value>: your own session id
-  --json: print JSON
-```
-
-### track promote
-
-```text
-askerdo track promote <T-n id>
-  a task too big for its checklist becomes a side track of its items
-  --name <value>
-  --goal <value>
-  --session <value>: your own session id
-  --json: print JSON
-  --move: the session moves onto it, parking the parent
-```
-
-### track fold
-
-```text
-askerdo track fold <TR-n id>
-  a small promoted track back into its task's checklist
-  --reason <value>
-  --session <value>: your own session id
+  --user <value>: the mark of the user's own command, which the board never asks about: the plugin sends it for a command the user ran, and a session never does
   --json: print JSON
 ```
 
@@ -607,8 +641,8 @@ askerdo track found <TR-n id>
 
 ```text
 askerdo handoff write <TR-n id>
-  write the next handoff on a track (on the board; the loose-file lists stay on this PC)
-  stdin: JSON payload (focus, state, whereWeWere, verifyFirst, waitingOnUser, rulings, created ...)
+  write the next handoff on a track (on the board; the loose-file, worktree and branch lists stay on this PC)
+  stdin: JSON payload (focus, state, whereWeWere, verifyFirst, waitingOnUser, rulings, created ...); the last handoff's waits carry, { drop: line } in waitingOnUser settles one
   --session <value>: your own session id
   --json: print JSON
 ```
@@ -617,10 +651,21 @@ askerdo handoff write <TR-n id>
 
 ```text
 askerdo handoff update <TR-n or TR-n.m id>
-  patch a track's live handoff in place, keeping its id: a state section replaced or added, a whereWeWere line, a waitingOnUser line added or dropped, a repo's verify-first snapshot refreshed
-  stdin: JSON ops, a list or { ops }: { op: "state", heading: "## ...", text }, { op: "whereWeWere", line }, { op: "waitingOnUser", add or drop }, { op: "verifyFirst", path }
+  patch a track's live handoff in place, keeping its id: a state section replaced or added, a whereWeWere line, a waitingOnUser line added or dropped, a repo's verify-first snapshot refreshed, the PC its next leg runs on set or cleared
+  stdin: JSON ops, a list or { ops }: { op: "state", heading: "## ...", text }, { op: "whereWeWere", line }, { op: "waitingOnUser", add or drop }, { op: "verifyFirst", path }, { op: "nextPc", pc }
   --session <value>: your own session id
   --json: print JSON
+```
+
+### sweep
+
+```text
+askerdo sweep
+  gather what earlier sessions left behind for one reader agent: this PC's transcripts of the sessions in scope digested (turns copied from another session left out), the lines naming something left, the board scan (closed tasks whose last note names something left, inbox tasks woken with no home) and the reader's brief, written under this PC's data folder, never in the repo or on the board; it prints the folder, the counts and the next step
+  --track <value>: TR-n: the sessions that held it or wrote its handoffs
+  --since <value>: YYYY-MM-DD: the project's sessions from that day
+  --json: print JSON
+  --since-last: the project's sessions since this PC's last sweep of it
 ```
 
 ## Commits and reviews
@@ -652,7 +697,7 @@ askerdo commit move <commit sha>
 
 ```text
 askerdo review covers <review T-n id, then the T-n ids it covers>
-  set a review task's covers list: the code tasks it read, each through its newest commit now. A list sets it, and the review reads only those tasks: it reopens only when one of them gains a commit; no list takes the default, every uncovered code task on its track finished before the review started; --none clears it
+  set a review task's covers list: the code tasks it read, each through its newest commit now. A list sets it, and the review reads only those tasks; no list takes the default, every uncovered code task on its track finished before the review started; --none clears it
   --session <value>: your own session id
   --json: print JSON
   --none: clear the list: the review covers nothing (not with ids)
@@ -665,7 +710,7 @@ askerdo coverage <TR-n or WS-n id>
   a track's or workstream's code tasks with the review that covers each, its reviews, the commits no task owns in its repos, and whether a review is due
   --session <value>: your own session id
   --json: print JSON
-  --scan: first link the commits here whose messages name a task, in each repo its handoffs name, from the first baseline to HEAD
+  --scan: first link the commits here whose subjects lead with a task id, in each repo its handoffs name, from the first baseline to HEAD
 ```
 
 ## Conversion map
@@ -708,14 +753,14 @@ askerdo conversion drop
 
 ```text
 askerdo knowledge new
-  record a gotcha or decision
+  record a gotcha or decision; the project left out is this folder's, and one in a project linked to no workstream or track takes the workstream of the track --session holds when that workstream is in the same project
   stdin: body, when --body-file is absent
   --type <value>
   --title <value>
   --project <value> (repeatable)
   --label <value> (repeatable)
   --ref <value> (repeatable)
-  --file <value> (repeatable): a file glob relative to the repo root, as a procedure card takes; an edit of a matching file points the session at the record
+  --file <value> (repeatable): a file glob relative to the repo root, as a procedure card takes; an edit of a matching file points the session at the record; a leading (read), (search) or (edit read) names the calls that point instead
   --body-file <value>
   --legacy <value>
   --created <value>
@@ -734,7 +779,7 @@ askerdo knowledge supersede <K-n id>
   --project <value> (repeatable)
   --label <value> (repeatable)
   --ref <value> (repeatable)
-  --file <value> (repeatable): a file glob relative to the repo root, as a procedure card takes; an edit of a matching file points the session at the record
+  --file <value> (repeatable): a file glob relative to the repo root, as a procedure card takes; an edit of a matching file points the session at the record; a leading (read), (search) or (edit read) names the calls that point instead
   --body-file <value>
   --legacy <value>
   --created <value>
@@ -761,7 +806,7 @@ askerdo knowledge amend <K-n id>
 
 ```text
 askerdo knowledge edit <K-n id>
-  rewrite a knowledge record's name or body in place while no other session has used it (once used, amend or supersede it); its refs, projects and files change at any time
+  rewrite a knowledge record's name or body in place while no other session has used it (once used, amend or supersede it); its refs, projects, files and commands change at any time
   --name <value>
   --body <value>
   --body-file <value>
@@ -771,19 +816,23 @@ askerdo knowledge edit <K-n id>
   --remove-ref <value> (repeatable)
   --add-project <value> (repeatable)
   --remove-project <value> (repeatable)
-  --add-file <value> (repeatable): a file glob relative to the repo root, as a procedure card takes; an edit of a matching file points the session at the record
+  --add-file <value> (repeatable): a file glob relative to the repo root, as a procedure card takes; an edit of a matching file points the session at the record; a leading (read), (search) or (edit read) names the calls that point instead
   --remove-file <value> (repeatable): a file glob to take off it
+  --add-command <value> (repeatable): a command fragment a decision governs
+  --remove-command <value> (repeatable): a command fragment to take off it
   --json: print JSON
+  --confirmed: a decision: the user confirmed its title as worded, so it is carried by title and K-n
 ```
 
 ### decide
 
 ```text
 askerdo decide
-  record a ruling the user made, in their words, with what it governs; left out, the track and workstream are the ones the session holds and the project is this folder's; the question it answers is answered too when the words carry its token (167a), else the reply says it is still open
+  record a ruling the user made: a title stating only what they chose, the session's own picks in the body each named as the session's pick, their words quoted whole, and what it governs; left out, the track and workstream are the ones the session holds and the project is this folder's; the question it answers is answered too when the words carry its token (167a), else the reply says it is still open; words ending in a question back or a hedge (thoughts?, perhaps) still record, and the reply warns that they leave the choice open
   stdin: JSON payload { title, words, body, tasks, tracks, workstreams, files, commands, question, supersedes, projects or global }
   --session <value>: your own session id
   --json: print JSON
+  --confirmed: the user said yes to the title as worded, so the ruling is carried by its title and K-n
 ```
 
 ### decisions
@@ -794,7 +843,7 @@ askerdo decisions
   --task <value>: T-n
   --track <value>: TR-n
   --workstream <value>: WS-n (its label too)
-  --since <value>: YYYY-MM-DD or a full stamp: only the ones made since
+  --since <value>: YYYY-MM-DD or a full stamp: only the ones made or amended since
   --json: print JSON
 ```
 
@@ -819,7 +868,7 @@ askerdo settings
   --track <value>: resolve for this track (TR-n)
   --project <value>: resolve for this project dir (default: the current folder)
   --session <value>: your own session id
-  --json: print { record, chain, held, home, board, rows, tabs, lists }; a row is { key, family, tab, label, line, changes, example, takes, kind, values and choices or min and max, builtIn, value, layer (built-in, default, project, workstream, track, task or pc), scope, record, profile, editable, why, changed, overridden, places }, a rule line adds slug, words and audience; a tab is { tab, name, summary, changed }; lists holds the copy of rules.add and rules.drop; home names the profile a rule line goes to; the board token shows as set or not set
+  --json: print { record, chain, held, home, board, rows, tabs, lists }; a row is { key, family, tab, label, line, changes, example, takes, kind, values and choices or min and max, builtIn, value, layer (built-in, default, project, workstream, track, task or pc), scope, record, profile, editable, why, changed, overridden, places }, a rule line adds slug, words, audience and, for the agents of one role, role; a tab is { tab, name, summary, changed }; lists holds the copy of rules.add and rules.drop; home names the profile a rule line goes to; the board token shows as set or not set
 ```
 
 ### settings set
@@ -859,7 +908,7 @@ Works with no board.
 askerdo settings rule <add, drop or clear> <slug>
   add a rule line, or drop a built-in one, on your default profile, held on default so it reaches every session; clear takes a slug off a profile
   --text <value>: the rule in plain words, at most 400 characters, on add
-  --for <value>: session, agents or both (the default), on add
+  --for <value>: session, agents, agents:<role> (a subagent type or a task label: only those agents) or both (the default), on add
   --profile <value>: on clear, the profile the slug is on (default: your default profile)
   --session <value>: your own session id
   --json: print { profile, op, slug, settings, added, dropped }
@@ -901,7 +950,7 @@ askerdo profile show-effective <record (default, a project dir, WS-n, TR-n, T-n,
 askerdo profile rule-add <profile> <slug>
   add a rule line to a profile, or replace the one with that slug
   --text <value>: the rule in plain words, at most 400 characters
-  --for <value>: session, agents or both (the default): whose block carries it
+  --for <value>: session, agents, agents:<role> or both (the default): whose block carries it; a role is a subagent type or a label on the task an agent is dispatched on, and its line rides only the briefs of those agents
   --session <value>: your own session id
   --from <value>: the ruling it came from (K-n or Q-n); the line then changes only with a newer one
   --ruling <value>: a newer ruling that changes a line from a ruling
@@ -940,6 +989,15 @@ askerdo profile define <profile name>
   --json: print JSON
 ```
 
+### profile delete
+
+```text
+askerdo profile delete <profile name>
+  delete a profile's definition; refused while a record holds it (profile remove takes it off), and a built-in one cannot be deleted
+  --session <value>: your own session id
+  --json: print JSON
+```
+
 ### profile list
 
 ```text
@@ -974,8 +1032,21 @@ askerdo proc scan
 
 ```text
 askerdo proc ran <name> <clean or deviated>
-  record a run of a procedure: clean moves its verified commit to HEAD, deviated flags the card
-  --note <value>: what differed (required for deviated)
+  record a run of a procedure: clean moves its verified commit to HEAD; deviated says what happens next with one outcome, and the board files nothing
+  --note <value>: what differed, its first sentence naming the step and how (required for deviated)
+  --project <value>: the project the name is in (default: the current repo)
+  --session <value>: your own session id
+  --fixed <value>: with deviated: the commit that fixed the card's steps file
+  --one-off <value>: with deviated: why the run was a one-off and the steps stand
+  --filed <value>: with deviated: the open task you filed for the work, on a track or in an inbox (it holds the flag until it closes)
+  --json: print JSON
+```
+
+### proc drafts
+
+```text
+askerdo proc drafts <name>
+  a procedure's deviated runs by the step each names, with the outcome each recorded, and the draft tasks filed before outcomes were said that are still open
   --project <value>: the project the name is in (default: the current repo)
   --session <value>: your own session id
   --json: print JSON
@@ -1026,8 +1097,8 @@ askerdo override request
 ### override decide
 
 ```text
-askerdo override decide <request> <allow-or-keep>
-  the user's Allow or Keep on an override request (its number, or a record it holds); only their press, so it needs --user
+askerdo override decide <request> <act-or-keep>
+  the user's press on an override request (its number, or a record it holds): its act (withdraw, fix or scrub; allow for any) or keep; only their press, so it needs --user
   --user <value>: the session the user pressed in, or typed their answer in
   --json: print JSON
 ```
@@ -1049,7 +1120,7 @@ Works with no board.
 
 ```text
 askerdo board
-  start or adopt this PC's local server and print its URL, the board's address and database folder when this PC hosts the board, and this PC's AskerDo version and the board's, with a line when the board runs an older one
+  start or adopt this PC's local server and print its URL, the board's address and database folder when this PC hosts the board, and this PC's AskerDo version and the board's with its server commit, with a line when the board runs an older version or a commit older than the one last shipped to it
   --port <value>
   --json: print JSON
   --restart: stop the running local server (through its own stop route, else by its process id) and start a fresh one on the same port
@@ -1154,7 +1225,7 @@ askerdo join <board url> [<code>]
 
 ```text
 askerdo upkeep
-  with --dry-run: what switching automatic upkeep on would unpark, close, set back to open and put on the band, writing nothing
+  with --dry-run: what switching automatic upkeep on would unpark, close and put on Home, writing nothing
   --json: print JSON
   --dry-run
 ```
@@ -1179,8 +1250,8 @@ askerdo upkeep off
 
 ```text
 askerdo status
-  check AskerDo on this PC: the store, the settings and board join, the board, this PC's local server and tray, and a copy an update replaced; one line each, every problem with the one command or step that fixes it
-  --json: { ok, checks: [{ key, ok, says }], problems: [{ key, says, fix, command?, copy? }] }, command being the askerdo verb that fixes it here, copy a command to run on another PC
+  check AskerDo on this PC: the store, the settings and board join, the board, this PC's local server and tray, a copy an update replaced, and a git checkout install behind its upstream branch (after a fetch of a few seconds at most); one line each, every problem with the one command or step that fixes it
+  --json: { ok, checks: [{ key, ok, says }], problems: [{ key, says, fix, command?, copy? }] }, command being the askerdo verb that fixes it here, copy a command to run in a shell or on another PC
 ```
 
 ### board move
@@ -1230,4 +1301,25 @@ Works with no board.
 ```text
 askerdo help <words>
   every verb, or one verb in full: help <verb>
+```
+
+## Other verbs
+
+### check strike
+
+```text
+askerdo check strike <T-n id> <item>
+  strike a checklist step that will not be done, with a word why; it stays settled, never open (check done lifts it)
+  --why <value>: why it will not be done (needed)
+  --session <value>: your own session id
+  --json: print JSON
+```
+
+### task block
+
+```text
+askerdo task block <T-n id>
+  what a task holds now (several tasks with several ids; --json gives an array for several): its word with who and since when, intent, description, open steps, answered gates, decisions in force and the notes since its text was last set, with the count of earlier notes left out
+  --session <value>: the session reading it, whose own run reads "this session"; without it every session's run reads "a session"
+  --json: print JSON
 ```

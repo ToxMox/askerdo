@@ -101,7 +101,7 @@ function planOrder(db, plan, placed, ws, actor, out) {
     /* the step it came from: labels differ per import, so the board picture names it so */
     const change = { fromStep: plan.fields.id + '/' + s.id };
     if (done) {
-      change.status = 'completed';
+      change.status = 'done';
       change.closed = covers.map((k) => loadRecord(db, k).fields.closed).filter(Boolean).sort((a, b) => ms(a) - ms(b)).pop() || t.fields.created;
     }
     writeFront(db, t, change, TASK_KEYS);
@@ -390,7 +390,7 @@ export function proveTracks(db, { before, merge }) {
   }
   const ownEdges = db.stmt(`SELECT count(*) AS n FROM depends WHERE reason = ? AND task IN (SELECT task FROM track_items WHERE track = ?)`);
   const firstOpen = db.stmt(`SELECT r.key, r.label, r.status FROM track_items ti JOIN records r ON r.key = ti.task
-    WHERE ti.track = ? AND r.status NOT IN ('completed', 'dropped') ORDER BY ti.position LIMIT 1`);
+    WHERE ti.track = ? AND r.status NOT IN ('done', 'dropped') ORDER BY ti.position LIMIT 1`);
   let edges = 0;
   for (const t of merge.tracks) {
     const n = ownEdges.get(IMPORT_REASON, t.key).n;

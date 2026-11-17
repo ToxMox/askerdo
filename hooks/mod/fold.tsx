@@ -1,12 +1,14 @@
 /* the pane's one open and shut control, a sky ring with its
  * chevron ending the row, drawn here once for every fold and expand arrow on the desktop; the
  * terminal has no Svg, so it keeps its text arrows. */
-import { paneMeasure } from '../../lib/mod-core.mjs'
+import { deskCells } from '../../lib/mod-core.mjs'
 import { pressOver } from './status.tsx'
 
 /* the ring's 24 px and a cell's gap before it, in the pane's 8.453 px cells (3.84, so 4) */
 export const FOLD_CELLS = 4
-const PX = 24, CELL = 8.453
+const PX = 24
+/* a desktop cell in px (14 px Anthropic Sans, desktop-capabilities) */
+export const CELL = 8.453
 export const OPEN = '▾', SHUT = '▸'
 /* light then dark: the ring the badge's sky, the chevron the pane's sky; lit, the light theme's pale
    sky tint and the dark theme's grey (a sky tint read teal on near black) */
@@ -49,17 +51,25 @@ export function foldRing(els: any, open: boolean, o: { key?: string; pressKey?: 
   )
 }
 
-/* the desktop's cells for words at the pane's 14 px (600: a heading's title) */
-export const paneCells = (s: string, weight = 400) => paneMeasure(s, 14, weight) / CELL
+/* the desktop's cells for words at the pane's 14 px (600: a heading's title), as its Text draws them */
+export const paneCells = (s: string, weight = 400): number => deskCells(s, weight)
 
-/* a heading's line on the desktop cut after a whole word where its room ends, so the ring keeps its place */
-export function fitWords(s: string, cells: number): string {
-  const fits = (t: string) => paneCells(t) <= cells
+/* a heading's line on the desktop cut after a whole word where its room ends, so the ring keeps its place;
+   nothing when not even the first word fits, since the renderer would cut it mid-word */
+export function fitWords(s: string, cells: number, weight = 400): string {
+  const fits = (t: string) => paneCells(t, weight) <= cells
   if (fits(s)) return s
   const words = s.split(' ')
-  const cut = () => words.join(' ').replace(/[,;:]$/, '') + '…'
-  while (words.length > 1 && !fits(cut())) words.pop()
-  return cut()
+  const cut = (n: number) => words.slice(0, n).join(' ').replace(/[,;:]$/, '') + '…'
+  /* the most whole words that fit: a longer cut is never narrower, so the search halves, where
+     dropping a word at a time measured a long list (a day's finished agents) once per word */
+  let lo = 1, hi = words.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (fits(cut(mid))) lo = mid
+    else hi = mid - 1
+  }
+  return fits(cut(lo)) ? cut(lo) : ''
 }
 
 /* the ring's width left empty, so a grid's rows without one keep their columns under the ones with one */
@@ -78,26 +88,31 @@ export function foldEnd(els: any, ring: any, gap: number): any {
 /* A section heading, the whole row its press: the title and what follows it, the ring at the
    row's end, lit from anywhere on the row; presses inside it come lifted (liftPress). line: the
    first line's height; titleCells: the title's width, so one wider than the row wraps rather than
-   running under the ring. The terminal: the arrow and the title one plain Button. */
-export function foldHead(els: any, o: { key: string; press: string; open: boolean; toggle: () => void; desk: boolean; cols: number; title: any; rest?: any[]; wrap?: boolean; line?: number; gap?: number; titleCells?: number }): any {
+   running under the ring; under: a line of its own under the title, inside the press. The terminal:
+   the arrow and the title one plain Button. */
+export function foldHead(els: any, o: { key: string; press: string; open: boolean; toggle: () => void; desk: boolean; cols: number; title: any; rest?: any[]; wrap?: boolean; line?: number; gap?: number; titleCells?: number; under?: any }): any {
   const { Box, Button, Text } = els
   const rest = (o.rest || []).filter(Boolean)
   if (!o.desk) {
-    return (
-      <Box key={o.key} flexDirection="row" columnGap={o.gap || 1} alignItems="center" {...(o.wrap ? { flexWrap: 'wrap' } : {})}>
+    const row = (
+      <Box key={o.under ? o.key + '-row' : o.key} flexDirection="row" columnGap={o.gap || 1} alignItems="center" {...(o.wrap ? { flexWrap: 'wrap' } : {})}>
         <Box key={o.key + '-face'} flexShrink={0}><Button key={o.press} plain onPress={o.toggle}><Text>{(o.open ? OPEN : SHUT) + ' '}</Text>{o.title}</Button></Box>
         {rest}
       </Box>
     )
+    return o.under ? <Box key={o.key} flexDirection="column">{row}<Box key={o.key + '-under'} paddingLeft={2}>{o.under}</Box></Box> : row
   }
+  const words = (
+    <Box key={o.key + '-words'} flexDirection="row" columnGap={o.gap || 1} rowGap={0.5} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0} {...(o.wrap ? { flexWrap: 'wrap' } : {})}>
+      {/* the title stays whole on one line unless wider than the row; what follows it takes the cut */}
+      <Box key={o.key + '-title'} {...(Number(o.titleCells) > o.cols - FOLD_CELLS ? { flexShrink: 1, minWidth: 0 } : { flexShrink: 0 })}>{o.title}</Box>
+      {rest}
+    </Box>
+  )
   return (
     <Box key={o.key} flexDirection="row" columnGap={1} alignItems="flex-start">
       {pressOver(els, o.press, o.cols, o.toggle)}
-      <Box key={o.key + '-words'} flexDirection="row" columnGap={o.gap || 1} rowGap={0.5} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0} {...(o.wrap ? { flexWrap: 'wrap' } : {})}>
-        {/* the title stays whole on one line unless wider than the row; what follows it takes the cut */}
-        <Box key={o.key + '-title'} {...(Number(o.titleCells) > o.cols - FOLD_CELLS ? { flexShrink: 1, minWidth: 0 } : { flexShrink: 0 })}>{o.title}</Box>
-        {rest}
-      </Box>
+      {o.under ? <Box key={o.key + '-lines'} flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>{words}<Box key={o.key + '-under'} minWidth={0}>{o.under}</Box></Box> : words}
       {foldRing(els, o.open, { line: o.line })}
     </Box>
   )

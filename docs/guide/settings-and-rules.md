@@ -60,7 +60,7 @@ On a board these are set at the default layer only.
 |`agent.soft`|Soft limit|350k tokens|Past this, an agent finishes its step and hands back|
 |`agent.hard`|Hard floor|450k tokens|Past this, the note turns urgent|
 |`agent.remind`|Reminder step|25k tokens|How often the note repeats past the soft limit|
-|`agent.hardDeny`|Lock at the hard floor|off|Past the hard floor, the agent may write only its state note|
+|`agent.hardDeny`|Lock at the hard floor|off|Past the hard floor, the agent may only write its state note and hand its report back|
 |`dispatch.inject`|Rules ride every brief|on|The rules in force go with every agent you dispatch|
 |`dispatch.stateNote`|State notes|on|Each agent keeps a note of what is done and what is next|
 |`dispatch.outputRule`|Short reports|on|Each agent's final report stays under 2000 characters|
@@ -69,7 +69,7 @@ On a board these are set at the default layer only.
 
 The drift line is read once as each session starts: it names a path that CLAUDE.md, AGENTS.md or a rule line in force cites and that does not exist, a rule line over 400 characters, and, from the project's conversion map on the board, a cite into a folder the conversion retired and files in such a folder again since the last run. A retired cite or a retired folder holding files closes the line with "run the doctor" and a link to the doctor's runs once the doctor has run, else with `/askerdo:doctor`; a missing cite alone ends with `(/askerdo:doctor)`, and a long rule line alone names neither. It shows on Home only, never on the band.
 
-Knowledge pointers follow the file globs a knowledge record carries (`knowledge new --file`, `knowledge edit --add-file`): an edit of a matching file gets a toast and a one-line pointer naming the record and its title, once per record in a session and in each of its agents; nothing is blocked. Off, knowledge records point at nothing; decisions and procedure cards point either way. The value is read from the rules in force, so a change reaches open sessions at their next prompt.
+Knowledge pointers follow the file globs a knowledge record carries (`knowledge new --file`, `knowledge edit --add-file`): an edit of a matching file (or a read or a search, for a glob marked `(read)` or `(search)`, [Concepts](concepts.md)) gets a toast and a one-line pointer naming the record and its title, once per record in a session and in each of its agents; nothing is blocked. Off, knowledge records point at nothing; decisions and procedure cards point either way. The value is read from the rules in force, so a change reaches open sessions at their next prompt.
 
 ### Tests
 
@@ -87,7 +87,7 @@ Knowledge pointers follow the file globs a knowledge record carries (`knowledge 
 |`review.tasks`|Review size|5|1 to 1000|
 |`review.ignore`|Not counted|none|a JSON list of globs|
 
-The board links each commit to the task it belongs to, and a review task (labelled `review`, or named "Review ...") covers the code tasks it read. `review.depth` says how much the board makes of it: `off` nothing, `light` a nudge once a track's unreviewed code tasks reach `review.tasks`, `full` the nudge, a completed review that reopens when work it read changes (so the tasks after it wait again), and a track finish held until a review covers its finished code (`track finish --waive "<reason>"` goes ahead). A review reads its own track, or with `--review-scope project` every code task in the project since the last project-wide review. `review.ignore` adds a project's own files to those never counted, such as `["dist/version.json", "src/generated/**"]`. The Settings tab shows them under **Tests**.
+The board links each commit to the task it belongs to, and a review task (labelled `review`) covers the code tasks it read. `review.depth` says how much the board makes of it: `off` nothing, `light` a nudge once a track's unreviewed code tasks reach `review.tasks`, `full` the nudge and a track finish held until a review covers its finished code (`track finish --waive "<reason>"` goes ahead). A review reads its own track, or with `--review-scope project` every code task in the project since the last project-wide review. `review.ignore` adds a project's own files to those never counted, such as `["dist/version.json", "src/generated/**"]`. The Settings tab shows them under **Tests**.
 
 ### This PC
 
@@ -167,12 +167,14 @@ node ~/.claude/askerdo/cli.mjs settings set contract.forecast off
 node ~/.claude/askerdo/cli.mjs settings set tests.fullRun merge TR-12 --at track
 node ~/.claude/askerdo/cli.mjs settings unset main.window
 node ~/.claude/askerdo/cli.mjs settings rule add no-force-push --text "Never force-push." --for agents
+node ~/.claude/askerdo/cli.mjs settings rule add audit-ground --text "Read every account record before you judge one." --for agents:audit
 node ~/.claude/askerdo/cli.mjs settings rule drop lay-out-first
 ```
 
 - `settings set` writes into the profile that sets the value now, or your default profile when it is built in. `--at` picks a layer instead, with the record after the value: the profile held there that sets it, else the one held there, else a new one named `settings-<record>`.
 - `settings unset` takes a value off the layer that sets it now, so the next layer down applies.
 - `settings rule add` and `drop` work on your default profile, so they reach every session; `clear` takes a slug off a profile.
+- `--for` is `session`, `agents`, `both` (the default) or `agents:<role>`. A role is one word: a subagent type (`explore`, or your own agent definition's name) or a label on the task an agent is dispatched on (`review`, `audit`). A role's line rides only the brief of an agent of that type or on a task with that label, after the lines for every agent; the session's block and `AGENTS.override.md` never carry it. The pane's and the board page's Add a rule line take the role in their Role field, beside For agents.
 - `settings set boardBackups <folder>` and `settings unset boardBackups` write this PC's `config.json` alone, on any PC; the folder takes effect once this PC hosts the board. `boardContainer` is written the same way.
 - In text mode, a reply option or the queue is written to `config.json`, and the output style is rewritten on the spot.
 

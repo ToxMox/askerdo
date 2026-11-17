@@ -3,21 +3,23 @@
    its cause as board:upkeep. Band calls are computed when read. */
 import { tx } from '../db.mjs';
 import { WEB } from '../paths.mjs';
-import { DAY_RE, KEY_ORDERS, actorOf, addDays, addNote, clockOf, getMeta, isKey, labelOf, sessionWords, setMeta, stampNow, logVerb } from '../records.mjs';
-import { ENDED_TASK, TASK_KEYS, TrackRefusal, headOf, loadRecord, logLine, readTx, recordOf, sideOf, writeFront } from './graph.mjs';
+import { DAY_RE, KEY_ORDERS, actorOf, addDays, addNote, clockOf, getMeta, isKey, labelOf, setMeta, stampNow, logVerb } from '../records.mjs';
+import { ENDED_TASK, TrackRefusal, headOf, loadRecord, logLine, readTx, recordOf, writeFront } from './graph.mjs';
 import { UsageError, lineName, namedLabel, resolveRecord } from './labels.mjs';
-import { INBOX_LABEL, drop as dropQuestion, register as askQuestion, wakeLinked } from './questions.mjs';
+import { INBOX_LABEL, drop as dropQuestion, register as askQuestion } from './questions.mjs';
 import { NEWEST_FIRST, holderPlain, inboxMoved, quietHours, quietSince, stallDays, stateOf, trackMoved } from './tracks.mjs';
 import { atWords } from '../web/feed.mjs';
 import { CLI, WAKE_DAYS, WAKE_FORMS, waitingOf } from '../handoff-text.mjs';
 import { overrideCalls } from './override.mjs';
-import { afterTask, trackReview } from './coverage.mjs';
+import { trackReview } from './coverage.mjs';
+import { endTask, openSteps, runsHolding, stepsRefusal } from './ending.mjs';
+import { heldWords, openRunSql } from './runs.mjs';
 
 export const BY = 'board:upkeep';
 const SETTING = 'upkeep';
 export const upkeepOn = (db) => getMeta(db, SETTING) === 'on';
 
-const ENDS = { track: ['done', 'dropped', 'folded'], task: ['completed', 'dropped'], question: ['answered', 'dropped'] };
+const ENDS = { track: ['done', 'dropped', 'folded'], task: ['done', 'dropped'], question: ['answered', 'dropped'] };
 const UNPARK = { 'track-ends': 'track', 'task-completes': 'task', 'question-answered': 'question' };
 const kindOf = (db, key) => (db.stmt('SELECT kind FROM records WHERE key = ?').get(key) || {}).kind;
 
@@ -26,8 +28,7 @@ const kindOf = (db, key) => (db.stmt('SELECT kind FROM records WHERE key = ?').g
 export function closeText(db, v) {
   if (!v || typeof v !== 'object') return v ?? null;
   if (v.kind === 'with') return 'with ' + namedLabel(db, v.on);
-  if (v.kind === 'when') return 'when ' + v.fact;
-  return v.kind === 'look' ? 'after the look' : String(v.kind);
+  return String(v.kind);
 }
 
 export const whenText = (db, v) => (v && typeof v === 'object' ? v.kind + ' ' + (UNPARK[v.kind] === 'track' ? lineName(db, v.on) : labelOf(db, v.on)) : v ?? null);
@@ -39,28 +40,27 @@ export function unparkWords(db, v) {
   return 'when ' + namedLabel(db, v.on) + (v.kind === 'question-answered' ? ' is answered' : ' completes');
 }
 
-/* "with T-5", "look" or "when <fact>"; an API caller may pass the object
-   ({ kind: "with", on | task }). */
+/* "with T-n"; an API caller may pass the object ({ kind: "with", on | task }). A look or a
+   when fact is refused with its way out; old records keep theirs for the doctor. */
 export function closeOf(db, raw, self, day) {
   let kind;
   let ref;
-  let fact;
   if (raw && typeof raw === 'object') {
     kind = raw.kind;
-    fact = raw.fact;
     ref = raw.on ?? raw.task;
   } else {
     const s = String(raw ?? '').replace(/\s+/g, ' ').trim();
     const m = /^(with|when) (.+)$/i.exec(s);
     if (/^look$/i.test(s)) kind = 'look';
-    else if (m) { kind = m[1].toLowerCase(); if (kind === 'with') ref = m[2]; else fact = m[2]; }
+    else if (m) { kind = m[1].toLowerCase(); ref = m[2]; }
   }
-  if (kind === 'look') return { kind };
+  if (kind === 'look') {
+    throw new UsageError('a task does not close at the look: a look is a task labelled look (--add-label look) that its session runs and ends by asking the user one question gating it, and the session closes it once the answer is right');
+  }
   if (kind === 'when') {
-    if (typeof fact !== 'string' || !fact.trim()) throw new UsageError('--close when needs the fact that closes it: when <a checkable fact>');
-    return { kind, fact: fact.replace(/\s+/g, ' ').trim() };
+    throw new UsageError('a task does not close when a fact holds: write the checkable fact into its description as its done clause (--description), and its session closes it once the fact holds');
   }
-  if (kind !== 'with') throw new UsageError('--close takes "with T-n", "look" or "when <a checkable fact>"');
+  if (kind !== 'with') throw new UsageError('--close takes "with T-n"');
   /* a plan step ("P-10 s5") names the one task the import made from it */
   const step = /^(P-\d+)[ /](s\d+)$/.exec(String(ref ?? '').trim());
   const hits = step ? db.stmt(`SELECT key FROM records WHERE kind = 'task' AND json_extract(fields, '$.fromStep') = ?`).all(step[1] + '/' + step[2]) : [];
@@ -68,25 +68,21 @@ export function closeOf(db, raw, self, day) {
   if (!e || e.kind !== 'task') throw new UsageError('--close with names a task: no task ' + (ref || '(none given)') + (hits.length > 1 ? ' (' + hits.length + ' tasks claim that step)' : ''));
   if (e.key === self) throw new UsageError('a task cannot close with itself');
   const st = e.front.status;
-  if (ENDED_TASK.includes(st)) throw new UsageError(e.label + ' is already ' + st + (st === 'completed' ? ': complete this task now instead' : ', so it never completes'));
+  if (ENDED_TASK.includes(st)) throw new UsageError(e.label + ' is already ' + st + (st === 'done' ? ': complete this task now instead' : ', so it never completes'));
   return { kind, on: e.key };
 }
 
-/* task edit --close, --clear-close and --landed, inside editRecord's transaction. */
+/* task edit --close and --clear-close, inside editRecord's transaction; a clear takes an old
+   look's landed mark with it, so no dead field stays. */
 export function editClose(db, e, front, c, changed, ctx) {
-  if (c.close === undefined && !c.clearClose && !c.landed) return;
+  if (c.close === undefined && !c.clearClose) return;
   if (e.kind !== 'task') throw new UsageError('only a task carries a close condition');
   if (c.close !== undefined && c.clearClose) throw new UsageError('pick one of --close and --clear-close');
   const was = JSON.stringify(front.close ?? null);
   if (c.clearClose) delete front.close;
   else if (c.close !== undefined) front.close = closeOf(db, c.close, e.key, ctx.day);
   if (JSON.stringify(front.close ?? null) !== was) changed.push('close');
-  const look = front.close && front.close.kind === 'look';
-  if (c.landed) {
-    if (!look) throw new UsageError('--landed reports a look task\'s work landed; ' + front.id + ' closes ' + (front.close ? closeText(db, front.close) : 'by hand') + ' (--close look first)');
-    if (ENDED_TASK.includes(front.status)) throw new UsageError(front.id + ' is already ' + front.status);
-    if (!front.landed) { front.landed = ctx.at; changed.push('landed'); }
-  } else if (front.landed && !look) { delete front.landed; changed.push('landed'); }
+  if (front.landed) { delete front.landed; changed.push('landed'); }
 }
 
 /* The activity line shows a close condition as it reads, never as a key map. */
@@ -117,33 +113,59 @@ export function unparkWhenOf(db, raw, flag = '--unpark-when', also = '') {
 
 /* an unplaced task's wake, the park vocabulary or a day; none given, none
    (the filing verbs refuse a filing with none). A fired wake is refused with the way out: a refused
-   filing (`via` create, capture) or close (finish, drop, with `track`) moved nothing, so the way out runs it again. */
+   filing (`via` create, capture) or close (finish, drop, with `track`) moved nothing, so the way out runs it again;
+   a closing task's leftover (`via` leftover) names its step's fields instead of a flag; `via` ladder gives the cause alone. */
 export function wakeOf(db, raw, day, task, via, track) {
   if (raw === undefined || raw === null || raw === '') return undefined;
+  if (isNextSession(raw)) {
+    throw new TrackRefusal((via === 'leftover' || via === 'ladder' ? 'wake ' : '--wake ') + 'next-session waits on a track for another session to take it, and the inbox has no track: '
+      + (via === 'leftover' ? 'leave out unplaced and the step goes on its track with that wake' : 'file it on a track with that wake (tier 2 on the track you hold, tier 3 on another), or give the inbox a wake still to come (' + WAKE_FORMS + ')'));
+  }
   const later = 'a wake still to come (' + WAKE_FORMS + ')';
   const closing = !task && (via === 'finish' || via === 'drop');
   const who = closing ? 'its open tasks' : 'the task';
-  const out = !task && via === 'create' ? ' File it again on a track (`' + CLI + ' task create --track TR-n`, with the same payload), or with ' + later + '.'
+  const flag = via === 'leftover' || via === 'ladder' ? 'wake ' : '--wake ';
+  /* a ladder filing's way out rides its refusal's offers (tracks.mjs ladderRung) */
+  const out = via === 'ladder' ? '' : !task && via === 'create' ? ' File it again on a track (`' + CLI + ' task create --track TR-n`, with the same payload), or with ' + later + '.'
     : !task && via === 'capture' ? ' Capture it again on a track (`' + CLI + ' track capture --track TR-n --name "<the work>"`), or with ' + later + '.'
+      : via === 'leftover' ? ' Name ' + later + ' in its place, or leave out unplaced and wake so the step goes on a track.'
       : closing ? ' ' + (via === 'drop' ? 'Drop ' : 'Finish ') + (track || 'the track') + ' again with ' + later + ', or drop its open tasks with it (`'
         + CLI + ' track ' + via + ' ' + (track || 'TR-n') + ' --leftovers drop`).'
         : ' Place ' + (task || 'it') + ' now (`' + CLI + ' task edit ' + (task || '<T-n>') + ' --track TR-n`), or name ' + later + '.';
   const d = typeof raw === 'object' ? raw.date : String(raw).trim();
   if (typeof d === 'string' && DAY_RE.test(d)) {
-    if (addDays(d, 0) !== d) throw new TrackRefusal('--wake ' + d + ' is no calendar day');
-    if (d <= day) throw new TrackRefusal('--wake ' + d + ' has fired: that day ' + (d === day ? 'is today' : 'has passed') + ' (' + day + '), so ' + who + ' would be due at once.' + out);
+    if (addDays(d, 0) !== d) throw new TrackRefusal(flag + d + ' is no calendar day');
+    if (d <= day) throw new TrackRefusal(flag + d + ' has fired: that day ' + (d === day ? 'is today' : 'has passed') + ' (' + day + '), so ' + who + ' would be due at once.' + out);
     return { date: d };
   }
   const m = typeof raw === 'object' ? null : /^\s*(track-ends|task-completes|question-answered)\s+(\S+)\s*$/i.exec(String(raw));
   const want = m && UNPARK[m[1].toLowerCase()];
   const e = want ? resolveRecord(db, m[2], { kinds: [want] }) : null;
   if (e && ENDS[want].includes(e.front.status)) {
-    throw new TrackRefusal('--wake ' + m[1].toLowerCase() + ' ' + e.label + ' has fired: ' + e.label + ' is already ' + e.front.status + ', so ' + who + ' would be due at once.' + out);
+    throw new TrackRefusal(flag + m[1].toLowerCase() + ' ' + e.label + ' has fired: ' + e.label + ' is already ' + e.front.status + ', so ' + who + ' would be due at once.' + out);
   }
-  return unparkWhenOf(db, raw, '--wake', ' or a date YYYY-MM-DD');
+  /* the close itself ends the track its leftovers would wait on */
+  if (e && closing && want === 'track' && e.label === track) {
+    throw new TrackRefusal('--wake track-ends ' + e.label + ' fires with this close, so ' + who + ' would be due at once.' + out);
+  }
+  return unparkWhenOf(db, raw, flag.trim(), ' or a date YYYY-MM-DD');
 }
 
-export const wakeWords = (db, w) => (w && w.date ? w.date : unparkWords(db, w));
+export const wakeWords = (db, w) => (w && w.date ? w.date : isNextSession(w) ? 'the next session' : unparkWords(db, w));
+
+/* a task on a track waits for the next session, a session other than its filer taking the
+   track; stored { kind: 'next-session', session, at }, it reads due from that take (graph.mjs). */
+export const NEXT_SESSION = 'next-session';
+export const isNextSession = (w) => (typeof w === 'string' ? /^\s*next-session\s*$/i.test(w) : Boolean(w) && typeof w === 'object' && w.kind === NEXT_SESSION);
+export const nextSessionWake = (c) => ({ kind: NEXT_SESSION, session: c.session, at: c.at });
+
+/* The day a task with no wake stored entered the inbox: its last move off a track or its
+   last unplaced reason, else its birth. */
+export function enteredInbox(db, key, created) {
+  const r = db.stmt(`SELECT at FROM activity WHERE record = ? AND (json_type(diff, '$.unplaced[1]') = 'text'
+    OR (json_type(diff, '$.track') = 'array' AND json_type(diff, '$.track[1]') = 'null')) ORDER BY seq DESC LIMIT 1`).get(key);
+  return String((r && r.at) || created || '').slice(0, 10) || null;
+}
 
 /* Due once its event ended (or its record went) or its day came; a task with no wake
    stored reads as due 14 days after it entered the inbox (`entered`, a day). */
@@ -203,7 +225,11 @@ export function settleWakeAsk(db, key, why, c) {
 export function thirdWake(db, task, c, why) {
   const { n, ask } = wakesInStay(db, task.key);
   const id = task.fields.id;
-  if (ask && ask.open) return { asked: ask.id, waits: true };
+  /* asked is the question as register returns it, the same shape as a placement's */
+  if (ask && ask.open) {
+    const f = loadRecord(db, ask.key).fields;
+    return { asked: { id: ask.id, key: ask.key, name: f.name, ask: f.ask }, waits: true };
+  }
   if (ask && (ask.pick === ASK_PLACE || ask.pick === ASK_DROP)) {
     throw new TrackRefusal('the user answered ' + ask.id + ': ' + (ask.pick === ASK_PLACE ? 'put ' + id + ' on a track (`' + CLI + ' task edit ' + id + ' --track TR-n`)'
       : 'drop ' + id + ' (`' + CLI + ' task update ' + id + ' --status dropped --note "<the user\'s words>"`)') + ', so it takes no new wake');
@@ -222,41 +248,10 @@ export function thirdWake(db, task, c, why) {
       { type: 'c', option: 'Drop it', getsYou: 'it leaves the inbox for good' },
     ],
   }, { by: c.by, pc: c.pc, ...(c.session ? { session: c.session } : {}) });
-  return { asked: q.id };
+  return { asked: q };
 }
 
 /* ---- the rules ------------------------------------------------------------- */
-
-/* A status the board fixes leaves `updated` alone, and its line is no movement for the stall rule;
-   `for` names the session whose act it follows, so that session is not told its own change */
-function setTask(db, t, status, ctx, cause) {
-  const diff = writeFront(db, t, { status }, TASK_KEYS);
-  logLine(db, { at: ctx.at, verb: 'edit', kind: 'task', rec: headOf(t), changes: diff, by: BY, pc: ctx.pc, note: cause, for: ctx.session || undefined });
-  return true;
-}
-
-/* In progress follows the hand: taken in hand, an open task starts; let go, an
-   unfinished one goes back to open unless an agent works it. A promoted task's
-   status follows its side track, so it is left alone. */
-export function followHand(db, key, ctx, cause) {
-  if (!upkeepOn(db) || sideOf(db, key)) return false;
-  const t = loadRecord(db, key);
-  const f = t.fields;
-  if (f.inHand && f.status === 'open') return setTask(db, t, 'in_progress', ctx, cause || 'taken in hand by ' + sessionWords(db, f.inHand, ctx));
-  if (!f.inHand && f.status === 'in_progress' && !f.agent) return setTask(db, t, 'open', ctx, cause || 'let go' + (ctx.session ? ' by ' + sessionWords(db, ctx.session, ctx) : ''));
-  return false;
-}
-
-/* The lease's drop: the line's running tasks no session holds in hand go back to open. */
-export function afterLeaseDrop(db, trackKey, session, ctx, why) {
-  if (!upkeepOn(db)) return;
-  const rows = db.stmt(`SELECT r.key FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ? AND r.status = 'in_progress'
-    AND json_extract(r.fields, '$.inHand') IS NULL AND json_extract(r.fields, '$.agent') IS NULL`).all(trackKey);
-  for (const r of rows) {
-    if (sideOf(db, r.key)) continue;
-    setTask(db, loadRecord(db, r.key), 'open', ctx, sessionWords(db, session, ctx) + ' let go of ' + lineName(db, trackKey) + (why ? ' (' + why + ')' : ''));
-  }
-}
 
 /* A woken line's stall clock starts at the wake (its `updated`), or it would draw a stall call at once. */
 function unpark(db, rec, ctx, cause) {
@@ -266,20 +261,26 @@ function unpark(db, rec, ctx, cause) {
   logLine(db, { at: ctx.at, verb: 'edit', kind: 'track', rec: headOf(rec), changes: diff, by: BY, pc: ctx.pc, note: 'unparked: ' + cause });
 }
 
+/* Inside another record's write, so an open step cannot throw: the task stays open and says why. */
 function closeOne(db, t, ctx, cause) {
-  if (ENDED_TASK.includes(t.fields.status) || sideOf(db, t.key)) return;
-  const diff = writeFront(db, t, { status: 'completed', closed: ctx.at, inHand: undefined, inHandSince: undefined }, TASK_KEYS);
-  logLine(db, { at: ctx.at, verb: 'edit', kind: 'task', rec: headOf(t), changes: diff, by: BY, pc: ctx.pc, note: 'closed with ' + cause });
-  /* the shared check, as every completion runs it */
-  afterTask(db, t.key, { completed: true }, { by: BY, pc: ctx.pc, now: ctx.date });
-  wakeLinked(db, { ...t.fields, key: t.key }, 'completed', { at: ctx.at, by: BY, pc: ctx.pc });
+  if (ENDED_TASK.includes(t.fields.status)) return;
+  const open = openSteps(db, t.key);
+  const held = runsHolding(db, t.key, ctx.session);
+  if (open.length || held.length) {
+    const why = 'not closed with ' + cause + ': ' + (open.length ? stepsRefusal(t.fields.id, open).message
+      : heldWords(t.fields.id, held, ctx) + ', which only that session or a take-over with the user\'s word ends it');
+    addNote(db, t.key, { at: ctx.at, actor: BY, body: why });
+    logLine(db, { at: ctx.at, verb: 'note', kind: 'task', rec: headOf(t), changes: {}, by: BY, pc: ctx.pc, note: why });
+    return;
+  }
+  endTask(db, t, 'done', ctx, { by: BY, note: 'closed with ' + cause });
 }
 
 /* Every ending (questions.mjs wakeLinked): the parked lines waiting on it
-   unpark, and a completed task closes the tasks that close with it. */
+   unpark, and a done task closes the tasks that close with it. */
 export function onEnding(db, ended, ending, ctx) {
   /* an ended task's open question about its home goes with it, upkeep or not */
-  if (/^(completed|dropped)\b/.test(String(ending)) && /^T-\d+$/.test(String(ended.id || ''))) settleWakeAsk(db, ended.key, ended.id + ' was ' + String(ending).split(' ')[0], ctx);
+  if (/^(done|dropped)\b/.test(String(ending)) && /^T-\d+$/.test(String(ended.id || ''))) settleWakeAsk(db, ended.key, ended.id + ' was ' + String(ending).split(' ')[0], ctx);
   if (!upkeepOn(db)) return;
   const key = isKey(ended.key) ? ended.key : (resolveRecord(db, String(ended.id || '')) || {}).key;
   const kind = key && kindOf(db, key);
@@ -291,7 +292,7 @@ export function onEnding(db, ended, ending, ctx) {
     const rec = loadRecord(db, r.key);
     if (rec.fields.status === 'parked' && rec.fields.unparkWhen.kind === unparkKind) unpark(db, rec, ctx, cause);
   }
-  if (kind !== 'task' || word !== 'completed') return;
+  if (kind !== 'task' || word !== 'done') return;
   for (const r of db.stmt("SELECT key FROM records WHERE kind = 'task' AND json_extract(fields, '$.close.kind') = 'with' AND json_extract(fields, '$.close.on') = ?").all(key)) {
     closeOne(db, loadRecord(db, r.key), ctx, cause);
   }
@@ -305,9 +306,7 @@ function actOf(line) {
   const st = (line.changes || {}).status;
   if (line.verb === 'wake') return 'wake';
   if (line.kind === 'track') return 'unpark';
-  if (st && st[1] === 'completed') return 'close';
-  if (st && st[1] === 'open') return 'back to open';
-  return st && st[1] === 'in_progress' ? 'in progress' : line.verb;
+  return st && st[1] === 'done' ? 'close' : line.verb;
 }
 
 /* What switching on does to the board as it stands: the rules applied to data
@@ -315,18 +314,9 @@ function actOf(line) {
 function catchUp(db, ctx) {
   const from = lastSeq(db);
   setMeta(db, SETTING, 'on');
-  for (const r of db.stmt("SELECT key FROM records WHERE kind = 'task' AND status = 'open' AND json_extract(fields, '$.inHand') IS NOT NULL").all()) {
-    followHand(db, r.key, ctx);
-  }
-  /* a task on a held line is the holder's to run, as the line's now set reads it */
-  for (const r of db.stmt(`SELECT r.key FROM records r WHERE r.kind = 'task' AND r.status = 'in_progress'
-      AND json_extract(r.fields, '$.inHand') IS NULL AND json_extract(r.fields, '$.agent') IS NULL
-      AND NOT EXISTS (SELECT 1 FROM track_items ti JOIN leases l ON l.track = ti.track WHERE ti.task = r.key)`).all()) {
-    if (!sideOf(db, r.key)) setTask(db, loadRecord(db, r.key), 'open', ctx, 'no session holds it in hand and no agent works it');
-  }
   for (const r of db.stmt(`SELECT t.key, o.label FROM records t JOIN records o ON o.key = json_extract(t.fields, '$.close.on')
-      WHERE t.kind = 'task' AND json_extract(t.fields, '$.close.kind') = 'with' AND o.status = 'completed'`).all()) {
-    closeOne(db, loadRecord(db, r.key), ctx, r.label + ' completed');
+      WHERE t.kind = 'task' AND json_extract(t.fields, '$.close.kind') = 'with' AND o.status = 'done'`).all()) {
+    closeOne(db, loadRecord(db, r.key), ctx, r.label + ' done');
   }
   for (const r of db.stmt(`SELECT t.key, o.key AS onKey, o.kind, o.status, o.label FROM records t JOIN records o ON o.key = json_extract(t.fields, '$.unparkWhen.on')
       WHERE t.kind = 'track' AND t.status = 'parked'`).all()) {
@@ -399,7 +389,7 @@ export function scopeOf(db, session, project) {
   const held = db.stmt('SELECT track FROM leases WHERE session = ?').get(session);
   if (held) tracks.add(held.track);
   for (const r of db.stmt(`SELECT r.key, r.kind, r.workstream, ti.track FROM records r LEFT JOIN track_items ti ON ti.task = r.key
-      WHERE r.kind IN ('workstream', 'task') AND (json_extract(r.fields, '$.inHand') = ?
+      WHERE r.kind IN ('workstream', 'task') AND ((r.kind = 'task' AND ${openRunSql('r.key', { session: true, worker: 'session' })})
         OR EXISTS (SELECT 1 FROM json_each(r.fields, '$.subscribers') WHERE value = ?))`).all(session, session)) {
     if (r.kind === 'workstream') ws.add(r.key);
     if (r.workstream) ws.add(r.workstream);
@@ -415,29 +405,8 @@ export function scopeOf(db, session, project) {
 }
 
 export const inScope = (scope, ws, track) => !scope || (ws && scope.ws.has(ws)) || (track && scope.tracks.has(track));
-/* `does`: what the press does, said on the band's tooltip */
+/* `does`: what the press does, said on Home's tooltip */
 const keep = (key, since) => ({ label: 'Keep', verb: 'bandKeep', input: { record: key, since }, does: 'hides this call until its fact changes; nothing on the board moves' });
-
-function lookRows(db, scope, session) {
-  const rows = [];
-  for (const r of db.stmt(`SELECT r.key, r.label, r.title, r.workstream, ti.track, json_extract(r.fields, '$.landed') AS landed,
-      json_extract(r.fields, '$.inHand') AS inHand, (SELECT l.session FROM leases l WHERE l.track = ti.track) AS holder
-      FROM records r LEFT JOIN track_items ti ON ti.task = r.key WHERE r.kind = 'task' AND json_extract(r.fields, '$.close.kind') = 'look'
-      AND json_extract(r.fields, '$.landed') IS NOT NULL AND coalesce(r.status, '') NOT IN ('completed', 'dropped') ORDER BY landed`).all()) {
-    if (!inScope(scope, r.workstream, r.track)) continue;
-    rows.push({
-      kind: 'look', record: r.key, id: r.label, name: r.title, text: r.label + ' ' + r.title + ': its work landed, and it closes at your look', since: r.landed,
-      why: 'Its close condition is your look, and its work landed on ' + String(r.landed).slice(0, 10),
-      presses: [
-        { label: 'Close', verb: 'editRecord', input: { id: r.key, kind: 'task', status: 'completed' }, does: 'closes ' + r.label + ' as done' },
-        { label: 'Not yet', verb: 'lookNotYet', input: { task: r.key }, does: r.label + ' stays open and its session hears it' },
-      ],
-      /* the session holding the task hears the press as a turn */
-      ...(session && (r.inHand === session || r.holder === session) ? { mine: true } : {}),
-    });
-  }
-  return rows;
-}
 
 const stampOf = (ms) => stampNow(new Date(ms));
 
@@ -455,7 +424,7 @@ function wsRow(db, w, nowMs) {
   }
   /* an inbox is empty by design, and closing it only mints the next one */
   if ((f.labels || []).includes(INBOX_LABEL)) return null;
-  const live = db.stmt(`SELECT count(*) AS n FROM records WHERE workstream = ? AND ((kind = 'task' AND coalesce(status, '') NOT IN ('completed', 'dropped'))
+  const live = db.stmt(`SELECT count(*) AS n FROM records WHERE workstream = ? AND ((kind = 'task' AND coalesce(status, '') NOT IN ('done', 'dropped'))
     OR (kind = 'track' AND status IN ('open', 'parked')))`).get(w.key);
   if (live.n) return null;
   const last = db.stmt("SELECT max(closed) AS at FROM records WHERE workstream = ? AND kind IN ('task', 'track')").get(w.key).at;
@@ -501,8 +470,8 @@ function reviewRow(db, t) {
   };
 }
 
-function callsOf(db, scope, nowMs, session) {
-  const rows = lookRows(db, scope, session);
+function callsOf(db, scope, nowMs) {
+  const rows = [];
   const wsKeys = scope ? [...scope.ws] : db.stmt("SELECT key FROM records WHERE kind = 'workstream' AND status = 'open'").all().map((r) => r.key);
   const trackKeys = new Set(scope ? scope.tracks : []);
   for (const k of wsKeys) {
@@ -523,8 +492,8 @@ function callsOf(db, scope, nowMs, session) {
   return rows;
 }
 
-/* The look and judgment rows, then the override requests and the sealed scrubs. */
-const allCalls = (db, scope, nowMs, session) => callsOf(db, scope, nowMs, session).concat(overrideCalls(db, session, scope, nowMs));
+/* The judgment rows, then the override requests and the sealed scrubs. */
+const allCalls = (db, scope, nowMs, session) => callsOf(db, scope, nowMs).concat(overrideCalls(db, session, scope, nowMs));
 
 /* What the live handoffs in scope say waits on the user, one row a line: the band's
    reading and the web's, so /askerdo and the views list the same asks. */
@@ -564,23 +533,7 @@ export function bandKeep(db, input = {}, actor) {
     const was = rec.fields.kept ?? null;
     if (was === since) return { id: rec.fields.id, key: rec.key, kept: since };
     writeFront(db, rec, { kept: since }, KEY_ORDERS[rec.kind]);
-    logLine(db, { at: c.at, verb: 'edit', kind: rec.kind, rec: headOf(rec), changes: { kept: [was, since] }, by: c.by, pc: c.pc, note: 'kept on the band until it changes' });
+    logLine(db, { at: c.at, verb: 'edit', kind: rec.kind, rec: headOf(rec), changes: { kept: [was, since] }, by: c.by, pc: c.pc, note: 'kept off Home until it changes' });
     return { id: rec.fields.id, key: rec.key, kept: since };
-  });
-}
-
-/* Not yet: the look task's landed mark clears, with a note in its journal. */
-export function lookNotYet(db, input = {}, actor) {
-  return tx(db, () => {
-    const c = actorOf(actor);
-    const t = recordOf(db, input.task, 'task');
-    const was = t.fields.landed;
-    if (!was) return { id: t.fields.id, key: t.key, landed: null };
-    writeFront(db, t, { landed: undefined, updated: c.at }, TASK_KEYS);
-    const body = 'Not yet at the look' + (typeof input.note === 'string' && input.note.trim() ? ': ' + input.note.trim() : '')
-      + '. It shows on the band again once a session reports its work landed.';
-    addNote(db, t.key, { at: c.at, actor: c.by, body });
-    logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(t), changes: { landed: [was, null] }, by: c.by, pc: c.pc, note: body });
-    return { id: t.fields.id, key: t.key, landed: null };
   });
 }

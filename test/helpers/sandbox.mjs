@@ -54,6 +54,8 @@ export const SANDBOX_PREFIXES = Object.freeze([
   'onboard-handover-',
   /* test/question-fixes.test.mjs */
   'askerdo-qfix-cli-',
+  /* test/sweep.test.mjs: two synthetic transcripts */
+  'askerdo-sweep-',
   /* test/board-server.test.mjs */
   'nd-board-',
   'nd-board-cli-',

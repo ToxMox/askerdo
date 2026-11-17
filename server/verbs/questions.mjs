@@ -6,12 +6,15 @@ import { tx } from '../db.mjs';
 import { WEB } from '../paths.mjs';
 import {
   DAY_RE, KEY_ORDERS, addNote, byOf, changesOf, clockOf, dayOf, guardHeadings, isFullStamp, isKey, kebab, labelOf, logVerb,
-  mintKey, pcOfCall, putNotes, putRecord, snoozeFlat, stampNow,
+  mintKey, pcOfCall, putNotes, putRecord, snoozeFlat, stampNow, unguardHeadings,
 } from '../records.mjs';
 import { ENDED, UsageError, canonLabel, pickLabel, refsFor, resolveRecord, shownFront, strList } from './labels.mjs';
 import { noteRead } from './history.mjs';
 import { onEnding } from './upkeep.mjs';
 import { isRelease, releaseLine } from './found.mjs';
+import { endSessionRuns, openRunSql } from './runs.mjs';
+import { isPlacement, placementAnswered } from './placement-answer.mjs';
+import { BOARD_ASKS, PLACEMENT_LABEL } from './placement-seam.mjs';
 
 export { UsageError, byOf, canonLabel, snoozeFlat };
 
@@ -270,7 +273,7 @@ function readRec(db, key) {
 
 function answerOf(db, key) {
   const notes = db.stmt('SELECT body FROM notes WHERE record = ? ORDER BY position').all(key);
-  return notes.length ? notes.map((n) => n.body).join('\n\n') : ANSWER_PLACEHOLDER;
+  return notes.length ? notes.map((n) => unguardHeadings(n.body)).join('\n\n') : ANSWER_PLACEHOLDER;
 }
 
 function withSections(db, rec) {
@@ -283,7 +286,8 @@ function saveQ(db, q, answer) {
   const fields = ordered(q.front || q.fields);
   putRecord(db, { key: q.key, kind: 'question', slug: q.slug, fields, body: q.body, layout: q.layout, track: q.track });
   if (answer !== undefined) {
-    putNotes(db, q.key, String(answer).split('\n\n').map((body, i) => ({ at: i === 0 ? (fields.answered || fields.updated || null) : null, body })));
+    /* stored guarded as every note is, since answerOf reads it back unguarded */
+    putNotes(db, q.key, String(answer).split('\n\n').map((body, i) => ({ at: i === 0 ? (fields.answered || fields.updated || null) : null, body: guardHeadings(body) })));
   }
 }
 
@@ -423,7 +427,9 @@ function validatePayload(raw, strict) {
   for (const k of ['plan', 'thread']) {
     if (raw[k] !== undefined) throw new UsageError('register takes no ' + k + ': plans and threads are tracks now, so name it in "track" (TR-n)');
   }
-  p.track = refTokenOf(optStr('track'), 'track', TRACK_IDS);
+  /* null says no track, so the session's held one is not filled in (an import places its own) */
+  p.trackless = raw.track === null;
+  p.track = p.trackless ? undefined : refTokenOf(optStr('track'), 'track', TRACK_IDS);
   p.gates = gateList(raw.gates, 'gates');
   p.revisits = questionList(raw.revisits, 'revisits');
   p.cites = questionList(raw.cites, 'cites');
@@ -491,6 +497,15 @@ function validatePayload(raw, strict) {
   /* an import's label and row ref, at birth only (question edit changes neither) */
   p.labels = strList(raw.labels, 'labels');
   p.refs = strList(raw.refs, 'refs');
+  /* a placement question's press creates a task, so only the board's own filing asks one (askPlacement) */
+  const placing = raw.placement !== undefined || p.labels.some((l) => l.trim().toLowerCase() === PLACEMENT_LABEL);
+  if (placing && !raw[BOARD_ASKS]) {
+    throw new UsageError('a placement question is asked by the board from the filing call itself, never registered: file the work with place (or task create, track capture, task update leftovers) and the board asks the user where it goes');
+  }
+  if (raw.placement !== undefined && (!raw.placement || typeof raw.placement !== 'object' || Array.isArray(raw.placement))) {
+    throw new UsageError('placement must be an object: the filing its answer creates');
+  }
+  p.placement = raw.placement;
   return p;
 }
 
@@ -607,7 +622,7 @@ function scopeOfRecord(db, ref, d) {
 const heldTrack = (db, session) => rowsOf(db, 'SELECT r.key, r.kind, r.fields FROM leases l JOIN records r ON r.key = l.track WHERE l.session = ?', session)[0];
 
 /* The project's open inbox workstream, minted on first use with today's front. */
-function inboxOf(db, p, at, d, actor) {
+export function inboxOf(db, p, at, d, actor) {
   const scope = scopeOf('', p.projectRepo);
   for (const e of rowsOf(db, `SELECT key, kind, fields FROM records WHERE kind = 'workstream' AND status = 'open'
     AND EXISTS (SELECT 1 FROM json_each(fields, '$.labels') WHERE value = ?) ORDER BY id`, INBOX_LABEL)) {
@@ -627,13 +642,13 @@ function inboxOf(db, p, at, d, actor) {
 }
 
 /* Fills the track and workstream the payload left out: the track the session
-   holds (when its workstream fits), then the workstream from the track, its
-   tasks in hand, the in_progress tasks it subscribes to, the subscribed
+   holds (when its workstream fits and the payload's track is not null), then the workstream from the track, its
+   tasks in hand, the tasks its agents run (its open agent runs), the subscribed
    workstreams; several workstreams refuse, none files in the project inbox. */
 function inheritScope(db, p, at, d, actor) {
   const notes = [];
   const held = heldTrack(db, p.session);
-  if (!p.track && held && (!p.workstream || p.workstream === held.front.workstream)) {
+  if (!p.track && !p.trackless && held && (!p.workstream || p.workstream === held.front.workstream)) {
     p.track = held.key;
     notes.push('track ' + held.label + ' (held by this session)');
   }
@@ -642,12 +657,12 @@ function inheritScope(db, p, at, d, actor) {
   const track = p.track ? readRec(db, p.track).fields : null;
   if (track && track.workstream) steps.push({ from: 'track ' + track.id, scopes: [{ workstream: track.workstream }] });
   /* several tasks in hand, so the refusal names each */
-  const hand = rowsOf(db, `SELECT key, kind, fields FROM records WHERE kind = 'task' AND status NOT IN ('completed', 'dropped')
-    AND json_extract(fields, '$.inHand') = ? ORDER BY id`, p.session);
+  const hand = rowsOf(db, `SELECT key, kind, fields FROM records WHERE kind = 'task' AND status NOT IN ('done', 'dropped')
+    AND ${openRunSql('key', { session: true, worker: 'session' })} ORDER BY id`, p.session);
   if (hand.length) steps.push({ from: 'in hand ' + hand.map((e) => e.label).join(', '), scopes: hand.map((e) => scopeOfRecord(db, e.key, d)) });
-  const working = rowsOf(db, `SELECT key, kind, fields FROM records WHERE kind = 'task' AND status = 'in_progress'
-    AND coalesce(json_extract(fields, '$.inHand'), '') <> ? AND EXISTS (SELECT 1 FROM json_each(fields, '$.subscribers') WHERE value = ?) ORDER BY id`, p.session, p.session);
-  if (working.length) steps.push({ from: 'in_progress ' + working.map((e) => e.label).join(', '), scopes: working.map((e) => scopeOfRecord(db, e.key, d)) });
+  const working = rowsOf(db, `SELECT key, kind, fields FROM records WHERE kind = 'task' AND status NOT IN ('done', 'dropped')
+    AND NOT ${openRunSql('key', { session: true, worker: 'session' })} AND ${openRunSql('key', { session: true, worker: 'agent' })} ORDER BY id`, p.session, p.session);
+  if (working.length) steps.push({ from: 'its agents run ' + working.map((e) => e.label).join(', '), scopes: working.map((e) => scopeOfRecord(db, e.key, d)) });
   const subscribed = rowsOf(db, `SELECT key, kind, fields FROM records WHERE kind = 'workstream' AND status = 'open'
     AND EXISTS (SELECT 1 FROM json_each(fields, '$.subscribers') WHERE value = ?) ORDER BY id`, p.session);
   if (subscribed.length) steps.push({ from: 'subscribed to ' + subscribed.map((e) => e.label).join(', '), scopes: subscribed.map((e) => ({ workstream: e.key })) });
@@ -708,12 +723,15 @@ export function register(db, payload, actor, opts = {}) {
       created: p.created || at, asked: p.asked, pick: p.pick, crux: p.crux, project: p.project,
       projectRepo: p.projectRepo, workstream: p.workstream, track: p.track,
       gates: p.gates, revisits: p.revisits, cites: p.cites, labels: p.labels, refs: refsFor(db, p.refs, d), mission: p.mission, session: p.session,
-      pc: pcOfCall(payload, actor),
+      pc: pcOfCall(payload, actor), placement: p.placement,
       evidence: p.evidence, labelHistory: [id + ' ' + d],
     });
     p.reverses = rulings.map(reversesBlock).join('\n\n');
     putRecord(db, { key, kind: 'question', slug: kebab(p.name, 'question'), fields: front, body: renderBody(front, p) });
     log(db, who, { at, verb: 'create', front, changes: changesOf({}, front) });
+    /* a look ends in its question, so the asking session's run on it ends (a run outranks a gate in the word) */
+    const looks = p.gates.filter(isLook(db));
+    if (looks.length) endSessionRuns(db, { session: p.session, tasks: looks, note: 'the look asked the user ' + id + ', which gates it' }, { ...(typeof who === 'object' ? who : { by: who }), now: clockNow(opts) });
     const warnings = inherited.map((t) => id + ' filed under ' + t);
     if (forced) warnings.push(id + ' reverses a ruling, so it is stored blocking');
     const pw = pickWarning(id, p);
@@ -845,11 +863,12 @@ export function answer(db, input = {}, actor, opts = {}) {
       const was = snapFront(q.front);
       const wasChosen = recordedPick(q.front.id, current, options);
       q.front.updated = at;
+      const placed = placementAnswered(db, q, { pick: chosen, note, line, amend: true }, { at, actor: who, pc: who && who.pc, now: clockNow(opts) });
       saveQ(db, q, (current ? [line, earlierAnswer(gaveAt, at, current), ...kept] : [line, ...kept]).join('\n\n'));
-      const changes = changesOf(was, q.front);
+      const changes = { ...changesOf(was, q.front), ...(placed ? placed.changes : {}) };
       if (wasChosen || chosen) changes.chosen = [wasChosen, chosen || null];
       log(db, who, { at, verb: 'amend', front: q.front, changes, note });
-      return { id: q.front.id, key: q.key, name: q.front.name, status: 'answered', amended: true, owner };
+      return { id: q.front.id, key: q.key, name: q.front.name, status: 'answered', amended: true, owner, ...placedOf(placed) };
     }
     /* a pressed answer run again with the pick it stored stands, named; another pick still refuses */
     if (q.front.status === 'answered' && pick) {
@@ -869,16 +888,22 @@ export function answer(db, input = {}, actor, opts = {}) {
     q.front.answered = at;
     delete q.front.snooze;
     delete q.front.wokeBy;
-    saveQ(db, q, answerLine(q.front.id, chosen, note, options));
-    const changes = changesOf(was, q.front);
+    const line = answerLine(q.front.id, chosen, note, options);
+    /* a placement question's press creates the task before the answer's row, which says so */
+    const placed = placementAnswered(db, q, { pick: chosen, note, line }, { at, actor: who, pc: who && who.pc, now: clockNow(opts) });
+    saveQ(db, q, line);
+    const changes = { ...changesOf(was, q.front), ...(placed ? placed.changes : {}) };
     if (chosen) changes.chosen = [null, chosen];
     log(db, who, { at, verb: 'answer', front: q.front, changes, note });
     wakeLinked(db, q.front, 'answered', { at, by: byOf(who), pc: who && who.pc });
     noteGated(db, q.front, q.front.id + ' (' + q.front.name + ') was answered'
       + (chosen ? ': ' + answerToken(q.front.id, chosen) : '') + (note ? (chosen ? '. ' : ': ') + note : '.'), at, who, d);
-    return { id: q.front.id, key: q.key, name: q.front.name, status: 'answered', owner };
+    return { id: q.front.id, key: q.key, name: q.front.name, status: 'answered', owner, ...placedOf(placed) };
   });
 }
+
+/* what an answer's caller hears of a placement: the task it created, else the outcome */
+const placedOf = (placed) => (placed ? { placement: { outcome: placed.outcome, ...(placed.created ? { created: placed.created } : {}), ...(placed.why ? { why: placed.why } : {}) } } : {});
 
 export function drop(db, input = {}, actor, opts = {}) {
   const { id, note } = input;
@@ -893,8 +918,9 @@ export function drop(db, input = {}, actor, opts = {}) {
     q.front.answered = at;
     delete q.front.snooze;
     delete q.front.wokeBy;
+    const placed = placementAnswered(db, q, { drop: true, note }, { at, actor: who, pc: who && who.pc, now: clockNow(opts) });
     saveQ(db, q, 'Dropped.' + (note ? ' ' + note : ''));
-    log(db, who, { at, verb: 'drop', front: q.front, changes: changesOf(was, q.front), note });
+    log(db, who, { at, verb: 'drop', front: q.front, changes: { ...changesOf(was, q.front), ...(placed ? placed.changes : {}) }, note });
     wakeLinked(db, q.front, 'dropped', { at, by: byOf(who), pc: who && who.pc });
     noteGated(db, q.front, q.front.id + ' (' + q.front.name + ') was dropped' + (note ? ': ' + note : '.'), at, who, d);
     return { id: q.front.id, name: q.front.name, status: 'dropped', owner: ownerReport(db, q.front) };
@@ -1132,8 +1158,10 @@ export function peekSessionScope(db, { project, projectRepo, session } = {}, opt
   if (!session) return [];
   const scope = scopeOf(project, projectRepo);
   const d = today(opts);
+  const track = heldTrack(db, session);
+  /* a question on the held track is the session's whichever repo asked it; the rest keep to the project */
   const open = db.stmt("SELECT fields FROM records WHERE kind = 'question' AND status = 'open'").all()
-    .map((r) => JSON.parse(r.fields)).filter((f) => inProject(scope, f.projectDir, f.projectRepo));
+    .map((r) => JSON.parse(r.fields)).filter((f) => inProject(scope, f.projectDir, f.projectRepo) || (!!track && f.track === track.key));
   if (!open.length) return [];
   const surfaced = new Set(db.stmt("SELECT DISTINCT record FROM activity WHERE verb IN ('surface', 'subscribe') AND actor = ? AND kind = 'question'")
     .all('session:' + session).map((r) => r.record));
@@ -1151,11 +1179,10 @@ export function peekSessionScope(db, { project, projectRepo, session } = {}, opt
   }
   for (const e of rowsOf(db, `SELECT key, kind, fields FROM records WHERE kind IN ('workstream', 'task')
     AND (EXISTS (SELECT 1 FROM json_each(fields, '$.subscribers') WHERE value = ?)
-      OR (kind = 'task' AND json_extract(fields, '$.inHand') = ?))`, session, session)) {
+      OR (kind = 'task' AND ${openRunSql('key', { session: true, worker: 'session' })}))`, session, session)) {
     engaged = true;
     take(scopeOfRecord(db, e.key, d));
   }
-  const track = heldTrack(db, session);
   if (track) { engaged = true; take({ workstream: track.front.workstream, track: track.key }); }
   const inScope = (f) => engaged && f.blocking === true && (!near.size
     || (f.workstream && near.has(f.workstream)) || (f.track && near.has(f.track)) || (!f.workstream && !f.track));
@@ -1177,7 +1204,8 @@ export function namesLine(db, input = {}, actor, opts = {}) {
   /* over the wire `urls` is { base }, the board's web address */
   const base = input.urls && typeof input.urls.base === 'string' ? input.urls.base.replace(/\/+$/, '') : '';
   const urls = base ? { record: (k) => base + WEB.record(k), open: (p) => base + WEB.needsYou(p) } : input.urls;
-  let open = list(db, { project, projectRepo, blocking }, actor, opts);
+  /* a session's own set holds its held track's questions from other repos, so its list is not cut by project */
+  let open = list(db, session ? { blocking } : { project, projectRepo, blocking }, actor, opts);
   if (session) {
     const keep = new Set(peekSessionScope(db, { project, projectRepo, session }, opts).filter((q) => q.own).map((q) => q.id));
     open = open.filter((e) => keep.has(e.id));
@@ -1270,6 +1298,8 @@ function reword(db, q, raw, at, d, warnings) {
   return { parts, p };
 }
 
+const isLook = (db) => (k) => Boolean(db.stmt("SELECT 1 FROM records WHERE key = ? AND EXISTS (SELECT 1 FROM json_each(fields, '$.labels') WHERE value = 'look')").get(k));
+
 /* editQuestion(db, { id, payload, workstream, track, clearWorkstream, clearTrack, pick, clearPick, addGate, removeGate, version }, actor):
    today's `question edit`, and with `payload` a rewording; a stale version is refused plainly. */
 export function editQuestion(db, input = {}, actor, opts = {}) {
@@ -1299,6 +1329,8 @@ export function editQuestion(db, input = {}, actor, opts = {}) {
     const removeRefs = removeGate.map((g) => filterRef(db, g, d));
     const q = loadQuestion(db, c.id, d);
     if (movedSince(q, c.version)) throw new UsageError(q.front.id + ' moved since version ' + c.version + ' (now ' + q.version + '); read it again');
+    /* the board words a placement question and its track stops the finish, so no edit changes either */
+    if (isPlacement(q.front)) throw new UsageError(q.front.id + ' is a placement question the board asked; it changes only by its answer or drop');
     const before = snapFront(q.front);
     const warnings = [];
     const worded = rewording ? reword(db, q, c.payload, at, d, warnings) : { parts: [] };
@@ -1324,8 +1356,10 @@ export function editQuestion(db, input = {}, actor, opts = {}) {
         changed.push('pick');
       }
     }
+    let gained = [];
     if (addRefs.length || removeRefs.length) {
       const cur = listOf(q.front, 'gates');
+      gained = addRefs.filter((g) => !cur.includes(g) && !removeRefs.includes(g));
       const next = cur.concat(addRefs.filter((g) => !cur.includes(g))).filter((g) => !removeRefs.includes(g));
       if (next.length !== cur.length || next.some((g, i) => g !== cur[i])) { q.front.gates = next; changed.push('gates'); }
     }
@@ -1345,6 +1379,9 @@ export function editQuestion(db, input = {}, actor, opts = {}) {
     saveQ(db, q);
     const note = worded.parts.length ? 'reworded: ' + worded.parts.join(', ') : undefined;
     log(db, who, { at, verb: 'edit', front: q.front, changes: changesOf(before, q.front), note });
+    /* a gate added after registration ends the asker's run on a look task as register does */
+    const looks = q.front.session && ['open', 'snoozed'].includes(q.front.status) ? gained.filter(isLook(db)) : [];
+    if (looks.length) endSessionRuns(db, { session: q.front.session, tasks: looks, note: 'the look asked the user ' + q.front.id + ', which gates it' }, { ...(typeof who === 'object' ? who : { by: who }), now: clockNow(opts) });
     return { ...out, version: q.version + 1 };
   });
 }

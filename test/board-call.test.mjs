@@ -21,6 +21,16 @@ test('a verb through boardCall on memory: writes and reads back, and no setting 
   process.env.ASKERDO_BOARD_URL = 'memory:';
   const ws = await boardCall('createRecord', { kind: 'workstream', name: 'Board', description: 'One board.' }, { session: 's1', pc: 'pc1' });
   assert.equal((await boardCall('readRecord', ws.id)).name, 'Board');
+
+  /* a file: URL naming the database a store's board server keeps is refused */
+  const host = join(storeRoot(), 'board-host');
+  mkdirSync(host, { recursive: true });
+  writeFileSync(join(host, 'host.json'), JSON.stringify({ port: 17480 }));
+  writeFileSync(join(host, 'askerdo.db'), '');
+  process.env.ASKERDO_BOARD_URL = 'file:' + join(host, 'askerdo.db');
+  try {
+    await assert.rejects(boardCall('listWork', {}), /board server/);
+  } finally { delete process.env.ASKERDO_BOARD_URL; }
 });
 
 test('a write the local server dropped after it was sent may have run, and is not sent to the board again', async () => {

@@ -36,12 +36,17 @@ const INK: Record<string, any> = { sky: { color: 'suggestion' }, amber: { color:
 const TERM_LEAD: Record<string, string> = { thread: '≣', ldBlock: '!', ldAsk: '?', ldWaits: '…', ldHandoff: '→', ldDone: '✓', ldFlag: '»' }
 const STATION_GLYPH: Record<string, string> = { now: '●', left: '◐', ready: '○' }
 
-type Draw = { els: any; desk: boolean; act: PaneActions; cols: number }
+/* what the size guard cut: each section's tracks past a count, the station and question rows past a count */
+export type TracksTrim = { tiles?: Record<string, number>; rows?: number }
+const CUT_WORDS = ' not drawn here while the Tracks tab holds this much; the board link above shows '
+const are = (n: number) => (n === 1 ? ' is' : ' are')
 
-export function paneTree(els: any, m: any, view: PaneView, act: PaneActions, columns?: number, surface?: string): any {
+type Draw = { els: any; desk: boolean; act: PaneActions; cols: number; trim: TracksTrim }
+
+export function paneTree(els: any, m: any, view: PaneView, act: PaneActions, columns?: number, surface?: string, trim: TracksTrim = {}): any {
   const { Box, Text, Button } = els
   const cols = Number(columns) > 0 ? Number(columns) : 60
-  const d: Draw = { els, desk: surface === 'desktop' && !!els.Svg, act, cols }
+  const d: Draw = { els, desk: surface === 'desktop' && !!els.Svg, act, cols, trim }
   const rows: any[] = [bottomRows(d, m.bottom)]
   if (!m.total) return <Box key="tracks" flexDirection="column" rowGap={1}>{rows}</Box>
   if (m.held) rows.push(heldCard(d, m.held))
@@ -57,26 +62,84 @@ export function paneTree(els: any, m: any, view: PaneView, act: PaneActions, col
 function bottomRows(d: Draw, b: any): any {
   const { Box, Text } = d.els
   /* the held name and the waiting tracks open their pages */
-  const lead = b.leadParts ? linkLine(d.els, b.leadParts.map((p: any) => ({ ...p, weight: 'semibold' })), 'tracks-lead', d.desk, false) : null
+  const lead = b.leadParts ? leadRows(d, b.leadParts.map((p: any) => ({ ...p, weight: 'semibold' }))) : null
   const lines: any[] = [lead || <Box key="tracks-lead"><Text weight="semibold" wrap="wrap">{b.lead}</Text></Box>]
-  const all: any[] = []
-  b.parts.forEach((p: any, i: number) => {
-    if (i) all.push({ text: MID, tone: 'dim' })
-    all.push(...(p.pieces ? p.pieces.map((x: any) => ({ ...x, tone: p.tone })) : [p]))
-  })
-  const counts = all.length ? linkLine(d.els, all, 'tracks-counts', d.desk, false) : null
-  if (counts) lines.push(counts)
-  else if (b.parts.length) {
+  /* on the desktop a count that does not fit the row before it starts its own, fitted from the
+     pane's columns on every draw: a soft wrap at the pane's edge hangs its space past the edge */
+  const rows: any[][] = []
+  for (const p of b.parts) {
+    const row = rows[rows.length - 1]
+    if (row && (!d.desk || paneCells([...row, p].map((x: any) => x.text).join(MID)) <= d.cols - 1)) row.push(p)
+    else rows.push([p])
+  }
+  const countRow = (ps: any[], key: string): any => {
+    const all: any[] = []
+    ps.forEach((p: any, i: number) => {
+      if (i) all.push({ text: MID, tone: 'dim' })
+      all.push(...(p.pieces ? p.pieces.map((x: any) => ({ ...x, tone: p.tone })) : [p]))
+    })
+    const linked = all.length ? linkLine(d.els, all, key, d.desk, false) : null
+    if (linked) return linked
     const parts: any[] = []
-    b.parts.forEach((p: any, i: number) => {
+    ps.forEach((p: any, i: number) => {
       if (i) parts.push(<Text dimColor>{MID}</Text>)
       parts.push(<Text {...(INK[p.tone] || {})}>{p.text}</Text>)
     })
-    lines.push(<Box key="tracks-counts"><Text wrap="wrap">{parts}</Text></Box>)
+    return <Box key={key}><Text wrap="wrap">{parts}</Text></Box>
   }
+  if (rows.length === 1) lines.push(countRow(rows[0], 'tracks-counts'))
+  else if (rows.length) lines.push(<Box key="tracks-counts" flexDirection="column">{rows.map((r, i) => countRow(r, 'tracks-counts-' + i))}</Box>)
   if (b.note) lines.push(<Box key="tracks-note"><Text dimColor wrap="wrap">{b.note}</Text></Box>)
   if (b.offline) lines.push(<Box key="tracks-offline"><Text color="warning" wrap="wrap">{b.offline}</Text></Box>)
   return <Box key="tracks-bottom" flexDirection="column">{lines}</Box>
+}
+
+/* on the desktop the heading's lines are fitted from the pane's columns on every draw, a word
+   with no space before it (the full stop) kept with the one before: a soft wrap at the pane's edge
+   hangs the name's press rim past the edge and can leave the full stop alone */
+function leadRows(d: Draw, parts: any[]): any {
+  if (!d.desk) return linkLine(d.els, parts, 'tracks-lead', false, false)
+  const { Box, Text } = d.els
+  const groups: any[][] = []
+  let gap = false
+  for (const p of parts) {
+    for (const [, sp, w] of String(p.text).matchAll(/(\s*)(\S*)/g)) {
+      if (sp) gap = true
+      if (!w) continue
+      const word = { ...p, text: w, space: gap }
+      if (groups.length && !gap) groups[groups.length - 1].push(word)
+      else groups.push([word])
+      gap = false
+    }
+  }
+  const asParts = (ws: any[]) => {
+    const out: any[] = []
+    ws.forEach((w, i) => {
+      const last = out[out.length - 1]
+      const sep = i && w.space ? ' ' : ''
+      if (last && (last.href || '') === (w.href || '')) last.text += sep + w.text
+      else {
+        if (last && sep) last.text += sep
+        const { space, ...part } = w
+        out.push(part)
+      }
+    })
+    return out
+  }
+  /* the gap beside a link is the space in the words on the desktop, and a press face adds no width */
+  const cells = (ws: any[]) => paneCells(asParts(ws).map((p) => p.text).join(''), 600)
+  const lines: any[][] = []
+  for (const g of groups) {
+    const line = lines[lines.length - 1]
+    if (line && cells([...line, ...g]) <= d.cols - 1) line.push(...g)
+    else lines.push([...g])
+  }
+  const row = (ws: any[], i: number) => {
+    const key = 'tracks-lead-' + i
+    return linkLine(d.els, asParts(ws), key, true, false)
+      || <Box key={key}><Text weight="semibold" wrap="wrap">{asParts(ws).map((p) => p.text).join('')}</Text></Box>
+  }
+  return <Box key="tracks-lead" flexDirection="column">{lines.map(row)}</Box>
 }
 
 /* This session's track: the head across the card, then where, how far, you and the handoff;
@@ -87,7 +150,11 @@ function heldCard(d: Draw, t: any): any {
   const inner = d.cols - 3
   const half = wide ? Math.floor((inner - 2) / 2) : inner
   const room = half - 3
-  const [g1, g2, g3] = t.groups.map((g: any) => fitGroup(g, room, wide))
+  /* a fact line's room inside the border and padding (4 cells), the column gap when wide,
+     less the 20 px lead and its one-cell gap */
+  const column = wide ? (d.cols - 6) / 2 : d.cols - 4
+  const barPx = column * CELL - 20 - CELL
+  const [g1, g2, g3] = t.groups.map((g: any) => fitGroup(rowsCut(g, d.trim.rows), room, wide, barPx))
   const group = (g: any, gi: number) => factGroup(d.els, g, 'hf-', gi, factDraw(d))
   const body = wide
     ? [
@@ -125,13 +192,15 @@ function foundRow(d: Draw, t: any): any {
   return <Box key={'trk-found-' + t.id} paddingLeft={d.desk ? LEAD : 2}>{line || <Text wrap="wrap">{parts.map((p) => factPart(d.els, p))}</Text>}</Box>
 }
 
-/* a shut section's names as links, as many whole as fit `room`, then "and N more" */
+/* a shut section's names as links, as many whole as fit `room`, then "and N more"; none when
+   the first does not fit, so the section's cut words take the row instead of a wrap */
 function shutNames(d: Draw, tracks: any[], room: number): any {
   const w = (s: string) => (d.desk ? paneCells(s) : cellWidth(s))
   const more = (n: number) => (n ? ' and ' + n + ' more' : '')
   let k = tracks.length
   const size = (n: number) => w(tracks.slice(0, n).map((t: any) => t.name).join(', ') + more(tracks.length - n))
   while (k > 1 && size(k) > room) k--
+  if (size(k) > room) return null
   const parts: any[] = tracks.slice(0, k).flatMap((t: any, i: number) => [{ text: t.name, tone: 'dim', href: t.url || undefined }, ...(i < k - 1 ? [{ text: ', ', tone: 'dim' }] : [])])
   if (k < tracks.length) parts.push({ text: more(tracks.length - k), tone: 'dim' })
   return linkLine(d.els, parts, 'parked-names-line', d.desk, false)
@@ -142,22 +211,33 @@ function shutNames(d: Draw, tracks: any[], room: number): any {
 function section(d: Draw, key: string, title: string, tracks: any[], open: boolean, note: string, named = false): any {
   const { Box, Text } = d.els
   const parked = key === 'parked'
+  const k = d.trim.tiles ? d.trim.tiles[key] : undefined
+  const shown = Number(k) >= 0 ? tracks.slice(0, k) : tracks
+  const left = tracks.length - shown.length
   const after = !open && named ? tracks.map((t: any) => t.name).join(', ') : note
   const count = String(tracks.length) + (after ? MID.trimEnd() : '')
   /* the heading's words, its gaps and the ring take the rest of the row; the desktop's by the pane's own widths */
   const room = d.desk ? d.cols - FOLD_CELLS - paneCells(title, 600) - paneCells(count) - 2 : d.cols - cellWidth(title) - cellWidth(String(tracks.length)) - 10
-  const rest = [<Box key={'sect-count-' + key} flexShrink={0}><Text dimColor>{count}</Text></Box>]
-  const cut = !after || room <= 0 ? after : d.desk ? fitWords(after, room) : clampWords(after, letters(room), 1)
+  /* the title and the bare count wider than the row: one Text, so the title wraps at a word with
+     the count after its last word (two no-break spaces), clear of the ring; the note and names give way */
+  const tight = d.desk && d.cols - FOLD_CELLS - paneCells(title, 600) - paneCells(String(tracks.length)) - 2 < 0
+  const cut = tight ? '' : !after || room <= 0 ? after : d.desk ? fitWords(after, room) : clampWords(after, letters(room), 1)
   /* shut, the whole names that fit open their pages, the rest counted; drawn after the fold's press, so they take the pointer */
-  const names = !open && named && room > 0 && tracks.some((t: any) => t.url) ? shutNames(d, tracks, room) : null
+  const names = !tight && !open && named && room > 0 && tracks.some((t: any) => t.url) ? shutNames(d, tracks, room) : null
+  /* no words fit after the count: its dot goes too */
+  const rest = tight ? [] : [<Box key={'sect-count-' + key} flexShrink={0}><Text dimColor>{names || cut ? count : String(tracks.length)}</Text></Box>]
   if (names) rest.push(<Box key="parked-names" flexShrink={1} minWidth={0}>{names}{d.desk ? <Box position="absolute" top={0} left={0} /> : null}</Box>)
-  else if (after) rest.push(<Box key={parked ? 'parked-names' : 'sect-note-' + key} flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{cut}</Text></Box>)
+  else if (cut) rest.push(<Box key={parked ? 'parked-names' : 'sect-note-' + key} flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{cut}</Text></Box>)
+  const words = tight
+    ? <Text wrap="wrap"><Text weight="semibold">{title}</Text><Text dimColor>{'  ' + tracks.length}</Text></Text>
+    : <Text weight="semibold">{title}</Text>
   const head = foldHead(d.els, { key: parked ? 'parked-row' : 'sect-head-' + key, press: parked ? 'parked-fold' : 'fold-' + key, open, toggle: () => d.act.fold(key),
-    desk: d.desk, cols: d.cols, title: <Text weight="semibold">{title}</Text>, rest })
+    desk: d.desk, cols: d.cols, title: words, rest, ...(tight ? { titleCells: d.cols } : {}) })
   return (
     <Box key={parked ? 'parked' : 'sect-' + key} flexDirection="column" rowGap={0.5}>
       {head}
-      {open ? grid(d, key, tracks) : null}
+      {open ? grid(d, key, shown) : null}
+      {open && left ? <Box key={'sect-cut-' + key}><Text dimColor wrap="wrap">{left + (shown.length ? ' more' : left === 1 ? ' track' : ' tracks') + are(left) + CUT_WORDS + 'each one.'}</Text></Box> : null}
     </Box>
   )
 }
@@ -168,7 +248,9 @@ function grid(d: Draw, key: string, tracks: any[]): any {
   const { Box } = d.els
   const n = d.cols >= WIDER ? 3 : d.cols >= WIDE ? 2 : 1
   const tileCols = Math.floor((d.cols - (n - 1) * TILE_GAP_X) / n)
-  const tiles = tracks.map((t, i) => tile(d, t, tileCols, i))
+  /* a tile's bar by the held card's measure: the tile's px less border and padding (4 cells), the lead and its gap */
+  const barPx = (d.cols * CELL - (n - 1) * TILE_GAP_X * CELL) / n - 4 * CELL - 20 - CELL
+  const tiles = tracks.map((t, i) => tile(d, t, tileCols, i, barPx))
   if (n === 1) return <Box key={'grid-' + key} flexDirection="column" rowGap={TILE_GAP_Y}>{tiles}</Box>
   const rows: any[] = []
   for (let r = 0; r * n < tiles.length; r++) {
@@ -180,15 +262,33 @@ function grid(d: Draw, key: string, tracks: any[]): any {
 }
 
 /* One track in the list: the head, its one group of facts, the press on its own row. */
-function tile(d: Draw, t: any, tileCols: number, i: number): any {
+function tile(d: Draw, t: any, tileCols: number, i: number, barPx: number): any {
   const { Box } = d.els
   const room = tileCols - 5
-  const parts: any[] = [head(d, t, room), factGroup(d.els, fitGroup(t.groups[0] || [], room, d.cols >= WIDE), 'tf-' + t.id + '-', 0, factDraw(d))]
+  const parts: any[] = [head(d, t, room), factGroup(d.els, fitGroup(rowsCut(t.groups[0] || [], d.trim.rows), room, d.cols >= WIDE, barPx), 'tf-' + t.id + '-', 0, factDraw(d))]
   const found = foundRow(d, t)
   if (found) parts.push(found)
   if (t.press) parts.push(pressRow(d, t))
   const look = d.desk ? { ...tileLook(false, false), paddingX: 1 } : {}
   return <Box key={'trk-tile-' + t.id} flexDirection="column" rowGap={0.3} {...look}>{parts}</Box>
+}
+
+/* a group's station and question rows past the first `r`, one row in their place saying how many */
+export const rowCuttable = (x: any): boolean => !!x && !!x.lead && (x.lead.kind === 'station' || ['ldAsk', 'ldBlock', 'ldWaits'].includes(x.lead.icon))
+function rowsCut(g: any[], r?: number): any[] {
+  const keep = Number(r)
+  if (!(keep >= 0)) return g
+  const n = g.filter(rowCuttable).length
+  if (n <= keep) return g
+  let seen = 0
+  const out: any[] = []
+  for (const x of g) {
+    if (!rowCuttable(x)) { out.push(x); continue }
+    seen++
+    if (seen <= keep) out.push(x)
+    else if (seen === keep + 1) out.push({ lead: x.lead, lines: [[{ text: (n - keep) + (keep ? ' more' : '') + (n - keep === 1 ? ' task or question row' : ' task and question rows') + are(n - keep) + CUT_WORDS + 'the track whole.', tone: 'dim' }]] })
+  }
+  return out
 }
 
 /* The tile's press: copy the resume command while this session holds a track, else resume here. */
@@ -279,9 +379,9 @@ function factDraw(d: Draw): any {
 
 /* The group for a room of `room` cells: each part marked to clamp ends on a whole word within
    its rows (`clamp` under 80 cells, `clampWide` from 80), the words before it on its line
-   counted; a bar takes the room left beside its lead. */
-function fitGroup(g: any[], room: number, wide: boolean): any[] {
-  const px = Math.max(40, Math.floor(room * CELL))
+   counted; a bar takes the room left beside its lead, `barPx` when the caller measured it. */
+function fitGroup(g: any[], room: number, wide: boolean, barPx?: number): any[] {
+  const px = Math.max(40, Math.floor(barPx ?? room * CELL))
   return g.map((r) => ({
     ...r,
     lines: r.lines.map((l: any[]) => {

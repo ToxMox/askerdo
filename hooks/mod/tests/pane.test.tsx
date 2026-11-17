@@ -1,6 +1,8 @@
 /* The AskerDo pane (its Home and Tracks tabs) and the AskUserQuestion redraw under `claude plugin test`, on the terminal and the desktop. */
 import { describe, expect, test } from 'claude-code/testing'
-import { pressAgain, start, world } from './world.ts'
+import { COLD_START, HEAVY, plain, pressAgain, start, world } from './world.ts'
+import { PX_ROW } from '../home.tsx'
+import { paneCells } from '../fold.tsx'
 
 const PLUGIN = 'askerdo'
 const PANE_ID = 'askerdo'
@@ -38,15 +40,192 @@ function shelfWorld(on: any) {
 
 /* the held card and the tiles, in the order drawn */
 const trackKeys = async (ui: any) => (await ui.findAll({ type: 'Box' })).map((b: any) => String(b.key)).filter((k: string) => /^trk-(held|tile)-/.test(k))
-const textOf = async (ui: any, key: string) => (await ui.find({ key }))?.text
+const textOf = async (ui: any, key: string) => plain((await ui.find({ key }))?.text)
 
 describe('the AskerDo pane', () => {
+  /* a hooks worker respawn starts a fresh copy with its memory gone; a copy before it ran
+     this session, so the first draw reads the local server's band and draws it, never the loading line;
+     the file's first case, so it takes the cold load */
+  test('after a respawn the pane draws the local band at once, never the loading line; a draw that throws keeps its last drawing', COLD_START, async ($: any, on: any) => {
+    const w = world(on)
+    w.questions = [{ id: 'Q106', name: 'store shape', ask: 'One file or many?', blocking: true, track: 'TR-3', subscribers: ['other'], pick: 'b',
+      options: [{ type: 'a', option: 'one file' }, { type: 'b', option: 'many files' }] }]
+    /* a snapshot whose shape does not apply is dropped and written over, and the pane draws */
+    on('state.get', ($: any, e: any, next: any) => (e.key === 'snapshot' ? { value: { value: { v: 1, starts: 1, view: { tab: 'home', unfolded: 5 } }, version: 1 } } : next(e)))
+    let snaps = 0
+    on('state.set', ($: any, e: any, next: any) => { if (e.key === 'snapshot') snaps++; return next(e) })
+    /* the load the start kicks waits on the clock; the pane draws before it runs */
+    await $.session.start({ cwd: w.cwd, surface: null, isInteractive: false })
+    const ui = await mount($, 'terminal', '')
+    /* the band's loading lines; Home's activity is its own read, which lands at the gate */
+    expect(await ui.find({ text: /Reading the (tracks|questions)/ })).toBeUndefined()
+    await ui.press({ key: 'tab-questions' })
+    expect(await ui.find({ key: 'qcard-Q106' })).toBeDefined()
+    await w.clock.settle()
+    expect(snaps).toBeGreaterThan(0)
+    /* a press's ring row names the surface its own redraw drew first and the writes the mod asked there */
+    await ui.press({ key: 'tab-home' })
+    const sentFrom = w.reads.length
+    w.marker += '+'
+    await w.clock.settle()
+    const tab = w.reads.slice(sentFrom).map((r: any) => decodeURIComponent(String(r.url)))
+      .flatMap((u: string) => { const m = /[?&]rings=([^&]*)/.exec(u); try { return m ? JSON.parse(m[1]) : [] } catch { return [] } })
+      .find((r: any) => r && r.c === 'tab' && r.k === 'questions')
+    expect([tab && tab.f, tab && tab.a && tab.a.pane > 0, tab && !!tab.d.pane]).toEqual(['pane', true, true])
+    /* the press's own time and the pane's first ask, at or before its first draw */
+    expect([tab && tab.z > 0, tab && tab.q && tab.q.pane >= 0 && tab.q.pane <= tab.d.pane[2]]).toEqual([true, true])
+    /* the pane's drawn size in characters and the tab it drew */
+    expect([tab && tab.d.pane[6] > 1000, tab && tab.v]).toEqual([true, 'questions'])
+    /* the case below finds Questions as the tab left open */
+    await ui.press({ key: 'tab-questions' })
+    await w.clock.settle()
+    await ui.unmount()
+    /* a pane draw that throws (the fault knob names the site) keeps the last good drawing
+       (Questions), is logged, and rides the next band read */
+    const before = w.reads.length
+    w.env.ASKERDO_DRAW_FAULT = 'pane terminal'
+    w.change()
+    await w.clock.advance(2000)
+    await w.clock.settle()
+    const again = await mount($, 'terminal', 'home')
+    expect(await again.find({ key: 'qcard-Q106' })).toBeDefined()
+    expect(w.debugLogs.some((l: string) => l.includes('a draw threw, pane terminal'))).toBe(true)
+    await again.unmount()
+    /* a band model whose questions are not a list draws Home, which says it could not read them */
+    delete w.env.ASKERDO_DRAW_FAULT
+    w.near = (s: string, p: string, l = '') => { const b = w.bandOf(s, p, l); return { ...b, model: { ...b.model, questions: 5 } } }
+    w.change()
+    await w.clock.advance(2000)
+    await w.clock.settle()
+    const home = await mount($, 'terminal', 'home')
+    expect(plain((await home.find({ key: 'home-unread' }))?.text)).toMatch(/questions/i)
+    await home.unmount()
+    /* the band's count row says so too, in a few words */
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 100, scroll: { offset: 0, bodyRows: 11 }, view: {} } })
+    expect(!!(await band.find({ key: 'count-unread' }))).toBe(true)
+    await band.unmount()
+    w.near = (s: string, p: string, l = '') => w.bandOf(s, p, l)
+    w.marker += '+'
+    w.change()
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    const reads = w.reads.slice(before).map((r: any) => decodeURIComponent(String(r.url))).filter((u: string) => u.includes('/local/band?'))
+    /* the fault rows leave on their own flush, never paced by band reads */
+    const flushedRows = () => w.fetches.filter((f: any) => String(f.url).endsWith('/local/faults')).map((f: any) => f.body.faults || [])
+    const sentFaults = [...reads.filter((u: string) => u.includes('faults=')), ...flushedRows().flat()]
+    expect(sentFaults.filter((t: string) => t.includes('pane terminal')).length).toBe(1)
+    expect(sentFaults.some((t: string) => t.includes('band model'))).toBe(true)
+    /* a burst of 80 faults at once leaves in one flush with none lost; the kit raises no ui.fault on call,
+       so 80 replies' draws throw, each its own site in the same book the app's faults go to; each drew once
+       first, so a throw keeps that drawing */
+    const burstReply = (i: number, text: string) => $.ui.render({ surface: 'terminal', component: 'AssistantMessage', requestId: 'burst-' + i, props: { text: text + i, isFirstOfReply: true } })
+    for (let i = 0; i < 80; i++) await burstReply(i, 'burst ')
+    w.env.ASKERDO_DRAW_FAULT = 'reply'
+    w.change()
+    await w.clock.advance(2000)
+    await w.clock.settle()
+    const flushesBefore = flushedRows().length
+    const readsBefore = w.reads.length
+    for (let i = 0; i < 80; i++) await burstReply(i, 'burst again ')
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    delete w.env.ASKERDO_DRAW_FAULT
+    w.change()
+    const burstFlushes = flushedRows().slice(flushesBefore)
+    expect(burstFlushes.length).toBe(1)
+    expect(new Set((burstFlushes[0] || []).map((t: string) => (/burst-\d+/.exec(t) || [''])[0]).filter(Boolean)).size).toBe(80)
+    expect(w.reads.slice(readsBefore).some((r: any) => String(r.url).includes('faults='))).toBe(false)
+  })
+
+  /* a lag tick that ran late rides the band read beside the ring rows; a block past a second
+     also names what the thread entered before it, so the wait is the 250 ms tick plus 1 s, no less;
+     its own case; each says whether the worker's own beat ran in the hold (idle: the host
+     held the tick) or not (busy), what ran at the due time and the due time; real holds, past the 5 s limit */
+  const heldRows = async (w: any) => {
+    const before = w.reads.length
+    w.marker += '+'
+    await w.clock.settle()
+    const sent = w.reads.slice(before).map((r: any) => decodeURIComponent(String(r.url)))
+    expect(sent.some((u: string) => u.includes('"x":"lag"'))).toBe(true)
+    const rows = sent.flatMap((u: string) => { const m = /[?&]rings=([^&]*)/.exec(u); try { return m ? JSON.parse(m[1]) : [] } catch { return [] } })
+    /* the lag row places its worst tick as the held row does */
+    w.lagWorst = rows.find((r: any) => r && r.x === 'lag' && r.d > 0)
+    return rows.filter((r: any) => r && r.x === 'held')
+  }
+  test('a thread blocked past a second sends the lag and what entered before the block on the next band read', { timeoutMs: 15000 }, async ($: any, on: any) => {
+    const w = world(on)
+    await start($, w)
+    const helds = () => heldRows(w)
+    /* busy: the worker's thread held by code outside the mod's bodies (the test's own, here) */
+    const until = Date.now() + 1300
+    while (Date.now() < until) { /* the block */ }
+    await w.clock.advance(250)
+    const [busy] = await helds()
+    expect([busy.b.length > 0, busy.w, /^none/.test(busy.r), busy.d > 0 && busy.d < Date.now()]).toEqual([true, 'busy', true, true])
+    expect([w.lagWorst && w.lagWorst.w, w.lagWorst && w.lagWorst.d === busy.d]).toEqual(['busy', true])
+    /* idle: real time passes while the host delivers no tick, the worker free */
+    await w.clock.advance(250)
+    await new Promise((ok) => setTimeout(ok, 1300))
+    await w.clock.advance(250)
+    const [idle] = await helds()
+    expect(idle.w).toBe('idle')
+  })
+
+  /* a hold inside one of the mod's named bodies says which ran at the due time; three real
+     1.3 s holds plus the kit's work, 9 to 11 s in a full run, so it takes the long limit */
+  test('a hold inside a redraw check, a timer or a band timer names that body in its held row', HEAVY, async ($: any, on: any) => {
+    const w = world(on)
+    await start($, w)
+    const helds = () => heldRows(w)
+    /* the hold is the worker's own, never idle; a loaded host adds its own delay to the tick, part busy */
+    const held = (h: any) => !!h && ['busy', 'part busy'].includes(h.w)
+    /* busy inside a named body: a board change's redraw check, whose pane read holds */
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: PANE })
+    await w.clock.advance(2000)
+    await w.clock.settle()
+    w.change()
+    await w.clock.settle()
+    w.panesSpin = 1300
+    let named: any
+    for (let k = 0; k < 12 && !named; k++) {
+      await w.clock.advance(250)
+      if (!w.panesSpin) named = (await helds())[0]
+    }
+    expect([held(named), named && /redraw check/.test(named.r)]).toEqual([true, true])
+    /* busy inside a timer body: the Questions tab's age timer, whose pane read holds */
+    await ui.press({ key: 'tab-questions' })
+    await w.clock.settle()
+    w.panesSpin = 1300
+    for (let k = 0; k < 260 && w.panesSpin; k++) await w.clock.advance(250)
+    await w.clock.advance(250)
+    const [timed] = await helds()
+    await ui.unmount()
+    expect([held(timed), timed && /questions age timer, \d+ ms in/.test(timed.r)]).toEqual([true, true])
+    /* busy inside a band timer: two lines turn waiting at once, and the toasts timer that shows the
+       second holds in the host's toast call */
+    const row = (t: string) => ({ track: t, handoff: t + '.1', name: 'line ' + t, state: 'waiting', age: '0m', focus: 'step 1' })
+    w.shelf.push(row('TR-6'), row('TR-7'))
+    w.marker += '+'
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    w.toastSpin = 1300
+    for (let k = 0; k < 60 && w.toastSpin; k++) await w.clock.advance(250)
+    await w.clock.advance(250)
+    const [toasted] = await helds()
+    expect([held(toasted), toasted && /toasts timer, \d+ ms in/.test(toasted.r)]).toEqual([true, true])
+  })
+
   /* the band's copy over this project's activity, newest first by day;
      words in the filter widen it to every project's lines */
-  test('Home holds the band\'s copy and this project\'s activity; the filter widens it; the tabs redraw in place', { timeoutMs: 15000 }, async ($: any, on: any) => {
+  test('Home holds the band\'s copy and this project\'s activity; the filter widens it; the tabs redraw in place', COLD_START, async ($: any, on: any) => {
     const w = shelfWorld(on)
+    let paneAsks = 0
+    on('state.set', ($: any, e: any, next: any) => { if (e.key === 'drawn' && e.id === 'pane') paneAsks++; return next(e) })
+    let ag = 0
+    on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'ag-' + ++ag }))
+    on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }))
     const ask = 'One file or many?'
-    w.questions = [{ id: 'Q106', key: 'kq106ab', boardUrl: 'http://192.0.2.7:17480/r/kq106ab', name: 'store shape', ask, crux: 'Two writers at once.', blocking: true, track: 'TR-3', subscribers: ['other'], pick: 'b',
+    w.questions = [{ id: 'Q106', key: 'kq106ab', boardUrl: 'http://192.0.2.7:17480/r/kq106ab', name: 'store shape', ask, gist: ['**Seen** two writers at once', '**Built** one file each'].join(String.fromCharCode(10)), blocking: true, track: 'TR-3', subscribers: ['other'], pick: 'b',
       options: [{ type: 'a', option: 'one file' }, { type: 'b', option: 'many files' }] }]
     w.calls = [{ kind: 'look', record: 'k5', id: 'T-5', text: 'T-5 landed', presses: [{ label: 'Close', verb: 'editRecord', input: {} }] }]
     /* the store stamps local time, as the console reads it */
@@ -75,9 +254,9 @@ describe('the AskerDo pane', () => {
       expect(await ui.find({ key: 'name-Q106' })).toBeDefined()
       expect(await ui.find({ key: 'status-shelf-open' })).toBeDefined()
       expect(await ui.find({ key: 'askerdo-open' })).toBeUndefined()
-      expect((await ui.find({ key: 'feed' }))!.text).toMatch(/Today[\s\S]*T-54[\s\S]*now in progress/)
+      expect(plain((await ui.find({ key: 'feed' }))!.text)).toMatch(/Today[\s\S]*T-54[\s\S]*now in progress/)
       expect((await ui.find({ key: 'feed' }))!.text).not.toContain('P-9')
-      expect((await ui.find({ key: 'feed' }))!.text).toMatch(/the pane (longword )*longword…/)
+      expect(plain((await ui.find({ key: 'feed' }))!.text)).toMatch(/the pane (longword )*longword…/)
       /* every row's id and name open its record: a page through the local server's sign-in route,
          an open question the Questions tab at its card */
       const feedTree = JSON.stringify(await ui.find({ key: 'feed' }))
@@ -91,9 +270,14 @@ describe('the AskerDo pane', () => {
       w.questions = [{ id: 'Q105', key: 'kq105ab', name: 'log shape', ask: 'Rotate the log?', blocking: true, subscribers: ['other'], options: [{ type: 'a', option: 'daily' }] }, ...one]
       w.change()
       await w.clock.settle()
-      await ui.press({ key: qpress[1] })
-      await w.clock.settle()
-      expect((await ui.findAll({ type: 'Box' })).map((b: any) => String(b.key)).filter((k: string) => k.startsWith('qcard-'))).toEqual(['qcard-Q106'])
+      /* the row's id and its name each open the card, through the press the row draws */
+      for (const key of qpress) {
+        await ui.press({ key: 'tab-home' })
+        await w.clock.settle()
+        await ui.press({ key })
+        await w.clock.settle()
+        expect([key, (await ui.findAll({ type: 'Box' })).map((b: any) => String(b.key)).filter((k: string) => k.startsWith('qcard-'))]).toEqual([key, ['qcard-Q106']])
+      }
       w.questions = one
       w.change()
       await w.clock.settle()
@@ -116,10 +300,15 @@ describe('the AskerDo pane', () => {
       }
       walk(tree, null)
       expect([hung.length > 0, hung.every(([up, lit]) => up.props.width === 0 && !up.props.marginLeft && !lit.props.marginLeft)]).toEqual([surface === 'desktop', true])
-      /* the row's name, and the desktop's unfolded card's head, open Questions pinned at that card */
-      for (const key of ['name-Q106', ...(surface === 'desktop' ? ['qu-name-Q106'] : [])]) {
-        if (key.startsWith('qu-')) await pressAgain(ui, 'unfold-Q106')
-        await ui.press({ key })
+      /* the row's name opens Questions pinned at that card, folded and unfolded;
+         unfolded, the card names the question no second time, the row's name in the link blue */
+      for (const unfoldedRow of [false, ...(surface === 'desktop' ? [true] : [])]) {
+        if (unfoldedRow) {
+          await pressAgain(ui, 'unfold-Q106')
+          const unfoldedTree = JSON.stringify(await ui.find({ key: 'qunfold-Q106' }))
+          expect([unfoldedTree.includes('store shape'), !!(await ui.find({ key: 'qc-head-Q106' })), (await ui.find({ key: 'qlabel-Q106' }))!.children[0].props.color]).toEqual([false, false, 'suggestion'])
+        }
+        await ui.press({ key: 'name-Q106' })
         await w.clock.settle()
         expect((await ui.findAll({ type: 'Box' })).map((b: any) => String(b.key)).filter((k: string) => k.startsWith('qcard-'))).toEqual(['qcard-Q106'])
         await ui.press({ key: 'tab-home' })
@@ -132,6 +321,9 @@ describe('the AskerDo pane', () => {
         await pressAgain(ui, 'unfold-Q106')
         const open = (await ui.find({ key: 'qunfold-Q106' }))!.text
         expect([open.includes(ask), open.includes('one file'), open.includes('many files')]).toEqual([true, true, true])
+        /* a gist with no crux draws as the Questions card's: one item a line, its bold lead kept for Markdown */
+        const gist = await ui.find({ key: 'qc-gistmd-Q106' })
+        expect([gist?.type, String(gist?.props.text).split(/\n/).map((l) => /^- \*\*\w+\*\* \w/.test(l)), await ui.find({ key: 'qc-crux-Q106' })]).toEqual(['Markdown', [true, true], undefined])
         await pressAgain(ui, 'unfold-Q106')
         expect(await ui.find({ key: 'qunfold-Q106' })).toBeUndefined()
         /* a press anywhere on an unfolded option's tile answers it through the band's path;
@@ -173,7 +365,39 @@ describe('the AskerDo pane', () => {
     expect([await narrow.find({ key: 'askerdo-status-left' }), (await narrow.find({ key: 'status-line' }))!.props.flexWrap]).toEqual([undefined, 'wrap'])
     await narrow.unmount()
     const ui = await mount($, 'desktop', 'home')
+    /* a board change whose Home reads land past the gather draws Home once, with what they read */
+    const routed = w.serverBy['/local/cli']
+    w.serverBy['/local/cli'] = async (e: any) => { if (JSON.parse(e.init.body).argv[0] === 'activity') await w.clock.sleep(400); return routed(e) }
+    await w.clock.advance(2000)
+    await w.clock.settle()
+    paneAsks = 0
+    w.calls = []
+    w.feed.unshift({ ts: at(0), kind: 'task', verb: 'update', id: 'T-60', key: 'k60abcde', name: 'late line', project: 'C:/src/proj', ws: 'WS-11' })
+    w.marker += '+'
+    for (let i = 0; i < 6; i++) { await w.clock.advance(500); await w.clock.settle() }
+    expect([paneAsks, (await ui.find({ key: 'feed' }))!.text.includes('late line')]).toEqual([1, true])
+    w.serverBy['/local/cli'] = routed
+    /* agents starting, calling and ending while a slow check runs fold into the next gate, one check a gate */
+    const burst = async () => {
+      await $.agent.spawn({ description: 'Lane ' + (ag + 1), prompt: 'Go.', tool_use_id: 'tu-' + (ag + 1), background: true })
+      await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'ag-' + ag })
+    }
+    await burst()
+    w.panesWait = 1500
+    const asked = w.panesAsked
+    await w.clock.advance(1000)
+    for (let i = 0; i < 2; i++) { await burst(); await w.clock.advance(600) }
+    await w.clock.settle()
+    const during = w.panesAsked - asked
+    await w.clock.advance(400)
+    await w.clock.settle()
+    expect([during, w.panesAsked - asked]).toEqual([1, 1])
+    w.panesWait = 0
+    for (let i = 0; i < 4; i++) { await w.clock.advance(500); await w.clock.settle() }
     await ui.input({ key: 'feed-filter', text: 'plan', kind: 'change' })
+    await w.clock.settle()
+    /* the wider read is passive, so it lands at the gate */
+    await w.clock.advance(1000)
     await w.clock.settle()
     expect((await ui.find({ key: 'feed' }))!.text).toContain('P-9')
     expect(w.last('activity --limit 300').args).not.toContain('--project')
@@ -193,16 +417,20 @@ describe('the AskerDo pane', () => {
     w.boardUrl = 'http://askerdo.localhost:53265/0123456789abcdef0123456789abcdef/#p=proj'
     const tv = (id: string, name: string, state: string, tasks: any[], edges: any[] = []) => ({ id, key: 'trk' + id, name, state, stalled: false,
       noHandoff: false, parkReason: null, done: 0, critical: { length: tasks.length, path: tasks.map((t) => t.id) }, tasks, edges, junction: null, holder: null })
-    const task = (id: string, name: string, status: string, waitsOn: string[] = []) => ({ id, key: 'k' + id, name, status, ready: status === 'open' && !waitsOn.length, waitsOn })
+    /* the board's word: running, else ready or waiting by what it waits on */
+    const task = (id: string, name: string, is: string, waitsOn: string[] = []) => ({ id, key: 'k' + id, name, status: 'open',
+      word: { is: is === 'open' ? (waitsOn.length ? 'waiting' : 'ready') : is }, ready: is === 'open' && !waitsOn.length, waitsOn })
     /* TR-3 holds a finished review, which Home leaves off, and a review to do */
     /* two loose tasks, one waiting on TR-6, one whose day came */
     const inboxList = [{ key: 'kT-70', id: 'T-70', name: 'stray idea', wake: { kind: 'track-ends', key: 'trkTR-6', id: 'TR-6', named: 'TR-6 next line', status: 'open' }, due: false },
       { key: 'kT-71', id: 'T-71', name: 'old idea', wake: { date: '2026-11-01' }, due: true }]
     const view = { workstream: 'WS-11', inbox: 2, inboxList, tracks: [
-      { ...tv('TR-3', 'mod core', 'active', [task('T-41', 'band row', 'in_progress'), { ...task('T-42', 'home picture', 'open', ['after T-41', 'after T-50 on TR-5']), review: true }],
+      { ...tv('TR-3', 'mod core and the sweep fixes the session found past the pane edge', 'active', [task('T-41', 'band row', 'running'), { ...task('T-42', 'home picture', 'open', ['after T-41', 'after T-50 on TR-5']), review: true }],
         [{ task: 'T-42', on: 'T-41', done: false }, { task: 'T-42', on: 'T-50', done: false }, { task: 'T-41', on: 'T-40', done: true }]),
-      finished: [{ id: 'T-40', key: 'kT-40', name: 'review the start', position: 0, status: 'completed', closed: '2026-11-04T09:00:00Z', review: true, covers: [{ id: 'T-39', key: 'kT-39', name: 'start' }] }] },
-      tv('TR-5', 'local route', 'active', [task('T-50', 'graph route', 'in_progress')]),
+      /* the user's hold, which the open view at the track's level says too */
+      hold: { on: true, id: 'K-9', at: '2026-11-01T00:00:00Z' },
+      finished: [{ id: 'T-40', key: 'kT-40', name: 'review the start', position: 0, status: 'done', closed: '2026-11-04T09:00:00Z', review: true, covers: [{ id: 'T-39', key: 'kT-39', name: 'start' }] }] },
+      tv('TR-5', 'local route', 'active', [task('T-50', 'graph route', 'running')]),
       tv('TR-6', 'next line', 'waiting', [task('T-60', 'write the tests', 'open')]),
     ] }
     w.near = (s: string, p: string, l: string) => ({ ...w.bandOf(s, p, l), track: { id: 'TR-3', workstream: 'WS-11', workstreamName: 'the board', running: 1, ready: 0, toGo: 2, done: 3, total: 5 },
@@ -236,6 +464,7 @@ describe('the AskerDo pane', () => {
         /* the pair on its own row, the held track's lines the one on */
         expect([(await ui.find({ key: 'graph-mine' }))!.props.plain, (await ui.find({ key: 'graph-all' }))!.props.plain]).toEqual([undefined, true])
         expect(await textOf(ui, 'graph-crumbs')).toMatch(/WS-11.*TR-3 mod core/)
+        expect(await ui.find({ key: 'crumb-hold' })).toBeDefined()
         /* every legend entry leads with its mark as a picture the picture's own code drew, its words in lines beside it */
         const kinds: string[] = []
         const walk = (n: any) => { if (n && typeof n === 'object') { kinds.push(n.type === 'Svg' ? 'mark' : String(n.props && n.props.key).startsWith('legend-words-') ? 'words' : ''); (n.children || []).flat().forEach(walk) } }
@@ -256,9 +485,9 @@ describe('the AskerDo pane', () => {
         await ui.press({ key: 'graph-all' })
         expect((await pic(ui)).source).toContain('data-k="pill:TR-6"')
         /* each press lies where its thing is drawn, down the whole picture: a Box's top margin
-           counts the engine's half-line rows, 10 px on the pane's 20 px line */
+           counts the engine's half-line rows, the row unit Home draws with */
         const zones = (await ui.findAll({ type: 'Box' })).filter((z: any) => /^gz-/.test(String(z.key)))
-        const tops = zones.map((z: any) => [Number(String(z.key).split('-').pop()), z.props.marginTop * 10])
+        const tops = zones.map((z: any) => [Number(String(z.key).split('-').pop()), z.props.marginTop * PX_ROW])
         expect([tops.some(([y]) => y > 40), tops.filter(([y, top]) => Math.abs(y - top) > 0.5)]).toEqual([true, []])
         /* the workstream's inbox opened, a row's wake names the track it waits on, and the due row's reads due in amber */
         await ui.press({ key: 'fold-inbox' })
@@ -273,8 +502,14 @@ describe('the AskerDo pane', () => {
     /* one look a session for each workstream, however many draws */
     expect(w.posts.filter((x: any) => x.url.endsWith('/local/look')).map((x: any) => x.body.ws)).toEqual(['WS-11'])
     /* a narrow pane draws for its own width, never shrunk from a wider picture */
-    const narrow = await mount($, 'desktop', 'home', PANE_ID, { ...PANE, bodyColumns: 30 })
-    expect((await pic(narrow)).width).toBeLessThanOrEqual(30 * 8.453)
+    /* at the narrowest pane (238 px) the long name, wider than the line, wraps whole at a word, or ends in an ellipsis */
+    const narrow = await mount($, 'desktop', 'home', PANE_ID, { ...PANE, bodyColumns: 28 })
+    expect((await pic(narrow)).width).toBeLessThanOrEqual(28 * 8.453)
+    const crumbLine = String(await textOf(narrow, 'graph-crumbs')).replace(String(await textOf(narrow, 'crumb-hold')), '')
+    const crumbWords = crumbLine.slice(crumbLine.indexOf('TR-3')).trim(), wholeCrumb = 'TR-3 ' + view.tracks[0].name, cutAt = crumbWords.replace(/…$/, '')
+    /* longer than a line, wrapping, and whole or cut at a word with its ellipsis */
+    expect([JSON.stringify(await narrow.find({ key: 'graph-crumbs' })).includes('"wrap":"wrap"'), crumbWords.length > 28,
+      crumbWords === wholeCrumb || (crumbWords.endsWith('…') && wholeCrumb.startsWith(cutAt + ' '))]).toEqual([true, true, true])
     await narrow.unmount()
   })
 
@@ -326,8 +561,9 @@ describe('the AskerDo pane', () => {
   })
 
   /* the Settings tab draws the settings verb's rows under its sub-tabs; the chip's
-     picker picks the layer and a save sends settings set there */
-  test('the Settings tab lists the rows from settings --json, and a save sends settings set at the layer picked', async ($: any, on: any) => {
+     picker picks the layer and a save sends settings set there; both surfaces in one case, so a loaded CPU
+     takes it past 5 s */
+  test('the Settings tab lists the rows from settings --json, and a save sends settings set at the layer picked', HEAVY, async ($: any, on: any) => {
     const w = shelfWorld(on)
     const place = (level: string, record: string, scope: string, more: any = {}) => ({ level, record, scope, reaches: 'whom it reaches', profiles: [], profile: null, ...more })
     const copy = (label: string) => ({ label, line: label + ' in one plain line.', changes: 'What it changes.', takes: 'Within seconds.' })
@@ -419,6 +655,9 @@ describe('the AskerDo pane', () => {
       else expect((await ui.find({ key: 'set-phone-url' }))!.text).toContain('/login/once')
       expect((await ui.find({ key: 'set-row-phone' }))!.text).toContain('once, until')
       await w.clock.advance(21000)
+      await w.clock.settle()
+      await w.clock.advance(1000)
+      await w.clock.settle()
       expect([!!(await code()), !!(await ui.find({ key: 'set-phone-url' })), !!(await ui.find({ key: 'set-phone' }))]).toEqual([false, false, true])
       await pressAgain(ui, 'set-sub-sessions')
       await ui.unmount()
@@ -457,10 +696,13 @@ describe('the AskerDo pane', () => {
      with nothing saved */
   test('the Tracks tab draws the bottom line, the held card, the tiles by section and the parked fold', async ($: any, on: any) => {
     const w = shelfWorld(on)
+    /* the user's hold on the held track, which the board's view sends */
+    w.decisions = [{ id: 'K-9', labels: ['hold'], tracks: ['TR-3'], created: '2026-11-01T00:00:00Z' }]
     await start($, w)
     for (const surface of SURFACES) {
       const ui = await mount($, surface)
       expect(await textOf(ui, 'tracks-lead')).toContain('mod core')
+      expect(await textOf(ui, 'trk-held-TR-3')).toContain('on hold')
       /* the closed one nowhere, the parked ones in the fold */
       expect(await trackKeys(ui)).toEqual(['trk-held-TR-3', 'trk-tile-TR-6', 'trk-tile-TR-5'])
       expect(await textOf(ui, 'parked-names')).toMatch(/parked line.*side line/)
@@ -468,12 +710,51 @@ describe('the AskerDo pane', () => {
       expect((await ui.find({ key: 'trk-press-TR-6' }))?.props.label).toMatch(/^Copy resume/)
       expect([await ui.find({ key: 'trk-press-TR-5' }), await ui.find({ key: 'trk-press-TR-3' })]).toEqual([undefined, undefined])
       expect(await textOf(ui, 'trk-tile-TR-6')).toContain('write the tests')
+      expect(await ui.find({ key: 'sect-count-elsewhere' })).toBeDefined()
       await ui.press({ key: 'parked-fold' })
       expect(await trackKeys(ui)).toEqual(['trk-held-TR-3', 'trk-tile-TR-6', 'trk-tile-TR-5', 'trk-tile-TR-4', 'trk-tile-TR-8'])
       await ui.press({ key: 'parked-fold' })
       expect(await ui.find({ key: 'trk-tile-TR-8' })).toBeUndefined()
       await ui.unmount()
     }
+    /* a held track of 112 tasks in the narrowest pane: the bar, its 20 px lead and their
+       one-cell gap fit inside the card's border and padding */
+    w.tracks.find((t: any) => t.id === 'TR-3').tasks = Array.from({ length: 53 }, (_, i) => 'T-' + (100 + i))
+    w.tracks.find((t: any) => t.id === 'TR-3').name = 'mod core and the sweep fixes'
+    w.boardUrl = 'http://askerdo.localhost:7777/' + 'a'.repeat(32) + '/'
+    w.near = (s: string, p: string, l: string) => {
+      const b = w.bandOf(s, p, l)
+      return { ...b, graph: { ...b.graph, view: { ...b.graph.view, tracks: b.graph.view.tracks.map((t: any) => (t.id === 'TR-3' || t.id === 'TR-6' ? { ...t, done: 59, total: 112 } : t)) } } }
+    }
+    w.change()
+    await w.clock.advance(2000)
+    await w.clock.settle()
+    const cols = 24
+    const narrow = await mount($, 'desktop', 'tracks', PANE_ID, { ...PANE, bodyColumns: cols })
+    /* the tiles' bars too, by the same measure */
+    const bars = (await narrow.findAll({ type: 'Svg' })).filter((s: any) => String(s.props.alt).startsWith('One cell per task'))
+    expect(bars.length).toBeGreaterThan(1)
+    for (const bar of bars) expect(bar.props.width + 20 + 8.453).toBeLessThanOrEqual((cols - 4) * 8.453)
+    /* a heading wider than the row wraps with its count after the last word, in a box that gives way before the ring */
+    const otherTitle = await narrow.find({ key: 'sect-head-elsewhere-title' })
+    expect([/session\s+1$/.test(otherTitle!.text), otherTitle!.props.flexShrink, await narrow.find({ key: 'sect-count-elsewhere' })]).toEqual([true, 1, undefined])
+    /* the counts line in rows fitted from the columns, each row inside them, no count split across two */
+    const countRows = (await narrow.findAll({ type: 'Box' })).filter((b: any) => /^tracks-counts-\d+$/.test(String(b.key)))
+    expect(countRows.length).toBeGreaterThan(1)
+    for (const r of countRows) expect([paneCells(String(r.text)) <= cols, /^\d+ \D+( · \d+ \D+)*$/.test(String(r.text).trim())]).toEqual([true, true])
+    /* the heading too, its full stop never a row alone, the name still its track's page */
+    const leadRows = (await narrow.findAll({ type: 'Box' })).filter((b: any) => /^tracks-lead-\d+$/.test(String(b.key)))
+    expect(leadRows.length).toBeGreaterThan(1)
+    /* a row's words are its semibold runs, a link's href and press label aside */
+    const runs = (n: any): string[] => (n && n.type === 'Text' && n.props?.weight === 'semibold' ? [String(n.text ?? (n.children || []).join(''))]
+      : (n?.children || []).flatMap((c: any) => (typeof c === 'object' ? runs(c) : [])))
+    const words = (r: any) => runs(r).join(' ')
+    expect(leadRows.map(words).join(' ')).toContain('sweep fixes')
+    for (const r of leadRows) expect([paneCells(words(r), 600) <= cols, words(r) === '.']).toEqual([true, false])
+    expect(leadRows.some((r: any) => JSON.stringify(r).includes('"href"'))).toBe(true)
+    /* beside a link the gap is a space in the words, never a cell's margin (2.8 spaces wide) */
+    expect(leadRows.some((r: any) => /"margin(Left|Right)":1\b/.test(JSON.stringify(r)))).toBe(false)
+    await narrow.unmount()
   })
 
   /* the copy press puts the command on the pressed surface's clipboard and says so; one
@@ -498,17 +779,19 @@ describe('the AskerDo pane', () => {
     await ui.unmount()
   })
 
-  /* a dispatched agent's tag shows who runs the task in the held card's running rows */
-  test('task_update with an agent shows that agent on the held card', async ($: any, on: any) => {
+  /* the agent whose run the board holds on a task shows who runs it in the held card's running rows */
+  /* each row says the board's word with who, where and since */
+  test('the held card says each task\'s word: the agent running, an unconfirmed run with its PC, a ready task with who left it', async ($: any, on: any) => {
     const w = shelfWorld(on)
+    const t = w.tracks.find((x: any) => x.tasks.includes('T-42'))
+    const agent = (job: string, more: any) => ({ agent: job, word: { worker: 'agent', job, ...more } })
+    t.tasks = [...t.tasks, 'T-43']
+    t.now = [{ id: 'T-41', ...agent('api-builder', { is: 'running' }) }, { id: 'T-42', ...agent('row-lane', { is: 'unconfirmed', pc: 'desk PC' }) }]
+    t.readySet = [{ id: 'T-43', ...agent('minors-lane', { is: 'ready', next: 'continue', how: 'handed_on' }) }]
     await start($, w)
     const ui = await mount($, 'desktop')
-    expect(await textOf(ui, 'trk-held-TR-3')).not.toContain('api-builder')
-    const r = await $.tool.call({ tool: 'mcp__askerdo__task_update', id: 'T-42', agent: 'api-builder' })
-    expect(r.deny).toBeUndefined()
-    await w.clock.settle()
-    const now = await textOf(ui, 'trk-held-TR-3')
-    expect([now.includes('T-42'), now.includes('api-builder')]).toEqual([true, true])
+    const card = await textOf(ui, 'trk-held-TR-3')
+    expect([/T-41[^]*api-builder/, /T-42[^]*row-lane[^]*desk PC/, /T-43[^]*minors-lane/].map((r) => r.test(card))).toEqual([true, true, true])
     await ui.unmount()
   })
 

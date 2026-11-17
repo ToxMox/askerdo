@@ -10,7 +10,7 @@ import { childEnv, tempDir } from './helpers/sandbox.mjs';
 import { runCli } from './helpers/cli.mjs';
 
 process.removeAllListeners('warning');
-const { boardCall, boardEvents, boardJoin, boardJoinCode, boardLoginLink, boardRequest, loginUrl, phoneUrl, startBoard } = await import('../lib/board-call.mjs');
+const { boardCall, boardEvents, boardJoin, boardJoinCode, boardLoginLink, boardRequest, lanAddresses, loginUrl, phoneUrl, reachableUrl, startBoard } = await import('../lib/board-call.mjs');
 const { newToken, revokeToken } = await import('../server/api.mjs');
 const { dataDir, storeRoot } = await import('../lib/node-helpers.mjs');
 const { hostDir } = await import('../lib/board-host.mjs');
@@ -42,6 +42,78 @@ async function until(fn, ms = 2000) {
 }
 
 const lastSeq = (db) => db.prepare('SELECT max(seq) AS s FROM activity').get().s;
+
+test('a dear read never holds the board\'s thread, and a picture is computed once per board change for every PC', async () => {
+  const { openDb } = await import('../server/db.mjs');
+  const { migrate } = await import('../server/migrate.mjs');
+  const { runVerb } = await import('../server/verbs/index.mjs');
+  /* a read thread held mid read: a write and a light read still answer meanwhile */
+  let release;
+  const held = new Promise((ok) => { release = ok; });
+  const stuck = { run: () => held, once: (k, s, f) => f(), close: () => {} };
+  const a = await startBoard({ readPool: stuck });
+  const verb = (b, name, input, device = b.token) => boardRequest('POST', '/api/v1/verbs/' + name, { input }, { url: b.url, token: device });
+  try {
+    const dear = verb(a, 'pictureOverview', {});
+    const ws = await verb(a, 'createRecord', { kind: 'workstream', name: 'Light', description: 'd' });
+    assert.ok((await verb(a, 'listTracks', { workstream: ws.id })), 'a light read answered while the Overview was held');
+    release(JSON.stringify({ ok: true, result: { ws: [] } }) + '\n');
+    assert.deepEqual(await dear, { ws: [] });
+  } finally { await a.close(); }
+  /* the real threads on a board's file: the same answer as its own thread, once per change for two PCs */
+  const dir = tempDir('askerdo-store-');
+  const db = openDb(join(dir, 'board.db'));
+  migrate(db);
+  const b = await startBoard({ db });
+  const other = newToken(db, 'pc2').token;
+  try {
+    const ws = await verb(b, 'createRecord', { kind: 'workstream', name: 'Docks', description: 'd' });
+    await verb(b, 'newTrack', { name: 'Rope', workstream: ws.id });
+    const one = await verb(b, 'pictureView', { workstream: ws.id });
+    assert.deepEqual(await verb(b, 'pictureView', { workstream: ws.id }, other), one, 'the second PC is answered from the first one\'s');
+    assert.deepEqual(one, JSON.parse(JSON.stringify(runVerb(db, 'pictureView', { workstream: ws.id }, {}))));
+    assert.deepEqual([b.api.pool.counts.ran, b.api.pool.counts.kept], [1, 1]);
+    await verb(b, 'noteRecord', { id: ws.id, text: 'a change' });
+    await verb(b, 'pictureView', { workstream: ws.id });
+    assert.equal(b.api.pool.counts.ran, 2, 'a change reads it again');
+  } finally { await b.close(); db.close(); }
+});
+
+test('a band read never queues behind dear reads; a hung read and a thread that cannot start fall back to the board\'s thread', async () => {
+  const { createReadPool } = await import('../server/read-pool.mjs');
+  const worker = new URL('./helpers/read-worker-fake.mjs', import.meta.url);
+  /* both general threads held by dear reads that never answer, and two more waiting: the band
+     read has only its own answer to wait on, so no clock decides the race */
+  const busy = createReadPool('board.db', { worker });
+  const dear = ['hang', 'hang', 'hang', 'hang'].map((x) => busy.run(x));
+  try {
+    assert.equal(await Promise.race([busy.run('bandCalls'), ...dear]), 'bandCalls', 'the band read answered before the dear ones');
+  } finally { await busy.close(); await Promise.allSettled(dear); }
+  /* a read that never answers is refused at the cap, and the next read gets a fresh thread; the
+     cap times every read from its post, a thread's start too, so it leaves a loaded PC room */
+  const pool = createReadPool('board.db', { worker, cap: 1500 });
+  try {
+    await assert.rejects(pool.run('hang'), { capped: true });
+    assert.equal(await pool.run('workingSet'), 'workingSet');
+  } finally { await pool.close(); }
+  /* over HTTP a capped read answers busy and never runs again on the board's thread
+     (an inline run would have answered with the verb's own status) */
+  const b = await startBoard({ readPool: createReadPool('board.db', { worker, cap: 300 }) });
+  try {
+    const r = await boardRequest('POST', '/api/v1/verbs/listWork', { input: { kind: 'task', hang: true } }, { url: b.url, token: b.token }).catch((e) => e);
+    assert.equal(r.status, 503);
+    assert.match(r.message, /busy/);
+    assert.equal((await raw(b.url + '/health')).status, 200);
+  } finally { await b.close(); }
+  /* a thread that fails at start: reads are refused at once for the back off, with no new thread */
+  const broken = createReadPool('missing.db', { worker, size: 1 });
+  try {
+    await assert.rejects(broken.run('workingSet'), /no board file/);
+    const spawned = broken.counts.spawned;
+    await assert.rejects(broken.run('workingSet'), /failed to start/);
+    assert.equal(broken.counts.spawned, spawned, 'no thread is spawned during the back off');
+  } finally { await broken.close(); }
+});
 
 test('a verb over HTTP with a device token writes and reads back; no token or a revoked one is refused', async () => {
   const b = await startBoard();
@@ -123,6 +195,10 @@ test('a PC resuming from its cursor gets exactly the missing events, in order, o
     assert.equal(JSON.parse((await raw(b.url + '/health')).body).version, version, '/health says it too');
     const both = await runCli(['--version', '--json'], { env: { ...childEnv(), ASKERDO_BOARD_URL: b.url } });
     assert.deepEqual([both.code, JSON.parse(both.out).pc, JSON.parse(both.out).board.version], [0, version, version]);
+    /* /health names the checkout's stamp; a board built with none reads as unknown and fails nothing */
+    const stamp = (await import('../server/version.mjs')).boardCommit();
+    assert.equal(JSON.parse((await raw(b.url + '/health')).body).commit, stamp);
+    if (stamp === null) assert.deepEqual([JSON.parse(both.out).board.commitState, JSON.parse(both.out).behind], ['unknown', null]);
     /* a board that does not answer is said, and the command still succeeds */
     const gone = await runCli(['--version', '--json'], { env: { ...childEnv(), ASKERDO_BOARD_URL: 'http://127.0.0.1:9' } });
     assert.deepEqual([gone.code, JSON.parse(gone.out).board.answering], [0, false]);
@@ -163,6 +239,18 @@ test('a login link sets the web cookie once and never again; a page without it, 
     assert.equal(await phoneUrl('http://boxpc:7777', at(['169.254.83.107', '172.20.80.5', '10.0.1.9', '10.0.1.20'])), 'http://10.0.1.9:7777');
     assert.equal(await phoneUrl('http://boxpc:7777', at(['169.254.83.107', '172.20.80.5', '10.0.1.20'])), 'http://10.0.1.20:7777');
     assert.equal(await phoneUrl('https://board.example.net', at([])), 'https://board.example.net');
+    /* a join line takes the same pick, and this PC's name only when the board answers on no LAN address */
+    assert.equal(await reachableUrl('http://127.0.0.1:7777', { ...at(['172.16.0.7', '10.0.1.20']), host: 'boxpc' }), 'http://10.0.1.20:7777');
+    assert.equal(await reachableUrl('http://localhost:7777', { ...at([]), host: 'boxpc' }), 'http://boxpc:7777');
+    assert.equal(await reachableUrl('https://board.example.net', { ...at([]), host: 'boxpc' }), 'https://board.example.net');
+    /* a Hyper-V external switch puts the LAN address on a vEthernet adapter: the one holding the
+       default route counts as the LAN when no physical adapter has a private address, WSL's never */
+    const hyperv = { 'vEthernet (External)': [{ family: 'IPv4', address: '10.0.1.30', netmask: '255.255.255.0', internal: false }],
+      'vEthernet (WSL (Hyper-V firewall))': [{ family: 'IPv4', address: '172.29.16.1', netmask: '255.255.240.0', internal: false }] };
+    assert.deepEqual(lanAddresses(hyperv, () => '10.0.1.30'), ['10.0.1.30']);
+    assert.deepEqual(lanAddresses({ ...hyperv, ...nets }, () => { throw new Error('the route is read only with no physical address'); }), ['10.0.1.20', '172.16.0.7']);
+    assert.equal(await phoneUrl('http://nas:7777', { nets: hyperv, route: () => '10.0.1.30', lookup: async () => [{ address: '10.0.1.9' }], answers: async (u) => new URL(u).hostname === '10.0.1.9' }),
+      'http://10.0.1.9:7777', 'a board on the switch subnet is not a VM');
     const qr = await runCli(['login', '--qr'], { env: { ...childEnv(), ASKERDO_BOARD_URL: b.url, ASKERDO_BOARD_TOKEN: b.token } });
     assert.ok(qr.code !== 0 && /phone/.test(qr.err) && !/\x1b\[30;107m/.test(qr.out), 'a board answering on 127.0.0.1 alone draws no code');
     /* the link keeps the scheme and path of the address the PC called (a TLS proxy) */

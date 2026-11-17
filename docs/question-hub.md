@@ -13,14 +13,14 @@ instead. The work kinds beside questions are in
 
 THE BOARD IS AskerDo's OWN SERVER on a host the user picks (this PC, a
 Docker host, or a home server such as Unraid), reached over the home
-network, one for every machine (Q90 90c). It is one Node process in one
+network, one for every machine. It is one Node process in one
 container or one local process; on Unraid an app in the Docker tab (Q127
 127a: container `AskerDo`, port 17480, built on the server from a
 `server/` copy by `bash server/unraid/install.sh <tag>`, which also writes
 the app's template). It alone opens its one SQLite file, on a pool path
 such as `<appdata>/askerdo` and never through a network or FUSE share.
-Backups and the weekly export go to their own folder, `<backups>/askerdo`
-(Q128 128c). Every
+Backups and the weekly export go to their own folder, `<backups>/askerdo`.
+Every
 verb runs in one transaction and writes one activity row per change,
 numbered in sequence; the board alone issues labels. Nothing in it runs
 on a clock: date-snooze wakes and stalls are worked out when read.
@@ -118,7 +118,7 @@ day), `/needs-you` (with `?repo=<shared name>` for one project),
 workstream, `?before=` for older rows), `/rulings` (answered questions,
 decisions and knowledge grouped by workstream or project, `?kind=`,
 `?ws=`, `?project=`), `/override/<n>` (an override request's full before
-and after; Allow or Keep is pressed in the app, not here) and
+and after; its act or Keep is pressed in the app, not here) and
 `/search?q=` (a label typed there opens its page). `/settings` is the
 one that writes: the same settings and rule lines as the pane's Settings
 tab, saved through the settings verbs from the device this browser
@@ -136,7 +136,7 @@ it, then opens the page itself). It OPENS FILES a record lists
 the alerts, the activity pages) and serves the notifications page.
 
 THE LOCAL SERVER IS STARTED BY A PER-USER SCHEDULED TASK, never by the
-session that noticed it was down (Q111 = a): a server started from
+session that noticed it was down: a server started from
 inside a Claude session inherits Claude's Windows job, which kept an old
 package alive through an update. The task is `AskerDo board`: yours
 alone, registered with no admin, run under your interactive token at
@@ -145,7 +145,7 @@ release's tray exe with `--serve` and this PC's AskerDo folder, a windowless
 launcher that creates the node server and exits. The SessionStart sync
 and the `board` verb read the registered action back and register it
 again only when it is missing or stale, so each release re-points it.
-Nothing stands behind it (Q94 = 2a): a task that cannot be registered or
+Nothing stands behind it: a task that cannot be registered or
 run is one plain message, and the `board` verb exits 2 on it. When the
 server did not come up at logon, `schtasks /query /tn "AskerDo board" /fo
 list /v` says why: Status `Ready` while it runs, Last Result `0` for a
@@ -209,8 +209,7 @@ a temp file and redirect when shell quoting gets awkward):
 node ~/.claude/askerdo/cli.mjs register --json < payload.json
 ```
 
-A plain session, one not yet engaged with the board (Q102 102a, Q104
-104a), keeps its questions with itself. A session engages only through
+A plain session, one not yet engaged with the board, keeps its questions with itself. A session engages only through
 the user's own acts (an `/askerdo` command, a board id typed in a
 prompt, acting on a board item) or a kickoff that hands it an id; its
 own question never engages it. Until then the `ask` tool registers
@@ -233,8 +232,8 @@ the pick marked, "(a, my pick)", "(b)": the card's head; the hub adds the
 question number at registration, so the stored ask names the options
 with their tokens, "(25a, my pick)", "(25b)"; the CLI refuses a register
 without it), `gist` (why it came up), `projectDir` (the working
-directory; the CLI turns it into the project's shared name, `projectRepo`,
-and the board keeps only the name, Q89 89a), `session` (this session's id, read from the scratchpad path
+directory; the CLI turns it into the project's shared name, `projectRepo`, 
+and the board keeps only the name), `session` (this session's id, read from the scratchpad path
 the harness announces), `blocking` (boolean). Optional: `workstream`
 (`WS-n`), `track` (`TR-n`; an old `P-n` or `TH-n` names the track it
 became, and a `plan` or `thread` field is refused), `gates` (array of
@@ -255,24 +254,25 @@ every surface; on the desktop the mod hides it under the card) and the
 question's page on the board all render from this one payload, and
 nothing rich is ever reconstructed later.
 
-EVERY QUESTION HAS A WORKSTREAM (T-215, 2026-10-09).
+EVERY QUESTION HAS A WORKSTREAM.
 A payload with no `track` is filed on the track the session holds,
 unless it names a workstream other than that track's. When the payload
 names no workstream, `register` inherits it, in order, from the
-question's track, the session's in_progress tasks, and the workstreams
-the session is subscribed to. Several workstreams at the
+question's track, the tasks the session has an open run on, the tasks
+its agents' open runs serve, and the workstreams the session is
+subscribed to. Several workstreams at the
 first step that finds any is a refusal (exit 1) naming them: put
 `workstream` in the payload. None at all files the question in the
 project's inbox workstream (`<project>: inbox`, label `inbox`, minted on
 first use). The board stores `pc` beside `session`: the asking PC's
 name as the board knows the caller's device, left out when unknown. A
 question belongs to the session holding its track (else its asker), so
-a session that resumes the track owns it and hears its answer (K-726).
+a session that resumes the track owns it and hears its answer.
 Each inheritance is one warning line, as is a payload with
 lettered options and no pick; fix a missing pick with `question edit
 <id> --pick <letter>`, never by re-registering.
 
-THE DECISION TABLE (T-304, 2026-10-20). An option's
+THE DECISION TABLE. An option's
 `getsYou` is drawn as "what happens" (what picking it does) and
 `costsYou` as "catch" (the price, which may be an empty string; "one-way"
 when it is hard to undo). Four optional slots, each one short line, fold
@@ -287,7 +287,7 @@ was filled, and `crux` at the question's top level when set; an absent
 field is omitted, never an empty string. A question registered without
 them reads and renders as before.
 
-RULINGS (T-6, the what-happened guard). An answered question is a ruling.
+RULINGS (the what-happened guard). An answered question is a ruling.
 
 - `revisits` (array of `Q-n`): the rulings this question reopens; each must be answered, else refused.
 - `reversal` (text): required with `revisits` and refused without it: what changed since the ruling.
@@ -297,7 +297,7 @@ RULINGS (T-6, the what-happened guard). An answered question is a ruling.
 - `cites` (array of `Q-n`): rulings mentioned as context only. A `Q-n` label of an answered question in the ask, crux, gist, stakes or option text that is in neither list is refused; answer tokens are not checked.
 - `register --json` returns `revisits`, `reverses` (each ruling as `{id, name, quote, declined}`), and `cites` when set; `list --json` and `show --json` add `reversal`.
 
-THE ANSWER TOKEN (T-79, Q99 = a). An option's stored `type` is ONE lowercase letter,
+THE ANSWER TOKEN. An option's stored `type` is ONE lowercase letter,
 a to z, unique within the question. The token a reader sees and types is
 the question's own number followed by that letter, one word: Q106's
 option `b` is `106b`. The letter is what the record keeps and the number
@@ -346,11 +346,11 @@ typed or pasted.
 | Verb | Does | Flags |
 |-|-|-|
 | `register` | issue a label and write the question; the registering session is its first subscriber | payload on stdin |
-| `answer <id>` | fill the Answer section, whose head carries the composed token, flip status, tell every subscriber but the caller | `--pick <token>` takes the composed token `106b`, the bare letter `b`, or, for a question registered before the cut, its stored type, and records the stored letter; a composed token whose number names another question is refused. `--note "why"`, `--session <own-id>`. `--user <session-id>` records the user's own chip press in that session (T-28): the actor is `user:<id>`, so no subscriber is skipped and that session hears it too. `--amend` CORRECTS an answered question instead of refusing it (Answering, below) |
+| `answer <id>` | fill the Answer section, whose head carries the composed token, flip status, tell every subscriber but the caller | `--pick <token>` takes the composed token `106b`, the bare letter `b`, or, for a question registered before the cut, its stored type, and records the stored letter; a composed token whose number names another question is refused. `--note "why"`, `--session <own-id>`. `--user <session-id>` records the user's own chip press in that session: the actor is `user:<id>`, so no subscriber is skipped and that session hears it too. The plugin sends it on the user's press or `/askerdo` token; a session never does, and the mod refuses a session's shell call that carries it. `--amend` CORRECTS an answered question instead of refusing it (Answering, below) |
 | `drop <id>` | record the decline, flip status, the same telling | `--note`, `--session`, `--user` |
 | `snooze <id>` | defer visibility with a wake condition | AT LEAST ONE of `--until YYYY-MM-DD`, `--trigger "text"` and `--wake-on <ref>[:<status>]` (Snoozing, below); any two or three combine and whichever fires first wakes it. `--user` |
 | `wake <id>` | snoozed back to open | |
-| `question edit <id>` | move a question to another workstream or track, set or fix its recommended pick while it is open or snoozed (T-260), and name the tasks it gates (T-216). Its status, its name and its prose are NOT here: they have their own verbs | `--workstream WS-n`, `--clear-workstream`, `--track TR-n` (an old `P-n` or `TH-n` names the track it became), `--clear-track`, `--pick <letter>`, `--clear-pick`, `--add-gate T-n`, `--remove-gate T-n` (both repeatable), `--session <own-id>` |
+| `question edit <id>` | move a question to another workstream or track, set or fix its recommended pick while it is open or snoozed, and name the tasks it gates. Its status, its name and its prose are NOT here: they have their own verbs | `--workstream WS-n`, `--clear-workstream`, `--track TR-n` (an old `P-n` or `TH-n` names the track it became), `--clear-track`, `--pick <letter>`, `--clear-pick`, `--add-gate T-n`, `--remove-gate T-n` (both repeatable), `--session <own-id>` |
 | `surface <id>` | bump `asked`, print the payload, subscribe the calling session | `--session <own-id>` |
 | `subscribe <id>` | subscribe a session to a question (work is followed through a track or the task in hand) | `--session <own-id>` |
 | `list` | the open set, blockers first then oldest, one head line each and a last line naming what it left out; `--json` is `{questions, openSetUrl, localUrl, recentUrl, shelfUrl, board}` (`board` the blocking and waiting counts), plus `inHand` with `--session` (every task the session has in hand, newest first) | `--open` (default), `--all`, `--snoozed`, `--project <dir>`, `--session <id>`, `--blocking`, `--workstream`, `--track TR-n`, `--names-line` (below) |
@@ -428,17 +428,17 @@ nothing at all when the session's scope holds no open question. Its shape:
 
 The bolded count opens the board's Needs you page for the project; each
 name opens its question's page on the board; "and [N more]" appears only
-past three. Scope (T-246, 2026-10-09): only a session
+past three. Scope: only a session
 that has engaged the board writes the line at all (the user's own act:
 an `/askerdo` command, a board id typed in a prompt, acting on a board
 item; or a kickoff that hands it an id; its own question never engages
-it, Q104 104a), and it names the OPEN questions of the track the session
+it), and it names the OPEN questions of the track the session
 holds (with no track, the ones it registered; a resumed track's session
-takes its questions over, K-726) and the ones it surfaced, blockers
+takes its questions over) and the ones it surfaced, blockers
 first then oldest. The line neither names nor counts any other open
 question, a blocker on another track in the same workstream included: a
 session learns of a question it does not own only through the AskerDo
-mark and its hover (K-728), and a session that owns none prints nothing.
+mark and its hover, and a session that owns none prints nothing.
 `--names-line` with `--session` prints that scoped line, `--blocking`
 its blockers alone, and without `--session` it names
 the whole project. Where the AskerDo mod runs, its band carries the queue and no
@@ -453,13 +453,13 @@ on the board's pages.
 ## Alerts, the tray and the notifications page
 
 Every alert is a card in the native tray exe's own popup by the tray
-corner (`askerdo-tray.exe`, which the server spawns; K-725), in every
+corner (`askerdo-tray.exe`, which the server spawns), in every
 state: at the desk, presenting, full screen, away or in quiet time. The
 local server raises one from the board's rows as they arrive: a question
-opened, closed or woken, and a task completed or dropped or a workstream
+opened, closed or woken, and a task done or dropped or a workstream
 closed by a session (the ending alerts, work-system.md). A question's
 card leads with its name; the line under it names what woke it for a
-woken question (`woken by <name of the ended record>, completed`, or
+woken question (`woken by <name of the ended record>, done`, or
 `woken by its snooze date`), then the project, the
 workstream and the task it holds up where they are known (else its id,
 state and workstream, `Q85, blocks work, WS-4 widget-panel`), then its
@@ -503,7 +503,7 @@ never kills a code already typed on the new PC);
 `Notification settings`; `Pause notifications` with `For 1 hour`,
 `Until 07:00 tomorrow`, `Until I resume` and `Resume now`; and `Exit`.
 The tooltip says the blocking count. A tray that is absent or will not
-attach is no tray at all (Q94 = 2a): an alert that finds none is logged
+attach is no tray at all: an alert that finds none is logged
 and dropped. The tray's Start Menu entry, `AskerDo.lnk`, opens the board;
 the exe's own `--unregister` removes it.
 
@@ -526,8 +526,8 @@ queue, refresh:
 node ~/.claude/askerdo/cli.mjs list --project <projectDir> --session <own-id> --names-line
 ```
 
-Scoping keys on the project's shared name (Q89 89a): its git remote
-(Q514), else its main checkout's path, normalized (a worktree is its main
+Scoping keys on the project's shared name: its git remote,
+else its main checkout's path, normalized (a worktree is its main
 checkout's project), so one repo checked out at two paths on two
 machines is one project and two repos sharing a basename never merge;
 the short project name is display only. Never re-tell a question the
@@ -561,13 +561,40 @@ reply text.
 
 ## Gated tasks
 
-A question that gates a task names it in `gates` (T-216). `show` on the
+A question that gates a task names it in `gates`. `show` on the
 question names its gates, and while the question is open or snoozed a
 gated task names it as what it waits on ("after Q93"), which keeps it
 out of its track's ready set. Answering or dropping the question appends a journal paragraph to
 each gated task saying how it ended. Registering a blocker that gates a
-task tells the session that has the task in hand and the one holding its
+task tells the session whose run is open on the task and the one holding its
 track.
+
+## Placement questions
+
+A session that holds a track files found work at once only at a real
+place in that track's order (`work-system.md`, Creating). Last on the
+track, or anywhere off it, is asked: the filing call itself registers a
+question labelled `placement`, written by the board from the filing, on
+the filing session and its held track, not blocking, and creates
+nothing. Its gist says what was found, why the session asks to move it,
+where it would sit on the held track and where the session asks to put
+it. The options are always a, do it on this track; b, put it where
+asked (the pick, since that is what the session asks for); c, let's talk
+where it fits; d, drop it. The question's `placement` key carries the
+draft (or the task being moved), both places, where it came from, and
+after the answer `outcome` (`here`, `asked`, `talk`, `drop` or `stale`)
+and `created`.
+
+The answer creates the task wherever it is given (the band, a card,
+`/askerdo 345b`, the `answer` tool, the CLI), with no model turn: a at
+the held track's place, b at the place asked for. Talk, drop, a quiet
+drop, a note with no press or a snooze creates nothing; after a talk
+the session files the settled place with `question` and the user's
+settling words, which the board lets through once. A place whose tasks
+have all closed answers `stale`, and the session treats it as talk. The
+answer's inbox event names the task created, or the outcome. A track
+is not finished or dropped while a placement question of its work is
+open.
 
 ## Answering
 
@@ -586,8 +613,14 @@ through the `answer` verb.
   in words rather than filed as free text. `drop Q104 --session
   <own-id>` declines the same way. A durable project decision is also
   recorded on the board as a decision record through `decide` (the
-  tool, else the CLI verb) with the user's words quoted and what it
-  governs; Claude's auto memory is never its home.
+  tool, else the CLI verb): a title stating only what the user chose,
+  the session's own picks in the body named as its picks, the user's
+  words quoted whole and what it governs; Claude's auto memory is never
+  its home. The title, with the restatement in its body, is the
+  statement the user confirmed (`confirmed`: the board sets it on a
+  record that answers a question with its option, and `decide` takes it
+  when the user said yes to the title as worded): tasks, briefs and notes
+  carry it and the K-n, and the words stay in the record.
 - Anywhere else: the user's chip on the band or a card, `/askerdo 101b`,
   another session, another PC. The board records it through the same
   verb, and each PC's local server writes one line into the inbox of
@@ -651,13 +684,13 @@ where the ref is the record this question waits on (a task, a track, a
 workstream, or another question; an old plan or thread id names the
 track it became) and the optional status is one of that kind's endings. It is
 stored inside the snooze beside `--until` and `--trigger`. ANY ending of
-the linked record wakes the question: a task completed or dropped, a
-track done, dropped or folded, a workstream closed, a question answered
+the linked record wakes the question: a task done or dropped, a
+track done or dropped, a workstream closed, a question answered
 or dropped. A named status is recorded and reported but never gates the
 wake, because a record that was dropped can never reach the status
 somebody named. The wake happens in the ENDING VERB'S OWN TRANSACTION:
 the ended record, every question it woke, and one activity row for each
-of them (`woken by T-75 completed`) land together, so a wake and the
+of them (`woken by T-75 done`) land together, so a wake and the
 ending that caused it can never come apart. Nothing polls, and no reader
 wakes a link. The refusals are by name: a ref no record holds, a
 question naming itself, a status that is not one of that kind's endings
@@ -669,8 +702,8 @@ When a linked wake fires, the question raises the same woken alert a
 hand wake raises, under the same `notify.json` gates and the same burst
 cap; and it tells every session subscribed to the question,
 the way an answer does, as one line: `Q93 (linked wakes: which endings
-wake) woke in another session: T-75 completed.` The date auto-wake tells
-them the same way (Q37 37a): `Q509 (card header) woke on the board: its
+wake) woke in another session: T-75 done.` The date auto-wake tells
+them the same way: `Q509 (card header) woke on the board: its
 snooze date came.`, an alert once and a line at each session's next
 prompt, starting no turn. The hand wake stays silent to the inbox.
 
@@ -714,3 +747,64 @@ Fail toward the reply, never toward silence:
 5. **Graduated**: a durable project decision is also recorded durably
    at close time: a decision record on the board through `decide`, never
    Claude's auto memory.
+
+## Every question call, in full
+
+The question calls past the routine ones in
+[askerdo-quick.md](askerdo-quick.md), with the routine ones beside them.
+
+- **Engaged or not:** a session engages the board only through the
+  user's own acts (an `/askerdo` command, a board id typed in a prompt,
+  acting on a board item) or a kickoff that hands it an id; its own
+  question never engages it. Until then the `ask` tool keeps a question
+  with the session under a local label (`L1`, answered `L1a`) on the
+  card and the band, the mod records an answer given there with no CLI
+  call, a typed `L1a` goes through the `answer` tool, and
+  on engagement files it on the board (answered ones with their answer)
+  and tells its new label once. The mod refuses a CLI `register` from a
+  session not engaged and points at `ask`. One left unanswered when the
+  session closes is gone.
+- **Register before the first telling:** the mod's `ask` tool where it
+  runs, else `register --json < payload.json`. Required: `name`, `ask`,
+  `gist`, `projectDir`, `session`, `blocking`. `ask` is one plain
+  question ending in `?` naming the options by letter with the pick
+  marked ("... (a, my pick), or ... (b)?"); `gist` is why it came up,
+  carrying what answering needs (the items, counts and consequences),
+  never a pointer to a report. Usual: `crux`, `stakes`, `options` as
+  `{type, option, getsYou, costsYou}`, `pick` (a letter, or `null` on
+  purpose), `gates` (`T-n`).
+- **Its lane:** left out, the track is the one you hold and the
+  workstream that track's, else that of the tasks you have in hand,
+  else your subscriptions'; several are refused naming the tasks (name
+  one), none files it in the project's inbox. The board adds `pc`, the
+  asking PC's name. A question belongs to the session holding its
+  track, so the session that resumes the track owns it.
+- **Rulings:** reopening an answered question takes `revisits:
+  ["Q512"]` and a `reversal`, and may share a reply with other questions;
+  one that only mentions it takes `cites: ["Q498"]`. An answered
+  label bare in the free text without either is refused; an old
+  queue's question is named by its title, and a label inside a file
+  name or path is not read as one.
+- **Answered in chat:** the token is the number plus the letter
+  (`106b`), each token typed its own answer: the mod's `answer` tool
+  (`id`, `pick`, `note`; `drop` for a decline) where it runs, a local
+  label only there, else `answer Q106 --pick 106b --note "..." --session
+  <own-id>`; a decline `drop Q106 --note "..."`; a deferral ruled aloud `snooze
+  Q106 --trigger "next session"` (or `--until YYYY-MM-DD`, `--wake-on
+  T-12:done`).
+- **Fix one, never re-register:** `question edit Q106 --workstream
+  WS-3` (`--track TR-3`, `--pick b`, `--add-gate T-12`). An open one
+  whose ask or options must change is reworded in place, keeping its
+  number: the `ask` tool with `edits: "Q106"`, or `question edit Q106`
+  with the whole reworded payload on stdin; tell it again in full.
+  Telling one you did not register: `surface Q106 --session <own-id>`
+  first.
+- An answer made anywhere else reaches your inbox the moment the board
+  records it. The web pages take no answers.
+
+### The names line
+
+Not where the mod runs (its band carries the queue). Elsewhere, once the
+session has engaged the board (above), end the reply with exactly the line
+`list --project <dir> --session <own-id> --names-line` prints; when it
+prints nothing, write nothing, never "no open questions".

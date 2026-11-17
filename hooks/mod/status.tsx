@@ -3,14 +3,14 @@
  * the app's own hint stays beside them. On the desktop the same segments are the band's
  * last row, drawn as pictures, opened by the
  * AskerDo mark. Drawn from the model alone (statusModel); index.ts owns the reads. */
-import { cardText, cellWidth, chipGroups, chipHeader, rowParts, rowsText, statusPicture } from '../../lib/mod-core.mjs'
+import { cardText, cellWidth, chipGroups, chipHeader, fillGlyph, kindPicture, moonPicture, rowParts, rowsText, statusPicture } from '../../lib/mod-core.mjs'
 
 type CardPart = { text: string; tone?: string; pic?: any; href?: string; weight?: string }
 /* an agent's row in its card, its depth bar drawn on the desktop */
 type CardRow = { id: string; job: string; detail: string; tone: string; done?: boolean; meter?: any; under?: number }
 export type StatusSegment = {
   key: string; text: string; tone: string; tip: string; press?: string; href?: string; pic?: any; empty?: boolean
-  card?: { title: string; parts: CardPart[]; press?: string; rows?: CardRow[]; head?: CardHead; groups?: CardFact[][]; where?: CardFact[] | null; questions?: any[]; here?: any; foot?: string }
+  card?: { title: string; parts: CardPart[]; press?: string; rows?: CardRow[]; head?: CardHead; groups?: CardFact[][]; where?: CardFact[] | null; questions?: any[]; here?: any; foot?: string; asleep?: any[]; asleepMore?: number }
 }
 /* a tooltip's head and its groups of facts, each led by a picture */
 type CardHead = { icon: string; title: string; state?: { text: string; tone?: string } | null }
@@ -20,7 +20,7 @@ type CardFact = { lead: any; lines: CardPart[][] }
    desktop, a word at the line's end on the terminal; wrap, the pane's copy: two groups when it
    fits the columns, else one wrapping group;
    cards false: no hover cards (the dock pane does not lift them, so they would draw empty) */
-export type StatusOpts = { columns?: number; guard?: () => void; surface?: string; shelf?: () => void; home?: () => void; questions?: () => void; agents?: () => void; health?: () => void; wrap?: boolean; cards?: boolean }
+export type StatusOpts = { columns?: number; guard?: () => void; surface?: string; shelf?: () => void; home?: () => void; questions?: () => void; agents?: () => void; health?: () => void; wrap?: boolean; cards?: boolean; fit?: (r: CardRow, cols: number) => CardRow }
 
 const OPENER = 'AskerDo'
 
@@ -101,6 +101,17 @@ export function pressOver(els: any, key: string, cells: number, act: () => void,
   const { Button } = els
   const button = <Button key={key} plain label={blank(cells)} onPress={act} {...(hotkey ? { hotkey } : {})} hover={UNLIT} />
   return cover(els, hotkey ? 'flex-end' : 'center', band ? 'center' : 'stretch', button)
+}
+
+/* a press whose parent already cuts it to the face (a pressFace's rim, a picture's zone) needs only
+   cover's inner Box, a page node less a press; rim: laid from the face's left, the rim's overflow cutting it */
+export function pressInside(els: any, key: string, cells: number, act: (() => void) | null, href?: string, lay: 'rim' | 'zone' = 'rim'): any {
+  const { Box, Button, Link, Text } = els
+  const press = act ? <Button key={key} plain label={blank(cells)} onPress={act} hover={UNLIT} />
+    : <Link key={key} href={href}><Text wrap="truncate-end">{blank(cells)}</Text></Link>
+  return lay === 'rim'
+    ? <Box position="absolute" top={0} left={0} width="600%" height="100%" alignItems="stretch">{press}</Box>
+    : <Box width="600%" flexShrink={0} justifyContent="center" alignItems="stretch">{press}</Box>
 }
 
 /* a face and its press as one, the one grey highlight: the face drawn on
@@ -203,7 +214,9 @@ function pictureFace(els: any, s: StatusSegment, opts: StatusOpts): { face: any;
   /* the pane's copy wraps; the band's row does not */
   const press = on ? pressOver(els, on.key, cells, on.act, undefined, !opts.wrap) : s.href ? linkOver(els, linkKey(s), cells, s.href) : null
   const color = s.pic.labelTone ? INK[s.pic.labelTone] : LABEL[s.pic.tone] || 'inactive'
-  const face = [<Svg source={p.source} alt={p.alt} width={p.width} height={p.height} />, label ? <Text tabular color={color}>{label}</Text> : null]
+  /* the agents' count takes the deepest agent's tone, so it turns over in place while they run */
+  const count = label && s.key === 'agents' ? liveClient(els, AGENTS_COUNT, countLive(s)) : null
+  const face = [<Svg source={p.source} alt={p.alt} width={p.width} height={p.height} />, count || (label ? <Text tabular color={color}>{label}</Text> : null)]
   return {
     face: press ? pressFace(els, 'face-' + s.key, face, press) : face,
     head: () => <Svg source={hp.source} alt={hp.alt} width={hp.width} height={hp.height} />,
@@ -215,13 +228,15 @@ function pictureFace(els: any, s: StatusSegment, opts: StatusOpts): { face: any;
 function tipLine(s: StatusSegment, pressed: boolean): string {
   if (!s.card) return s.tip
   const facts = s.card.groups ? cardText(s.card) : s.card.parts.map((p) => p.text).join('') + rowsText(s.card.rows)
-  return s.card.title + ': ' + facts + (pressed && s.card.press ? '. ' + s.card.press : '')
+  /* the mark's asleep questions as a count on the one line */
+  const n = (s.card.asleep || []).length + (s.card.asleepMore || 0)
+  return s.card.title + ': ' + facts + (n ? '; ' + n + ' asleep' : '') + (pressed && s.card.press ? '. ' + s.card.press : '')
 }
 
 /* a desktop card (measured: the band and the pane lift it into a popover up to 360 px
    wide, above the row unless taller than the room there; an Svg draws as a Box's child):
    the picture and a bold title, the line with its numbers in their tone's color, the press. */
-function deskCard(els: any, s: StatusSegment, svg: any, pressed: boolean, cols?: number): any[] {
+function deskCard(els: any, s: StatusSegment, svg: any, pressed: boolean, cols?: number, fit?: (r: CardRow) => CardRow): any[] {
   const { Box, Text } = els
   const c = s.card as NonNullable<StatusSegment['card']>
   if (c.groups) return factCard(els, s, svg, pressed)
@@ -229,12 +244,38 @@ function deskCard(els: any, s: StatusSegment, svg: any, pressed: boolean, cols?:
   const parts = c.parts.map((p) => (p.tone && INK[p.tone] ? <Text color={INK[p.tone]}>{p.text}</Text> : p.text))
   return [
     <Box key={'card-head-' + s.key} flexDirection="row" columnGap={1}>{svg}<Text bold>{c.title}</Text></Box>,
-    <Text wrap="wrap">{parts}</Text>,
-    ...(c.rows || []).map((r) => agentRow(els, r, 'card-row-')),
+    (c.rows && liveClient(els, CARD_COUNT, partsLive(s), '100%')) || <Text wrap="wrap">{parts}</Text>,
+    ...(c.rows || []).map((r) => agentRow(els, fit ? fit(r) : r, 'card-row-', true, r.done ? undefined : CARD_LINE + r.id)),
     pressed && c.press ? <Text dimColor wrap="wrap">{c.press}</Text> : null,
     /* the AskerDo button's folder and branch, a group under what it shows */
     c.where && c.where.length ? factGroup(els, c.where, 'card-' + s.key + '-where-', 0) : null,
+    asleepGroup(els, c, 'card-' + s.key + '-'),
   ]
+}
+
+/* the mark's asleep rows after its folder and branch, each the dim crescent, the name and what wakes it dim */
+function asleepGroup(els: any, c: NonNullable<StatusSegment['card']>, k: string): any {
+  const { Box, Svg, Text } = els
+  const rows = c.asleep || []
+  if (!rows.length) return null
+  const moon = moonPicture()
+  const lead = (_p: any, key: string) => <Box key={key} flexShrink={0}><Svg source={moon.source} alt={moon.alt} width={moon.width} height={moon.height} /></Box>
+  /* a short wake moves to the next line whole rather than splitting "Nov 20" */
+  const line = (l: CardPart[], key: string) => {
+    const [name, wake] = l
+    if (!wake || wake.text.length > 28) return null
+    return (
+      <Box key={key} flexDirection="row" flexWrap="wrap">
+        <Box key={key + '-n'} flexShrink={1} minWidth={0}><Text wrap="wrap">{name.text}<Text dimColor>{','}</Text>{' '}</Text></Box>
+        <Box key={key + '-w'} flexShrink={0}><Text dimColor>{wake.text}</Text></Box>
+      </Box>
+    )
+  }
+  const facts: CardFact[] = rows.map((q: any) => ({ lead: moon, lines: [[{ text: q.name + (q.project ? ', in ' + q.project : '') }, { text: 'asleep ' + q.wake, tone: 'dim' }]] }))
+  const more = c.asleepMore ? [{ lead: moon, lines: [[{ text: 'and ' + c.asleepMore + ' more in the Questions tab', tone: 'dim' }]] }] : []
+  /* a long wake wraps on with the name */
+  const long = (l: CardPart[], key: string) => line(l, key) || (l.length > 1 ? <Box key={key}><Text wrap="wrap">{l[0].text}<Text dimColor>{', ' + l[1].text}</Text></Text></Box> : null)
+  return factGroup(els, [...facts, ...more], k + 'asleep-', 0, { lead, line: long })
 }
 
 /* the held track's and task's tooltip: the head (the icon, the bold name, the
@@ -262,11 +303,12 @@ function factCard(els: any, s: StatusSegment, svg: any, pressed: boolean): any[]
    (groups of one too), its chip header over rows of the marker, the bold id, the name and the age,
    no answer chips; the press line and the folder and branch last. Its room is the lifted popover's:
    at most 360 px and the window less 16 px, less its 16 px padding each side */
+const liftedRoom = (cols?: number): number => Math.max(8, Math.floor(Math.min(CARD_CELLS, Number(cols) > 0 ? (cols as number) - 2 : CARD_CELLS) - 4))
 function elsewhereCard(els: any, s: StatusSegment, svg: any, pressed: boolean, cols?: number): any[] {
   const { Box, Text, Svg } = els
   const c = s.card as NonNullable<StatusSegment['card']>
   const k = 'card-' + s.key + '-'
-  const room = Math.max(8, Math.floor(Math.min(CARD_CELLS, Number(cols) > 0 ? (cols as number) - 2 : CARD_CELLS) - 4))
+  const room = liftedRoom(cols)
   const [head] = factCard(els, { ...s, card: { ...c, groups: [], press: '' } }, svg, false)
   const row = (q: any) => {
     /* the 20 px marker is two cells and a half, the row model counts one */
@@ -289,6 +331,7 @@ function elsewhereCard(els: any, s: StatusSegment, svg: any, pressed: boolean, c
   ))
   return [head, ...groups, pressed && c.press ? <Text key={k + 'press'} dimColor wrap="wrap">{c.press}</Text> : null,
     c.where && c.where.length ? factGroup(els, c.where, k + 'where-', 0) : null,
+    asleepGroup(els, c, k),
     /* the head counts questions here, so the version closes the card */
     c.foot ? <Text key={k + 'foot'} dimColor wrap="wrap">{c.foot}</Text> : null]
 }
@@ -324,20 +367,33 @@ export function linkLine(els: any, l: CardPart[], key: string, desk: boolean, wh
     if (last && (last[0].href || '') === (p.href || '')) last.push(p)
     else runs.push([p])
   }
-  /* a run's own edge spaces are the gaps beside it, so a Box never starts or ends in one */
+  /* a run's own edge spaces are the gaps beside it, so a Box never starts or ends in one; on the desktop
+     the gap is one space in the font, ending the run before it (a cell there is 2.8 spaces wide) */
+  const spaced = (i: number) => i < runs.length - 1 && (/\s$/.test(text(runs[i])) || /^\s/.test(text(runs[i + 1])))
   return (
     <Box key={key} flexDirection="row" flexWrap="wrap">
       {runs.map((r, i) => {
         const k = key + '-r' + i
-        const gap = { ...(i < runs.length - 1 && /\s$/.test(text(r)) ? { marginRight: 1 } : {}), ...(i && /^\s/.test(text(r)) ? { marginLeft: 1 } : {}) }
+        const gap = desk ? {} : { ...(i < runs.length - 1 && /\s$/.test(text(r)) ? { marginRight: 1 } : {}), ...(i && /^\s/.test(text(r)) ? { marginLeft: 1 } : {}) }
         const parts = r.map((p, j) => {
           const t = j === r.length - 1 ? p.text.replace(/\s+$/, '') : p.text
           return { ...p, text: j === 0 ? t.replace(/^\s+/, '') : t }
         })
+        const space = desk && spaced(i)
         const href = r[0].href
-        if (!href) return <Box key={k} flexShrink={1} minWidth={0} {...gap}><Text wrap="wrap">{parts.map((p) => factPart(els, p))}</Text></Box>
+        if (!href) {
+          /* a run of spaces alone: the run before already ends in the one space */
+          if (desk && i && !text(parts)) return null
+          const shown = space ? parts.map((p, j) => (j === parts.length - 1 ? { ...p, text: p.text + ' ' } : p)) : parts
+          return <Box key={k} flexShrink={1} minWidth={0} {...gap}><Text wrap="wrap">{shown.map((p) => factPart(els, p))}</Text></Box>
+        }
         if (!desk) return <Box key={k} flexShrink={1} minWidth={0} {...gap}><Link href={href} label={text(parts)} /></Box>
-        return <Box key={k} flexShrink={1} minWidth={0} {...gap}>{pressFace(els, k + '-face', <Text wrap="wrap">{parts.map((p) => factPart(els, p))}</Text>, linkOver(els, k + '-link', cellWidth(text(parts)), href), { shrink: true })}</Box>
+        return (
+          <Box key={k} flexShrink={1} minWidth={0}>
+            {pressFace(els, k + '-face', <Text wrap="wrap">{parts.map((p) => factPart(els, p))}</Text>, linkOver(els, k + '-link', cellWidth(text(parts)), href), { shrink: true })}
+            {space ? <Text key={k + '-gap'}>{' '}</Text> : null}
+          </Box>
+        )
       })}
     </Box>
   )
@@ -380,17 +436,23 @@ export function factGroup(els: any, g: CardFact[], k: string, gi: number, o: Fac
   )
 }
 
-/* an agent as the card and Home draw it: the depth bar (desktop) and the job,
-   the model, running time, calls, tool in use and depth under it; a finished one dimmed */
-export function agentRow(els: any, r: CardRow, prefix: string, glyph?: string): any {
+/* an agent as the card and Home draw it: the depth bar (the desktop's picture, else a
+   glyph) and the job, the model, running time, calls, depth and tool in use under it; a finished
+   one dimmed. live: a running row's Client key, the whole row turning over in place */
+export function agentRow(els: any, r: CardRow, prefix: string, desk: boolean, live?: string): any {
   const { Box, Text, Svg } = els
-  const m = r.meter
-  const bar = m && Svg ? <Box key={prefix + 'bar-' + r.id} flexShrink={0}><Svg source={m.source} alt={m.alt} width={m.width} height={m.height} /></Box>
-    : glyph ? <Box key={prefix + 'bar-' + r.id} flexShrink={0}><Text {...(TONES[ROW_TONE[r.tone]] || {})}>{glyph}</Text></Box> : null
+  const p = agentLive(r, desk && !!Svg)
   /* an agent another agent started is indented under it */
   const under = Math.min(2, Number(r.under) || 0)
+  const pad = under ? { paddingLeft: 3 * under } : {}
+  const client = live ? liveClient(els, live, p, '100%') : null
+  /* as wide as its room, never as its words, which tick */
+  if (client) return <Box key={prefix + r.id} width="100%" minWidth={0} {...pad}>{client}</Box>
+  const b = p.bar
+  const bar = b && b.pic ? <Box key={prefix + 'bar-' + r.id} flexShrink={0}><Svg source={b.pic.source} alt={b.pic.alt} width={b.pic.width} height={b.pic.height} /></Box>
+    : b && b.glyph ? <Box key={prefix + 'bar-' + r.id} flexShrink={0}><Text {...b.ink}>{b.glyph}</Text></Box> : null
   return (
-    <Box key={prefix + r.id} flexDirection="row" columnGap={1} {...(under ? { paddingLeft: 3 * under } : {})}>
+    <Box key={prefix + r.id} flexDirection="row" columnGap={1} {...pad}>
       {bar}
       <Box key={prefix + 'body-' + r.id} flexDirection="column" flexShrink={1}>
         <Text {...(r.done ? { dimColor: true } : { weight: 'semibold' })} wrap="wrap">{r.job}</Text>
@@ -400,6 +462,66 @@ export function agentRow(els: any, r: CardRow, prefix: string, glyph?: string): 
   )
 }
 const ROW_TONE: Record<string, string> = { sky: 'bright', amber: 'warning', red: 'error', dim: 'dim' }
+
+/* An agent row's picture as plain data: what agentRow draws and what its Client is answered each second */
+export function agentLive(r: CardRow & { pct?: number; kind?: string; bare?: boolean; lines?: number }, desk: boolean): any {
+  /* a background task has no depth: on the desktop its kind's icon in the bar's place, so the names share a
+     column, or at its own width where that costs a name a word (bare, home.tsx bgRows) */
+  const bar = r.kind ? (desk ? { pic: kindPicture(r.kind, r.done, r.bare) } : null) : desk && r.meter ? { pic: r.meter } : desk ? null : { glyph: fillGlyph(Number(r.pct) || 0), ink: TONES[ROW_TONE[r.tone]] || {} }
+  /* rows: the lines the row's detail holds (home.tsx fitRow), its fixed height */
+  return { text: r.detail, wrap: 'wrap', job: r.job, bar, ...(Number(r.lines) > 0 ? { rows: Number(r.lines) } : {}) }
+}
+
+/* The live pieces' Client keys: Home's line beside the Agents heading and each running agent's row
+   there; each running agent's row in the status row's agents card, the agents' count beside their
+   icon and the card's count line */
+export const AGENTS_LINE = 'agents-line'
+export const AGENT_LINE = 'agent-line-'
+export const CARD_LINE = 'card-row-line-'
+export const AGENTS_COUNT = 'status-agents-count'
+export const CARD_COUNT = 'card-agents-count'
+
+/* A piece that changes while an agent runs: a Client where the surface has one, which asks the mod for
+   its props (index.ts answers its ui.message), so the pane or band is not drawn again for it; else null */
+export function liveClient(els: any, key: string, props: any, width?: string): any {
+  const { Client } = els
+  if (!Client) return null
+  /* k: its key, by which one ask of its drawing answers it (agentline.tsx) */
+  const p = { ...props, k: key }
+  return <Client key={key} {...(width ? { width } : {})} module="./agentline.tsx" props={p} />
+}
+
+/* the live pieces' last state sets by drawing, as their asks carry them (agentline.tsx: [cause, ms since the
+   piece's render, ms since its tick]), and what a fault row adds for a piece: its drawing's pieces and its last sets */
+export function liveSetsBook(): { keep: (e: any) => void; words: (e: any) => string } {
+  const book = new Map<string, { n: number; sets: Map<string, string> }>()
+  const site = (e: any) => e.surface + ' ' + e.component + ' ' + e.requestId
+  return {
+    keep(e: any): void {
+      const d = e.data
+      if (!d || !d.sets || typeof d.sets !== 'object') return
+      const kept = book.get(site(e)) || { n: 1, sets: new Map<string, string>() }
+      if (Array.isArray(d.keys)) kept.n = d.keys.length
+      for (const [k, r] of Object.entries(d.sets).slice(0, 200)) {
+        if (!Array.isArray(r)) continue
+        kept.sets.set(k.slice(0, 80), r.slice(-6).filter(Array.isArray).map((x: any) => String(x[0]).slice(0, 8) + ' ' + Math.round(Number(x[1]) || 0) + '/' + Math.round(Number(x[2]) || 0)).join(', '))
+      }
+      if (kept.sets.size > 200) kept.sets.delete(kept.sets.keys().next().value as string)
+      if (!book.has(site(e)) && book.size >= 20) book.delete(book.keys().next().value as string)
+      book.set(site(e), kept)
+    },
+    words(e: any): string {
+      const kept = book.get(site(e))
+      if (!kept) return ''
+      const r = kept.sets.get(String(e.element))
+      return '; ' + kept.n + ' pieces asked for' + (r ? ', its last sets (cause, ms since its render/its tick): ' + r : '')
+    },
+  }
+}
+
+/* The agents' count beside their icon, in its tone's color; the card's count line */
+export const countLive = (s: StatusSegment): any => ({ parts: [String(s.pic && s.pic.label || '')], color: s.pic && s.pic.labelTone ? INK[s.pic.labelTone] : undefined, tabular: true })
+export const partsLive = (s: StatusSegment): any => ({ parts: ((s.card && s.card.parts) || []).map((p) => (p.tone && INK[p.tone] ? { text: p.text, color: INK[p.tone] } : { text: p.text })), wrap: 'wrap' })
 
 /* the row's fixed shrink order. The gaps tighten 3, 2, 1; the task's
    name is cut with an ellipsis, its id and "+N" kept; the track's name is cut, then drawn as its icon
@@ -432,6 +554,12 @@ function cellsOf(s: StatusSegment, desk: boolean): number {
   const label = s.pic.label as string | undefined
   return Math.ceil(statusPicture(s.pic, label ? PIC_GAP : 0).width / 8) + (label ? cellWidth(label) : 0)
 }
+/* a label's body kept to `keep` letters, back to its last whole word unless that leaves under `min` */
+function wordCut(b: string[], keep: number, min: number): string {
+  const s = b.slice(0, keep).join('')
+  const at = b[keep] === ' ' ? s.length : s.lastIndexOf(' ')
+  return (at >= min ? s.slice(0, at) : s).trimEnd().replace(/[,;:(]$/, '')
+}
 const labelOf = (s: StatusSegment, desk: boolean): string => String(desk && s.pic ? s.pic.label || '' : s.text)
 function shrinkPlan(segs: StatusSegment[], budget: number | undefined, desk: boolean, extra: number, wraps = false): Plan {
   const over = new Map<string, string | null>()
@@ -448,7 +576,7 @@ function shrinkPlan(segs: StatusSegment[], budget: number | undefined, desk: boo
     const b = [...body]
     over.delete(key)
     const keep = Math.max(min, b.length - (width(1) - room) - 1)
-    if (keep < b.length) over.set(key, head + b.slice(0, keep).join('').trimEnd() + ELLIPSIS + tail)
+    if (keep < b.length) over.set(key, head + wordCut(b, keep, min) + ELLIPSIS + tail)
     return width(1) <= room
   }
   /* counted whole, a long task name would hide every label, so it gives way first, then the
@@ -488,6 +616,12 @@ function shrinkPlan(segs: StatusSegment[], budget: number | undefined, desk: boo
    itself (a negative left offset), over what is drawn before it; a one-row site
    clips what paints outside it. */
 export function statusTree(els: any, m: any, hint: any, opts: StatusOpts = {}): any {
+  return statusFrame(els, statusRow(els, m, opts), hint, opts)
+}
+/* the row's segments, the dear part, kept by the mod per model; the frame takes the app's hint */
+/* card: the agents card's width in cells, which its running rows are fitted to (0 with none) */
+export type StatusRow = { drawn: any[]; keys: string[]; gap: number; width: number; opener: any; card: number }
+export function statusRow(els: any, m: any, opts: StatusOpts = {}): StatusRow {
   const { Box, Text, Button, Link } = els
   const desk = opts.surface === 'desktop'
   /* an empty shelf is the desktop's gray 0; the mark opens the desktop's row; the terminal draws neither */
@@ -502,6 +636,7 @@ export function statusTree(els: any, m: any, hint: any, opts: StatusOpts = {}): 
   const { gap, over, gone } = shrinkPlan(all, cols, desk, opener ? cellWidth(OPENER) : 0, !!opts.wrap)
   const segs = all.filter((s) => !gone.has(s.key)).map((s) => formOf(s, over, desk))
   let fromRight = opener ? cellWidth(OPENER) + gap : 0
+  let agentsCard = 0
   for (let i = segs.length - 1; i >= 0; i--) {
     const s = segs[i]
     const pic = desk && s.pic ? pictureFace(els, s, opts) : null
@@ -511,9 +646,17 @@ export function statusTree(els: any, m: any, hint: any, opts: StatusOpts = {}): 
     const room = cols === undefined ? tip.length : Math.max(1, cols - fromRight - w - 1)
     /* a tooltip of grouped facts is as wide as the app's popover, not its flat line */
     const facts = !!(pic && s.card && (s.card.groups || s.card.questions || (s.card.where && s.card.where.length)))
-    const width = Math.min(facts ? CARD_CELLS : tip.length, room)
+    /* so is the agents card, whose rows turn over each second: its width never follows their words */
+    const rows = !!(pic && s.card && s.card.rows && s.card.rows.length)
+    const width = Math.min(facts || rows ? CARD_CELLS : tip.length, room)
     const face = <Text tabular {...(TONES[s.tone] || {})}>{s.text}</Text>
-    const body = pic && s.card ? deskCard(els, s, pic.head(), !!on || !!s.href, cols) : [<Text color={card.text} wrap={desk ? 'wrap' : 'truncate-end'}>{tip}</Text>]
+    /* the band lifts the card, which drops its width for max-content up to 360 px, so its rows fit
+       the lifted room, never the room left of the segment */
+    const fitW = desk ? liftedRoom(cols) : width
+    if (rows) agentsCard = fitW
+    /* a running row holds the rows the card's width gives it, as Home's (home.tsx fitRow); a finished one too */
+    const fit = rows && opts.fit ? (r: CardRow) => opts.fit!(r, fitW) : undefined
+    const body = pic && s.card ? deskCard(els, s, pic.head(), !!on || !!s.href, cols, fit) : [<Text color={card.text} wrap={desk ? 'wrap' : 'truncate-end'}>{tip}</Text>]
     drawn.unshift(
       <Box key={'status-' + s.key} flexShrink={0}>
         {pic ? pic.face : on ? <Button key={on.key} plain onPress={on.act}>{face}</Button> : s.href ? <Link key={linkKey(s)} href={s.href}>{face}</Link> : face}
@@ -527,17 +670,24 @@ export function statusTree(els: any, m: any, hint: any, opts: StatusOpts = {}): 
     )
     fromRight += w + gap
   }
+  return { drawn, keys: segs.map((s) => s.key), gap, width: fromRight - gap, opener, card: agentsCard }
+}
+export function statusFrame(els: any, row: StatusRow, hint: any, opts: StatusOpts = {}): any {
+  const { Box } = els
+  const { drawn, gap, opener } = row
+  const desk = opts.surface === 'desktop'
+  const cols = Number.isFinite(opts.columns) ? (opts.columns as number) : undefined
   /* the pane's copy wraps at the pane's width, half a line apart on the desktop, one group;
      it splits as the band does when the row's cells fit the columns */
-  const fits = cols !== undefined && fromRight - gap <= cols
+  const fits = cols !== undefined && row.width <= cols
   if (opts.wrap && !fits) {
     const line = <Box key="status-line" flexDirection="row" columnGap={gap} flexShrink={1} flexWrap="wrap" {...(desk ? { rowGap: 1 } : {})}>{drawn}</Box>
     return <Box key="askerdo-status" flexDirection="row" justifyContent="space-between" columnGap={gap}>{line}{opener}</Box>
   }
   /* the band's row is two groups pushed apart, the gap growing with the bar */
   if (opts.wrap || (desk && hint === null)) {
-    const left = drawn.filter((_, i) => LEFT.has(segs[i].key))
-    const right = drawn.filter((_, i) => !LEFT.has(segs[i].key))
+    const left = drawn.filter((_, i) => LEFT.has(row.keys[i]))
+    const right = drawn.filter((_, i) => !LEFT.has(row.keys[i]))
     return (
       <Box key="askerdo-status" flexDirection="row" justifyContent="space-between" columnGap={gap}>
         <Box key="askerdo-status-left" flexDirection="row" columnGap={gap} flexShrink={0}>{left}</Box>

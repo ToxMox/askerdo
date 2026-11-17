@@ -5,7 +5,7 @@ import { tempDir } from './helpers/sandbox.mjs';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { callOf, checkCards, checkKnowledge, checkRules, checkShape, doctor, reconcile, scopeHit } from '../skills/doctor/checks.mjs';
+import { callOf, checkCards, checkKnowledge, checkRules, checkShape, checkTasks, doctor, reconcile, scopeHit } from '../skills/doctor/checks.mjs';
 import { buildPlan } from '../skills/onboard/plan.mjs';
 import { undoArgs } from '../skills/onboard/apply.mjs';
 
@@ -50,6 +50,33 @@ test('a rule line citing a file the repo lacks and a task on no track become che
   const fix = plan.steps.find((s) => s.fix);
   assert.ok(fix.n > plan.steps.find((s) => s.op === 'knowledge new').n);
   assert.deepEqual(undoArgs(fix, fix.target, 'import:ops'), ['task', 'edit', 'OPS-12', '--unplaced', 'undo of the doctor', '--wake', '@{wake}']);
+
+  /* one row per kind of old-shape task, each with its fix (an unconfirmed run is told, never fixed);
+     a recent unconfirmed run is no row, and none reads as a shape row */
+  const doneSaid = 'Done when the upload ships to every user on the list.';
+  const tk = (id, more = {}) => ({ id, name: id, status: 'open', word: { is: 'ready' }, created: '2026-01-01', wake: { date: '2099-01-01' }, ...more });
+  const blk = (id, more = {}) => [id, { id, status: 'open', labels: [], steps: [], notes: [], description: doneSaid, track: null, ...more }];
+  const tdoc = { ...doc, board: { ...doc.board, tasks: [tk('T-1'), tk('T-2', { close: { kind: 'look' }, landed: '2026-11-10T10:00' }), tk('T-3', { close: { kind: 'when', fact: 'the docs build' } }),
+    tk('T-4'), tk('T-5', { word: { is: 'unconfirmed', since: '2026-11-12T10:00:00Z', session: 's1' } }), tk('T-6', { created: null, wake: null }),
+    tk('T-7', { word: { is: 'unconfirmed', since: '2026-11-14T11:00:00Z', session: 's2' } }), tk('T-8'), tk('T-9'), tk('T-10')] } };
+  const textra = { now: Date.parse('2026-11-14T12:00:00Z'), who: 'Sam', inbox: [{ id: 'T-6' }], parked: new Map([['T-4', 'blocked']]), blocks: new Map([
+    blk('T-1', { steps: [{ n: 1, text: 'write the parser' }, { n: 2, text: 'Sam looks at the band' }, { n: 3, text: 'check the band in the next session' }], track: { id: 'TR-4', name: 'Band' } }), blk('T-2'), blk('T-3'), blk('T-4', { notes: [{ body: 'on the vendor' }] }),
+    blk('T-5'), blk('T-6'), blk('T-7'), blk('T-8', { description: 'Write the parser.' }),
+    /* a moved step's short form carries its done clause, so T-9 gets no rewrite row */
+    blk('T-9', { description: 'Step 3 of T-1: check the band in the next session' }),
+    /* the why note of the doctor's own rewrite shares its stamp, so the next run asks no rewrite */
+    blk('T-10', { rewrittenAt: '2026-11-14T10:00:00Z', notes: [{ at: '2026-11-14T10:00:00Z', body: 'The doctor moved its when close into its done clause, so the fact reads in the description.' }] })]) };
+  const shaped = checkTasks(tdoc, textra);
+  assert.deepEqual(shaped.map((r) => [r.id.split(':').slice(2).join(':'), r.fields.info ? 'info' : r.fields.fix.op]), [['T-1:steps', 'task update'], ['T-2:look', 'task edit'],
+    ['T-3:when', 'task update'], ['T-3:when-close', 'task edit'], ['T-4:waits', 'edge add'], ['T-5:unconfirmed', 'info'], ['T-8:rewrite', 'task update'], ['T-6:nowake', 'task edit']]);
+  assert.deepEqual(shaped[0].fields.steps.map((s) => s.n), [2, 3]);
+  /* a later session's check moves with the next-session wake onto its track */
+  assert.deepEqual(shaped[0].fields.moves.map((m) => [m.check, m.track, m.wake]), [[3, 'TR-4', 'next-session']]);
+  /* from a session holding that track the ladder takes it at tier 2 */
+  assert.equal(checkTasks(tdoc, { ...textra, held: 'TR-4' })[0].fields.moves[0].tier, 2);
+  assert.ok(!checkShape(tdoc, { inbox: [] }).some((r) => /T-5/.test(r.id)));
+  const look = shaped[1].fields.fix;
+  assert.deepEqual(undoArgs({ fix: true, op: look.op, args: look.args, target: look.target }), ['task', 'edit', 'T-2', '--remove-label', 'look']);
 
   /* from lines as the import writes them: a source still in the repo is no finding, a gone one is named whole,
      and one an earlier amend placed is not found again */

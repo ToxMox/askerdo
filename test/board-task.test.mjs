@@ -3,7 +3,7 @@
  * no child_process and no environment read. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   TASK_DESCRIPTION, TASK_NAME, actionMatches, formatArgs, parseAction, parseArgs,
@@ -14,6 +14,7 @@ import { hostStart, hostedHere, prepareHost } from '../lib/board-host.mjs';
 import { dailyBackup, moveCopy } from '../lib/board-backup.mjs';
 import { tempDir } from './helpers/sandbox.mjs';
 import { TRAY_EXE, trayExePath } from '../lib/tray.mjs';
+import { registeringNode } from '../lib/board-ensure.mjs';
 
 const SID = 'S-1-5-21-1111111111-2222222222-3333333333-1001';
 const EXE = 'C:\\cache\\askerdo\\assets\\askerdo-tray.exe';
@@ -175,6 +176,18 @@ test('wantedAction points at the released checkout', () => {
   /* and the action is the exe, so a task from an older release names an exe
      under an older cache directory and reads as stale by the path alone */
   assert.ok(w.command.endsWith(join('assets', TRAY_EXE)));
+
+  /* the registering node.exe rides by its full path, a spaced one round trips,
+     and a node that moved since reads as stale, so the next ensure refreshes it */
+  const NODE = 'C:\\Program Files\\nodejs\\node.exe';
+  const saved = wantedAction(ROOT, NODE);
+  assert.deepEqual(saved.args.slice(-2), ['--node', NODE]);
+  assert.deepEqual(parseAction(taskXml({ sid: SID, command: saved.command, args: saved.args })), saved);
+  assert.equal(actionMatches(wantedAction(ROOT, 'C:\\nvm\\v24\\node.exe'), saved), false);
+  /* only a real node.exe is saved: this one, never another exe or a missing file */
+  assert.equal(registeringNode(), process.platform === 'win32' ? realpathSync.native(process.execPath) : null);
+  assert.equal(registeringNode(trayExePath()), null);
+  assert.equal(registeringNode(join(tempDir('askerdo-store-'), 'node.exe')), null);
 });
 
 /* a moved store root needs no change to the module, and this is the proof: the new

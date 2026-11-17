@@ -1,24 +1,24 @@
 /* The board picture: the proposal files onto a
    board in one transaction, refused whole with nothing written. A dry run rolls back; a rerun
    of corrected files writes only what changed, undoing the picture's own earlier writes. */
-import { afterTask } from './coverage.mjs';
 import { tx } from '../db.mjs';
 import { actorOf, addDays, addNote, guardHeadings, isKey, labelOf } from '../records.mjs';
 import { WAKE_DAYS } from '../handoff-text.mjs';
 import {
-  ENDED_TASK, TASK_KEYS, TrackRefusal, bumpVersion, headOf, loadRecord, logLine, pathBetween, sideOf, writeFront,
+  ENDED_TASK, TASK_KEYS, TrackRefusal, bumpVersion, headOf, loadRecord, logLine, pathBetween, writeFront,
 } from './graph.mjs';
 import { lineName as named, resolveRecord } from './labels.mjs';
-import { wakeLinked } from './questions.mjs';
 import { TIE, TRACK_KEYS, dropTrack, finishTrack, holderPlain, junctionWants, makeTrack, putOnTrack, setStatus, splinter, tieToJunction } from './tracks.mjs';
 import { closeRecord, createRecord, reopenRecord } from './work.mjs';
 import { wakeWords, whenText } from './upkeep.mjs';
+import { endTask, openSteps, runsHolding, stepsRefusal } from './ending.mjs';
+import { heldWords, workersOf } from './runs.mjs';
 
 const IMPORTED = 'from import';
 /* every write's note, and the reason of every link the picture draws, so a rerun knows its own */
 const CAUSE = 'board picture: ';
 const ours = (s) => String(s || '').startsWith(CAUSE);
-const WANT = { open: 'open', done: 'completed', drop: 'dropped' };
+const WANT = { open: 'open', done: 'done', drop: 'dropped' };
 const OPEN_TRACK = ['open', 'parked'];
 const STEP = /^(P-\d+) (s\d+)$/;
 const LABEL = /^[A-Z]+-\d+$/;
@@ -265,13 +265,15 @@ function readPicture(db, files) {
   const madeBy = (kind) => db.stmt(`SELECT key FROM records WHERE kind = ? AND json_extract(fields, '$.pictureFile') IN (SELECT value FROM json_each(?))`)
     .all(kind, fileNames).map((r) => loadRecord(db, r.key));
   const orphans = madeBy('track').filter((r) => OPEN_TRACK.includes(r.fields.status) && !found.has(r.key));
-  const retired = madeBy('task').filter((r) => !declared.has(r.fields.pictureKey) && r.fields.status === 'open' && !r.fields.inHand && !r.fields.agent);
+  const madeTasks = madeBy('task');
+  const who = workersOf(db, madeTasks.map((r) => r.key));
+  const retired = madeTasks.filter((r) => !declared.has(r.fields.pictureKey) && r.fields.status === 'open' && !who.get(r.key).inHand && !who.get(r.key).agent);
   const gone = new Set(retired.map((r) => r.key));
 
   /* what the files leave behind on a line */
   const placed = new Set(allPlaced);
   const leftOn = (key) => db.stmt(`SELECT r.key, r.label FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ?
-    AND coalesce(r.status, '') NOT IN ('completed', 'dropped') ORDER BY ti.position`).all(key).filter((r) => !tasks.has(r.key) && !placed.has(r.key) && !gone.has(r.key));
+    AND coalesce(r.status, '') NOT IN ('done', 'dropped') ORDER BY ti.position`).all(key).filter((r) => !tasks.has(r.key) && !placed.has(r.key) && !gone.has(r.key));
   const them = (left) => (left.length > 1 ? 'them' : 'it');
   for (const r of orphans) {
     const left = leftOn(r.key);
@@ -382,8 +384,9 @@ function verdictOf(db, f, v, problems) {
 /* ---- the writes ------------------------------------------------------------ */
 
 function heldBy(db, rec) {
-  if (rec.fields.inHand) return 'in hand with a session';
-  if (rec.fields.agent) return 'run by ' + rec.fields.agent;
+  const w = workersOf(db, [rec.key]).get(rec.key);
+  if (w.inHand) return 'in hand with a session';
+  if (w.agent) return 'run by ' + w.agent;
   const l = db.stmt('SELECT l.pc FROM track_items ti JOIN leases l ON l.track = ti.track WHERE ti.task = ?').get(rec.key);
   return l ? 'on a track a session' + (l.pc ? ' on ' + l.pc : '') + ' holds' : null;
 }
@@ -413,17 +416,16 @@ function writePicture(db, pic, actor) {
     const report = (why) => reports.push({ workstream: ws(wsOf(t, rec)), line: lineName(t), text: id + ' ' + why });
     const mine = (byPicture(db, rec.key, 'status') || [])[1] === st;
     if (!mine && ENDED_TASK.includes(st)) { report('is ' + st + ' and the file says ' + t.verdict + ': left ' + st); continue; }
-    if (!mine && want === 'open' && st !== 'in_progress') { report('is ' + st + ' and the file says open: left ' + st); continue; }
     const held = heldBy(db, rec);
     if (held) { report('is ' + held + ': left ' + st + ' (the file says ' + t.verdict + ')'); continue; }
-    if (sideOf(db, rec.key, ['open', 'parked', 'done'])) { report('is promoted, so its status follows its side track: left ' + st); continue; }
-    const change = want === 'open' ? { status: want, updated: c.at, closed: undefined }
-      : { status: want, updated: c.at, closed: c.at, inHand: undefined, inHandSince: undefined };
-    const diff = writeFront(db, rec, change, TASK_KEYS);
-    logLine(db, { at: c.at, verb: want === 'dropped' ? 'drop' : 'edit', kind: 'task', rec: headOf(rec), changes: diff, by: c.by, pc: c.pc, note: CAUSE + (t.evidence || t.verdict) });
+    /* the one close refuses an open step; the picture cannot throw into its own write, so it says so */
+    const open = want === 'open' ? [] : openSteps(db, rec.key);
+    if (open.length) { report('has open steps, so it is left ' + st + ' (the file says ' + t.verdict + '): ' + stepsRefusal(id, open).message); continue; }
+    if (want === 'open') {
+      const diff = writeFront(db, rec, { status: want, updated: c.at, closed: undefined }, TASK_KEYS);
+      logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(rec), changes: diff, by: c.by, pc: c.pc, note: CAUSE + (t.evidence || t.verdict) });
+    } else endTask(db, rec, want, c, { changes: { updated: c.at }, note: CAUSE + (t.evidence || t.verdict), actor: { by: c.by, pc: c.pc, now: c.date } });
     if (t.evidence) addNote(db, rec.key, { at: c.at, actor: c.by, body: guardHeadings('Board picture, ' + t.verdict + ': ' + t.evidence) });
-    if (want === 'completed') afterTask(db, rec.key, { completed: true }, { by: c.by, pc: c.pc, now: c.date });
-    if (want !== 'open') wakeLinked(db, { ...rec.fields, key: rec.key }, want, c);
     add(want === 'open' ? 'reopen' : t.verdict, wsOf(t, rec), lineName(t), id + (want === 'open' ? ' back to open from ' + st : ' ' + want));
   }
 
@@ -498,10 +500,12 @@ function writePicture(db, pic, actor) {
     keys.set('new:' + p.pkey, key);
   }
   for (const rec of pic.retired) {
-    const diff = writeFront(db, rec, { status: 'dropped', updated: c.at, closed: c.at }, TASK_KEYS);
     const why = 'no longer proposed in ' + rec.fields.pictureFile;
-    logLine(db, { at: c.at, verb: 'drop', kind: 'task', rec: headOf(rec), changes: diff, by: c.by, pc: c.pc, note: CAUSE + why });
-    wakeLinked(db, { ...rec.fields, key: rec.key }, 'dropped', c);
+    const open = openSteps(db, rec.key);
+    if (open.length) { reports.push({ workstream: ws(rec.fields.workstream), line: homeOf(rec.key), text: rec.fields.id + ' is ' + why + ' but has open steps, so it stays: ' + stepsRefusal(rec.fields.id, open).message }); continue; }
+    const held = runsHolding(db, rec.key, c.session);
+    if (held.length) { reports.push({ workstream: ws(rec.fields.workstream), line: homeOf(rec.key), text: rec.fields.id + ' is ' + why + ' but stays: ' + heldWords(rec.fields.id, held, c) }); continue; }
+    endTask(db, rec, 'dropped', c, { changes: { updated: c.at }, note: CAUSE + why });
     add('drop', rec.fields.workstream, homeOf(rec.key), rec.fields.id + ' dropped: ' + why + ' (' + rec.fields.pictureKey + ')');
   }
 
@@ -623,17 +627,13 @@ function writePicture(db, pic, actor) {
     add('link', ...where, rec.fields.id + ' waits on ' + labelOf(db, on) + ': ' + e.why);
   }
 
-  /* a side line the files branch somewhere else moves its junction (a promoted one keeps its task) */
+  /* a side line the files branch somewhere else moves its junction */
   for (const l of order) {
     if (l.kind !== 'side' || !l.found) continue;
     const was = atOf(db, l.key);
     const want = l.junctionKey || null;
     if (was === want) continue;
     const rec = loadRecord(db, l.key);
-    if (rec.fields.origin === 'promote') {
-      reports.push({ workstream: ws(l.wsKey), line: l.name, text: named(db, l.key) + ' is promoted from ' + label(db, was) + ': its junction left' });
-      continue;
-    }
     if (was) db.stmt(`DELETE FROM links WHERE "from" = ? AND "to" = ? AND type = 'junction'`).run(l.key, was);
     if (want) db.stmt(`INSERT OR IGNORE INTO links ("from", "to", type, added) VALUES (?, ?, 'junction', ?)`).run(l.key, want, c.at);
     bumpVersion(db, l.key);

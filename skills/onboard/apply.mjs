@@ -99,7 +99,7 @@ const runsIt = (command, path, file) => new RegExp('(?<![\\w.-])' + esc(folderKe
 /* the record each verb makes, and the call that takes it back (null: no verb can) */
 const KIND = {
   'ws create': 'workstream', 'task create': 'task', 'track new': 'track', 'handoff write': 'handoff', 'track finish': 'track state', 'track park': 'track state',
-  'track layout': 'track order', 'edge add': 'task order', 'task edit': 'run-by', 'question edit': 'question scope',
+  'track layout': 'track order', 'edge add': 'task order', 'task update': 'task steps', 'task edit': 'run-by', 'question edit': 'question scope',
   decide: 'decision', 'knowledge new': 'knowledge', register: 'question', 'profile rule-add': 'rule line', 'profile add': 'profile hold', 'proc scan': 'procedure cards',
   'profile rule-clear': 'rule clear', 'profile define': 'profile setting',
 };
@@ -107,9 +107,16 @@ const KIND = {
    which the undo reads as a record that stays */
 const FIX_KIND = {
   'profile rule-add': 'rule line', 'profile rule-clear': 'rule clear', 'knowledge amend': 'knowledge amend', 'knowledge edit': 'knowledge ref',
-  'knowledge supersede': 'knowledge supersede', 'task update': 'task status', 'task edit': 'task place', 'track park': 'park condition',
+  'knowledge supersede': 'knowledge supersede', 'track park': 'park condition', 'edge add': 'task edge', 'question edit': 'question gate',
 };
-export const kindOf = (s) => (s.fix ? (s.op === 'task edit' && (s.args || []).includes('--add-ref') ? 'task ref' : FIX_KIND[s.op] || s.op) : KIND[s.op] || s.op);
+/* a task fix is named by what it changes */
+const taskFixKind = (s) => {
+  const a = s.args || [];
+  if (s.op === 'task update') return a.includes('--move-steps') ? 'task steps' : a.includes('--description') ? 'task text' : 'task note';
+  return a.includes('--add-ref') ? 'task ref' : a.includes('--add-label') ? 'task label' : a.includes('--clear-close') ? 'task close'
+    : a.includes('--wake') && !a.includes('--track') ? 'task wake' : 'task place';
+};
+export const kindOf = (s) => (s.fix ? (s.op === 'task update' || s.op === 'task edit' ? taskFixKind(s) : FIX_KIND[s.op] || s.op) : KIND[s.op] || s.op);
 /* A scratch board lacks the real board's tracks and tasks: a rehearsal leaves their ids out of a step,
    flag and value together, and skips a step that names one in place or has nothing left to set. */
 const REAL_ID = /^(?:TR|T)-\d+$/;
@@ -137,6 +144,9 @@ export function scratchStep(s, standIns = new Map()) {
       return y;
     }) };
   }
+  /* a tier goes with the place it names: a dropped track takes its tier with it */
+  const ti = args.indexOf('--tier');
+  if (s.op === 'task edit' && ti >= 0 && !args.some((a) => ['--track', '--unplaced', '--wake'].includes(a))) args.splice(ti, 2);
   if (s.op === 'question edit' && dropped.length && !args.some((a) => a === '--track' || a === '--add-gate')) skip = true;
   /* a task edit left with nothing to set would come back unchanged and prove nothing */
   if (s.op === 'task edit' && dropped.length && !args.some((a) => /^--/.test(a) && a !== '--session')) skip = true;
@@ -156,16 +166,30 @@ function undoFix(step) {
     case 'task edit':
     case 'knowledge edit': {
       const back = [];
-      for (const [add, rm] of [['--add-ref', '--remove-ref'], ['--add-project', '--remove-project']]) if (flag(add) !== undefined) back.push(rm, flag(add));
+      for (const [add, rm] of [['--add-ref', '--remove-ref'], ['--add-project', '--remove-project'], ['--add-label', '--remove-label']]) if (flag(add) !== undefined) back.push(rm, flag(add));
       /* the track took the task into its workstream: back unplaced in the one it left */
       if (flag('--track') !== undefined) back.push(...(was.track ? ['--track', was.track] : ['--unplaced', was.unplaced || 'undo of the doctor', '--wake', '@{' + WAKE_REF + '}', ...(was.workstream ? ['--workstream', was.workstream] : [])]));
       return back.length ? [a[0], 'edit', a[2], ...back] : null;
     }
-    /* task update takes a reason, which a task waiting on open ones needs to start again */
-    case 'task update': return flag('--status') && was.status ? ['task', 'update', a[2], '--status', was.status, '--reason', 'undo of the doctor'] : null;
+    case 'edge add': return ['edge', 'remove', a[2], a[3], '--reason', 'undo of the doctor'];
+    case 'question edit': return flag('--add-gate') !== undefined ? ['question', 'edit', a[2], '--remove-gate', flag('--add-gate')] : null;
+    /* a move of steps, a description amend and a cleared close stand: no verb takes them back */
     /* a park again keeps the condition it had (checked on a scratch board), so no verb takes one back */
     default: return null;
   }
+}
+
+/* a task edit that moves a task names its tier: onto a track 3, into an inbox 4 (a doctor's fix and an undo name none) */
+export const withTier = (args) => (args[0] !== 'task' || args[1] !== 'edit' || args.includes('--tier') ? args
+  : args.includes('--track') ? [...args, '--tier', '3'] : args.includes('--unplaced') || args.includes('--wake') ? [...args, '--tier', '4'] : args);
+/* the plan the user approved files whole, as the board picture does, so each filing step carries the user's
+   mark (--user, the session the go was given in) and the board asks nothing of a session holding a track */
+const FILES = (a) => (a[0] === 'task' && (a[1] === 'create' || (a[1] === 'edit' && a.includes('--tier')))) || (a[0] === 'track' && (a[1] === 'capture' || a[1] === 'layout'));
+export function asApproved(args, goSession) {
+  if (!Array.isArray(args) || !FILES(args) || args.includes('--user')) return args;
+  const si = args.indexOf('--session');
+  const user = goSession || (si >= 0 ? args[si + 1] : null);
+  return user ? [...args, '--user', user] : args;
 }
 
 export function undoArgs(step, id, label) {
@@ -192,7 +216,8 @@ const idOf = (step, out) => {
   if (step.op === 'profile add') return step.args[3] + ' on ' + step.args[2];
   if (step.op === 'profile rule-clear') return step.args[2] + '/' + step.args[3] + ' cleared';
   if (step.op === 'profile define') return step.args[2] + ' ' + step.args[4];
-  if (['proc scan', 'track finish', 'track park', 'track layout', 'edge add', 'task edit', 'question edit'].includes(step.op)) return 'ok';
+  /* a task's steps go with its create's undo, which drops the task */
+  if (['proc scan', 'track finish', 'track park', 'track layout', 'edge add', 'task edit', 'question edit', 'task update'].includes(step.op)) return 'ok';
   return out && typeof out.id === 'string' ? out.id : null;
 };
 
@@ -444,7 +469,7 @@ export async function applyPlan(work, { board, cli = DEFAULT_CLI, log = console.
     const missing = [...JSON.stringify([s.args, s.stdin, s.body]).matchAll(REF)].map((m) => m[1]).filter((id) => !known.has(id));
     /* stand-ins swap before the refs resolve: a scratch id the run makes may equal a real id a stand-in holds */
     const sub = (v) => JSON.parse(JSON.stringify(swap(v) ?? null).replace(REF, (_, id) => known.get(id) || '<the id step ' + (plan.steps.find((x) => x.id === id) || {}).n + ' makes>'));
-    const args = sub(step.args);
+    const args = asApproved(withTier(sub(step.args)), plan.go && plan.go.session);
     if (t && missing.length) {
       skipped.push(tag + ': skipped, it needs ' + missing.map((id) => 'step ' + (plan.steps.find((x) => x.id === id) || {}).n).join(', ') + ', which did not land');
       continue;
@@ -559,7 +584,7 @@ export function folderGate(f, { cov = null, tracked = new Set(), untracked = [],
   if (end === 'move' && !f.to) return stay('a move with no folder to go to');
   const gone = (r) => [...going].some((g) => under(r, g)) || (tracked.size > 0 && !tracked.has(r) && !untracked.includes(r));
   const readers = readersLeft(ev.codeReaders, gone);
-  if (readers.length) return stay('code reads it: ' + readers.join(', '));
+  if (readers.length) return stay('read by ' + readers.join(', '));
   const blocked = cov ? cov.sources.filter((s) => s.blocked && under(s.file, path)) : [];
   if (blocked.length) return stay(blocked.reduce((n, s) => n + s.gaps.length, 0) + ' coverage gaps in ' + blocked.map((s) => s.file).join(', '));
   const dirty = [...changed].filter((x) => under(x, path));
@@ -727,7 +752,7 @@ export function rehearsalReport(work, { plan, manifest, cov, records = new Map()
   out.push('');
   if (timing) out.push('The write: ' + timing.steps + ' calls in ' + (timing.ms / 1000).toFixed(1) + ' s, ' + timing.perSecond + ' a second, in one process.', '');
   out.push('An undo cannot take back the ' + plan.steps.filter((s) => s.op === 'knowledge new').length + ' knowledge records this write makes (no verb removes one), and its '
-    + plan.steps.filter((s) => s.op === 'decide').length + ' decisions leave only by a withdraw the user allows, one each.', '');
+    + plan.steps.filter((s) => s.op === 'decide').length + ' decisions leave only by a withdraw request the user presses Withdraw on, one each.', '');
   out.push('## Rule lines', '');
   const rules = items.filter((x) => x.kind === 'rule');
   for (const r of rules) {
@@ -1369,7 +1394,7 @@ export async function handover(work, { board = 'live', cli = DEFAULT_CLI, file =
       /* Codex reads the converted AGENTS.md and the rules the write made at once, not at the next session start */
       if (!stopped && !copy && mine('AGENTS.md')) {
         try { override = await refreshAgentsOverride(dir, { env }); } catch (e) { override = { did: 'failed', why: oneLine(e && e.message) }; }
-        if (override.did === 'wrote') log((override.created ? 'created ' : 'rewrote ') + override.path + ' for Codex: AGENTS.md\'s text, the rules for agents and the decisions on its files and commands' + (override.left ? ', ' + override.left + ' lines left out for its 32 KiB limit' : ''));
+        if (override.did === 'wrote') log((override.created ? 'created ' : 'rewrote ') + override.path + ' for Codex: AGENTS.md\'s text, the rules for agents, the procedure cards and the decisions on its files and commands' + (override.left ? ', with ' + override.leftBy + ' in ' + override.rest + ' for its size limit' : ''));
         else if (override.did === 'left' || override.did === 'failed') skipped.push({ path: 'AGENTS.override.md', why: override.did === 'left' ? 'AskerDo did not write it, so it stays as it is' : 'the rules read failed: ' + override.why });
       }
     } else if (batch === 'repoint') {
@@ -1723,7 +1748,7 @@ export async function undoImport(work, { board, cli = DEFAULT_CLI, all = false, 
       ask.push(s);
     });
     if (ask.length) {
-      /* a decision leaves only on the user's Allow, so a filed request leaves the import open; asked again, the
+      /* a decision leaves only on the user's Withdraw, so a filed request leaves the import open; asked again, the
          board refuses while it waits (naming it) or once the user kept them, and files an expired one anew */
       const before = [...new Set(ask.map((s) => s.withdrawRequest).filter(Boolean))];
       const r = await run(['override', 'request', '--session', session], { stdin: JSON.stringify(withdrawInput(ask.map((s) => s.id), manifest.label)), env });
@@ -1749,7 +1774,7 @@ export async function undoImport(work, { board, cli = DEFAULT_CLI, all = false, 
       const amended = s.fix && imp.steps.some((x) => x.step === s.step + '@amend' && x.fix && !x.undo);
       if (s.fix && (!s.undo || amended)) { stays.push(s.kind + ' ' + s.id); continue; }
       /* an undo back to the inbox wakes 14 days from the undo */
-      const args = s.undo && [...s.undo.map((a) => (a === '@{' + WAKE_REF + '}' ? wakeIn() : a)), ...(session ? ['--session', session] : [])];
+      const args = s.undo && asApproved(withTier([...s.undo.map((a) => (a === '@{' + WAKE_REF + '}' ? wakeIn() : a)), ...(session ? ['--session', session] : [])]), session);
       if (!args) continue;
       if (dry) { log('  askerdo ' + args.map(shq).join(' ')); continue; }
       const r = await run(args, { env });
@@ -1790,9 +1815,9 @@ export async function undoImport(work, { board, cli = DEFAULT_CLI, all = false, 
     else if (override.did === 'failed') log('AGENTS.override.md was not rewritten (the rules read failed: ' + override.why + '); a Claude session started in the project rewrites it');
   }
   if (failed.length) log('Refused (' + failed.length + '), run the undo again once each is fixed:\n  ' + failed.join('\n  '));
-  if (filed.length || waiting.length) log('Withdraw request ' + (filed.length ? 'filed, waiting' : 'still waiting') + ' on the user\'s one Allow or Keep: ' + [...filed, ...waiting].join(', ')
+  if (filed.length || waiting.length) log('Withdraw request ' + (filed.length ? 'filed, waiting' : 'still waiting') + ' on the user\'s one Withdraw or Keep: ' + [...filed, ...waiting].join(', ')
     + '. The import reads undone only once it is decided: run the undo again after the press.');
-  else if (dry && rulings.length) log('The ' + rulings.length + ' decisions leave only by a withdraw the user allows: the undo files one request for them all (--session <own id>).');
+  else if (dry && rulings.length) log('The ' + rulings.length + ' decisions leave only by a withdraw request the user presses Withdraw on: the undo files one request for them all (--session <own id>).');
   if (finished.length) log('Finished tracks stay finished, with their handoffs (no verb takes one back; their tasks are dropped): ' + finished.join(', '));
   if (stays.length) log('Stay as they are (' + stays.length + '), fixes no verb takes back and decisions a later record superseded: ' + stays.join(', '));
   if (kept.length) log('Knowledge records stay (' + kept.length + '): a withdraw takes only decisions and no verb removes one: ' + kept.join(', '));

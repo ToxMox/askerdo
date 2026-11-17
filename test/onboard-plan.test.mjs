@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { buildPlan, recordGo, staleFacts, WaitingError, withFacts } from '../skills/onboard/plan.mjs';
-import { applyPlan, cliRunner, quietWrite, runCoverage } from '../skills/onboard/apply.mjs';
+import { applyPlan, asApproved, cliRunner, quietWrite, runCoverage } from '../skills/onboard/apply.mjs';
 import { cardRow, cardText } from '../skills/onboard/cards.mjs';
 import { blobsOf, clauseId, markMap } from '../skills/onboard/map.mjs';
 import { recordReader } from '../skills/onboard/coverage.mjs';
@@ -67,6 +67,7 @@ test('the proposal becomes the plan: refs in order, old dates and the label carr
   /* the board reads a bare Q-and-number token in prose as its own record, so the old label becomes the title */
   const asked = plan.steps.find((s) => s.op === 'register').stdin;
   for (const k of ['name', 'ask']) assert.doesNotMatch(asked[k], /(^|[^/.\w])Q\d+\b(?!-[a-z])/, k + ' carries no old label');
+  assert.equal(asked.track, null, "T-943: never the onboarding session's held track");
   /* the long rule's detail goes to a record made first, which its line points at; the profile is renamed */
   const lanes = plan.steps.find((s) => s.id === 'rule:lanes');
   assert.ok(plan.steps.find((s) => s.id === 'rule:lanes@detail').n < lanes.n);
@@ -139,13 +140,15 @@ test('the proposal becomes the plan: refs in order, old dates and the label carr
   assert.equal(ag.claude[0].clauses[0].kept, 'The Viewer hosts WebSockets on port 5000.');
   assert.match(ag.pending.find((x) => /never edit them/.test(x.title)).why, /kept/, 'a split with no kept words waits');
   const flags = (s, f) => s.args.filter((x, i) => s.args[i - 1] === f);
-  assert.deepEqual(flags(ag.steps.find((s) => s.id === 'fact:menu'), '--file'), globs);
+  /* a `paths:` rule loads on a read too, so its record's globs carry the (read) marker */
+  const links = globs.map((g) => '(edit read) ' + g);
+  assert.deepEqual(flags(ag.steps.find((s) => s.id === 'fact:menu'), '--file'), links);
   const edit = ag.steps.find((s) => s.id === 'fact:there@files');
-  assert.deepEqual([edit.op, edit.fix, edit.args[2], flags(edit, '--add-file')], ['knowledge edit', true, 'K-41', globs]);
+  assert.deepEqual([edit.op, edit.fix, edit.args[2], flags(edit, '--add-file')], ['knowledge edit', true, 'K-41', links]);
   /* a rerun adds only the globs the record lacks, and nothing once it holds them all */
   const again = (files) => buildPlan(withFacts({ ...a, board: { ...a.board, knowledge: [{ id: 'K-41', name: 'Shader cache', status: 'active', files }] } }, facts), { readVersion: () => '', readFile: () => '' })
     .steps.find((s) => s.id === 'fact:there@files');
-  assert.deepEqual([flags(again([globs[0]]), '--add-file'), again(globs)], [[globs[1]], undefined]);
+  assert.deepEqual([flags(again([links[0]]), '--add-file'), again(links)], [[links[1]], undefined]);
   /* a menu whose lines name globs scopes each body to its own line's; a slash list names each word's
      entry, and a line naming only an intent takes none, never the entries no line names */
   const proj = tempDir('onboard-handover-', t);
@@ -174,9 +177,11 @@ test('the proposal becomes the plan: refs in order, old dates and the label carr
   assert.ok(sg.steps.some((s) => s.id === 'rule:menu') && !sg.pending.some((x) => /menu/.test(x.item)), 'a rule that holds everywhere is a line');
   const dec = sg.steps.find((s) => s.id === 'decision:menu');
   const det = sg.steps.find((s) => s.id === 'decision:menu@detail');
-  assert.deepEqual([dec.stdin.files, dec.stdin.commands, flags(det, '--file'), det.n < dec.n, dec.stdin.body.includes('@{decision:menu@detail}')], [globs, ['node tools/shade.mjs'], globs, true, true]);
+  assert.deepEqual([dec.stdin.files, dec.stdin.commands, flags(det, '--file'), det.n < dec.n, dec.stdin.body.includes('@{decision:menu@detail}')], [links, ['node tools/shade.mjs'], links, true, true]);
+  /* a card stays on edits and commands */
   const card = cardText(cardRow(sg.items.find((x) => x.id === 'card:menu'), 'docs/procedures/menu.md')).text;
   assert.match(/^---\n([\s\S]*?)\n---/.exec(card)[1], /files: \[.*Assets\/Shaders\/\*\*.*\*\.shader/);
+  assert.ok(!card.includes('(edit read)'));
 
   /* a command loading a rule file whose folder goes waits until it retires in the same run */
   facts.ruleFiles[0].loads.push({ by: 'command', from: '.claude/commands/shaders.md:2' });
@@ -290,7 +295,7 @@ test('the plan refuses while a call waits; an answer applies its effect to items
 test("a task's after and runBy become the track's layout; a question is tied to its track and gates; a parked track waits on a task", () => {
   const items = [
     { id: 'track:a', kind: 'track', title: 'Line A', fields: { name: 'Line A' }, source: src('STATE.md') },
-    { id: 'task:fix', kind: 'task', title: 'Fix it', fields: { status: 'open', track: 'track:a' }, source: src('STATE.md', 3) },
+    { id: 'task:fix', kind: 'task', title: 'Fix it', fields: { status: 'open', track: 'track:a', steps: ['find the cause', 'write the fix'] }, source: src('STATE.md', 3) },
     { id: 'task:deploy', kind: 'task', title: 'Deploy it', fields: { status: 'open', track: 'track:a', after: ['task:fix'], runBy: 'agent:opus' }, source: src('STATE.md', 4) },
     { id: 'question:go', kind: 'question', title: 'Ship it?', fields: { track: 'track:a', gates: ['task:deploy', 'T-7'] }, source: src('STATE.md', 6) },
     { id: 'track:mixer', kind: 'track', title: 'Mixer', fields: { name: 'Mixer', state: 'parked', unparkWhen: 'task:fix' }, source: src('PLAN.md', 9) },
@@ -304,6 +309,12 @@ test("a task's after and runBy become the track's layout; a question is tied to 
   assert.deepEqual(scope.args.filter((a, i) => scope.args[i - 1] === '--add-gate'), ['@{task:deploy}', 'T-7']);
   const park = plan.steps.find((s) => s.op === 'track park');
   assert.equal(park.args[park.args.indexOf('--unpark-when') + 1], 'task-completes @{task:fix}');
+  /* a task's steps follow its create; a step the user owes holds the item until it is a question */
+  const steps = plan.steps.find((s) => s.id === 'task:fix@steps');
+  assert.ok(steps.n > plan.steps.find((s) => s.id === 'task:fix').n && steps.args.filter((a) => a === '--check-add').length === 2);
+  items[1].fields.steps.push('the user looks at the fix in the app');
+  const held = buildPlan({ ...plain(), items, claude: [] }, { readVersion: () => '', readFile: () => '' });
+  assert.ok(held.pending.some((p) => p.item === 'task:fix'));
 });
 
 test('one line in force: a kept rule replaces a line on a profile only this project holds, clears one others hold, and switches off a setting', () => {
@@ -350,6 +361,9 @@ test('the write runs every step in this one process through the CLI\'s own code,
   const r = await applyPlan(work, { board, cli: join(base, 'cli', 'bin', 'askerdo.mjs'), log: () => {} });
   assert.deepEqual(r.refusals, []);
   assert.deepEqual([r.timing.steps, r.scratch], [7, []], 'the placement ran on the stand-in track, nothing left out');
+  /* the approved plan files whole, so a placement step carries the user's mark the board never asks about */
+  assert.deepEqual(asApproved(['task', 'edit', 'T-1', '--track', 'TR-7', '--tier', '3', '--session', 's1'], 'go').slice(-2), ['--user', 'go']);
+  assert.ok(!asApproved(['ws', 'create', '--session', 's1'], 'go').includes('--user'), 'only a filing step');
   /* the decision goes to the workstream the run made, never to the stand-in holding the same id on the real board */
   const onWs = (await cliRunner(join(base, 'cli', 'bin', 'askerdo.mjs'))(['decisions', '--workstream', 'WS-2', '--json'], { env: { ...process.env, ASKERDO_BOARD_URL: board } })).out;
   assert.deepEqual(onWs.map((d) => d.name), ['Use W']);
@@ -411,7 +425,9 @@ test('the live write pauses notifications and lifts its own pause after a long a
     else if (body) server.pausedUntil = '';
     return { pausedUntil: server.pausedUntil, pauseLabel: server.pausedUntil };
   };
-  await quietWrite(() => new Promise((r) => setTimeout(r, 60)), { log: () => {}, call: clock, retryMs: 1, renewMs: 10 });
+  /* the write runs until three renewals land, not a fixed time a loaded CPU stretches */
+  const untilRenewed = async () => { for (let i = 0; i < 1000 && renewed <= 2; i++) await new Promise((r) => setTimeout(r, 5)); };
+  await quietWrite(untilRenewed, { log: () => {}, call: clock, retryMs: 1, renewMs: 10 });
   assert.ok(renewed > 2, 'renewed while the write ran');
   assert.equal(server.pausedUntil, '');
   renewed = 0;

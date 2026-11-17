@@ -1,9 +1,9 @@
 /* the user's override of a record in use that an amend cannot carry (a bug's
-   text, a ruling never made, a secret). A session asks once; the user's Allow applies
+   text, a ruling never made, a secret). A session asks once; the user's press applies
    it with no model turn, and Keep leaves the record as written. */
 import { createHash, scryptSync } from 'node:crypto';
 import { readTx, tx } from '../db.mjs';
-import { actorOf, addNote, guardHeadings, labelOf, logRow, logVerb, putRecord, sessionWords, stampNow } from '../records.mjs';
+import { actorOf, addNote, guardHeadings, labelOf, logRow, logVerb, putRecord, sessionWords, stampNow, unguardHeadings } from '../records.mjs';
 import { WEB } from '../paths.mjs';
 import { UsageError, loadEntry, resolveRecord } from './labels.mjs';
 import { WORK_KINDS, normalize, orderFront, sectionsOf, startedBy, withSection } from './work.mjs';
@@ -241,7 +241,9 @@ function changeOf(kind, items) {
   const fs = Object.keys(items[0].proposed);
   if (fs.length !== 1 || fs[0] === 'close') return null;
   const { e, proposed } = items[0];
-  return { field: SECTION[fs[0]] || fs[0], before: fieldNow(e, sectionsOf(e.body), fs[0]), after: proposed[fs[0]] };
+  /* the card shows the words as written, without the stored heading guard */
+  const shown = (v) => (typeof v === 'string' ? unguardHeadings(v) : v);
+  return { field: SECTION[fs[0]] || fs[0], before: shown(fieldNow(e, sectionsOf(e.body), fs[0])), after: shown(proposed[fs[0]]) };
 }
 
 /* ---- the pending row ---- */
@@ -293,9 +295,13 @@ const keptOn = (db, key, proposal) => {
 
 /* ---- override request ---- */
 
+/* the press that carries a request out names its act; the stored decision stays allow */
+const ACT = { withdraw: 'Withdraw', fix: 'Fix', scrub: 'Scrub' };
+const DONE = { withdraw: 'withdrawn', fix: 'fixed', scrub: 'scrubbed' };
+
 /* overrideRequest(db, { kind, reason, summary, items: [{ record, name?, description?,
    intent?, close?, body?, text? }], session, dryRun? }, actor): one pending row the
-   user's Allow or Keep decides. A dry run checks and measures, writing nothing. */
+   user's press (its act, or Keep) decides. A dry run checks and measures, writing nothing. */
 export function overrideRequest(db, input = {}, actor, opts) {
   const ctx = actorOf(actor, opts);
   const o = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
@@ -334,7 +340,7 @@ export function overrideRequest(db, input = {}, actor, opts) {
       const why = staleWhy(req, nowMs);
       if (!why) {
         throw refuse(it.label + ' already has override #' + req.id + ' waiting, asked by ' + sessionWords(db, req.session) + ' on ' + req.at.slice(0, 10)
-          + ': one request per record, and it waits on the user\'s Allow or Keep', { waiting: req.id });
+          + ': one request per record, and it waits on the user\'s ' + ACT[req.kind] + ' or Keep', { waiting: req.id });
       }
       dropRequest(db, req, ctx, why + ', then asked again');
     }
@@ -405,7 +411,7 @@ function applyFix(db, it, req, ctx) {
   if (p.close !== undefined && !same(front.close, p.close)) {
     front.close = p.close;
     changes.close = [closeText(db, before.close), closeText(db, p.close)];
-    if (front.landed && p.close.kind !== 'look') { changes.landed = [front.landed, null]; delete front.landed; }
+    if (front.landed) { changes.landed = [front.landed, null]; delete front.landed; }
   }
   front.corrected = ctx.at;
   front.updated = ctx.at;
@@ -482,19 +488,25 @@ function keepNote(db, it, req, ctx) {
 /* ---- override decide: the user's press ---- */
 
 /* overrideDecide(db, { request, decision: 'allow' | 'keep' }, actor): only the
-   user's act (the user actor). Allow applies every item or none; a touched text
+   user's act (the user actor). The decision may name the request's act (withdraw,
+   fix, scrub), stored as allow. Allow applies every item or none; a touched text
    that moved since the ask refuses it and marks the request. The row goes either way. */
 export function overrideDecide(db, input = {}, actor, opts) {
   const ctx = actorOf(actor, opts);
   if (!isUserAct(ctx.by)) {
-    throw new UsageError("override decide is the user's own press, Allow or Keep (--user <session>); a session asks with override request and waits");
+    throw new UsageError("override decide is the user's own press, Withdraw, Fix or Scrub, or Keep (--user <session>); a session asks with override request and waits");
   }
-  const decision = String(input && input.decision ? input.decision : '').trim().toLowerCase();
-  if (!['allow', 'keep'].includes(decision)) throw new UsageError('override decide takes allow or keep');
+  const said = String(input && input.decision ? input.decision : '').trim().toLowerCase();
+  if (!['allow', 'keep', ...OVERRIDE_KINDS].includes(said)) throw new UsageError('override decide takes the request\'s act (' + OVERRIDE_KINDS.join(', ') + ') or keep');
+  const decision = said === 'keep' ? 'keep' : 'allow';
   let refusal = null;
   const out = tx(db, () => {
     const req = findRequest(db, input.request, ctx.day);
     if (!req) throw new UsageError('no override request ' + String(input.request ?? '') + ' is waiting: it was decided, or never asked');
+    /* a typed act word that is not this request's applies nothing: the word says what happens */
+    if (OVERRIDE_KINDS.includes(said) && said !== req.kind) {
+      throw new UsageError('override #' + req.id + ' is a ' + req.kind + ', not a ' + said + ': ' + req.kind + ' or keep it; nothing was applied');
+    }
     const items = itemsOf(db, req.id);
     const labels = items.map((i) => i.label);
     /* expired unanswered: Allow is refused and Keep clears it, nothing applied either way */
@@ -510,7 +522,7 @@ export function overrideDecide(db, input = {}, actor, opts) {
         if (!req.changed) {
           db.stmt('UPDATE overrides SET changed = ? WHERE id = ?').run(ctx.at, req.id);
           /* the asking session hears the refusal, wherever Allow was pressed */
-          line(db, ctx, req, { changed: [null, moved], asker: req.session }, { note: 'changed since asked' });
+          line(db, ctx, req, { changed: [null, moved], asker: req.session, act: req.kind }, { note: 'changed since asked' });
         }
         refusal = 'override #' + req.id + ' changed since asked' + (moved.length ? ' (' + moved.join(', ') + ')' : '')
           + ': nothing was applied; Keep drops it, and the session asks again from the text as it stands';
@@ -521,8 +533,8 @@ export function overrideDecide(db, input = {}, actor, opts) {
     /* a request that changed since asked was never decided on its text: Keep only clears it */
     if (decision === 'keep' && !req.changed) for (const it of items) if (it.e) keepNote(db, it, req, ctx);
     db.stmt('DELETE FROM overrides WHERE id = ?').run(req.id);
-    line(db, ctx, req, { decided: decision, records: [null, labels], asker: req.session },
-      { key: items.length === 1 ? items[0].key : undefined, note: decision === 'allow' ? 'allowed by the user' : 'kept as written' });
+    line(db, ctx, req, { decided: decision, records: [null, labels], asker: req.session, act: req.kind },
+      { key: items.length === 1 ? items[0].key : undefined, note: decision === 'allow' ? DONE[req.kind] + ' by the user' : 'kept as written' });
     return {
       request: req.id, kind: req.kind, decision, records: labels, asker: req.session,
       ...(decision === 'allow' && req.kind === 'scrub' ? { scrubbed: applied, unreached: UNREACHED } : {}),
@@ -538,7 +550,7 @@ export function overrideDecide(db, input = {}, actor, opts) {
    copy the scrub changed, unless it changed again since (those are named). */
 export function overrideUnscrub(db, input = {}, actor, opts) {
   const ctx = actorOf(actor, opts);
-  if (!isUserAct(ctx.by)) throw new UsageError("override unscrub is the user's act (Unscrub on the band, or --user <session> when they ask in chat)");
+  if (!isUserAct(ctx.by)) throw new UsageError("override unscrub is the user's act (Unscrub on Home or its card, or --user <session> when they ask in chat)");
   return tx(db, () => {
     let seal;
     if (input.seal !== undefined && input.seal !== null) seal = db.stmt('SELECT * FROM seals WHERE id = ?').get(Number(String(input.seal).replace(/^#/, '')));
@@ -631,7 +643,7 @@ export function overrideCalls(db, session, scope, nowMs) {
     /* `change` was the request's kind before, and the band still reads it so: the
        before and after object for one fixed field, else the kind as it was */
     const change = (req.kind === 'fix' && items.length === 1 && changeOf(req.kind, itemsOf(db, req.id))) || req.kind;
-    /* the band's tooltip: the workstreams it touches and its records by label */
+    /* Home's tooltip: the workstreams it touches and its records by label */
     const wsOf = (it) => it.workstream || (it.track ? (db.stmt('SELECT workstream FROM records WHERE key = ?').get(it.track) || {}).workstream : null);
     const wss = [...new Set(items.map(wsOf).filter(Boolean))].map((k) => ({ id: labelOf(db, k), name: (db.stmt('SELECT title FROM records WHERE key = ?').get(k) || {}).title || '' }));
     const what = req.kind === 'withdraw' ? 'withdraws ' : req.kind === 'scrub' ? 'scrubs the text from ' : 'rewrites ';
@@ -643,7 +655,7 @@ export function overrideCalls(db, session, scope, nowMs) {
       text: (expired ? 'Expired unanswered after ' + EXPIRE_DAYS + ' days: ' : req.changed ? 'Changed since asked: ' : '') + req.summary + ' (' + measure + ')',
       change, summary: req.summary, reason: req.reason || '', measure, workstreams: wss, records: items.map((it) => it.label).filter(Boolean),
       presses: expired || req.changed ? [press('Keep', 'keep', keepDoes)]
-        : [press('Allow', 'allow', what + on + ' now, with no model turn; the asking session hears it'), press('Keep', 'keep', keepDoes)],
+        : [press(ACT[req.kind], 'allow', what + on + ' now, with no model turn; the asking session hears it'), press('Keep', 'keep', keepDoes)],
       /* the asking session hears the press as a turn */
       ...(session && req.session === session ? { mine: true } : {}),
     });

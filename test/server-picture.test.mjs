@@ -8,6 +8,7 @@ const { putRecord } = await import('../server/records.mjs');
 const g = await import('../server/verbs/graph.mjs');
 const t = await import('../server/verbs/tracks.mjs');
 const { applyPicture } = await import('../server/verbs/picture.mjs');
+const { isBoardLine } = await import('../server/verbs/task-block.mjs');
 
 function board() {
   const db = freshBoard();
@@ -46,6 +47,17 @@ test('the apply refuses files that do not hold together, naming each problem, an
   }
 });
 
+/* the picture cannot throw into its own write, so a verdict over an open step is a report */
+test('a done verdict over an open step leaves the task open and says so in the reports', () => {
+  const { db, tr, b, c, d } = board();
+  g.addItem(db, { task: d.id, text: 'check the seam' }, 'cli');
+  const L = 'Main line';
+  const tasks = [['P-1 s2', 'open'], [b.id, 'open'], [c.id, 'open'], [d.id, 'done']].map(([id, verdict]) => ({ id, verdict, line: L, waitsOn: [] }));
+  const r = applyPicture(db, { files: { 'one.json': { lines: [{ name: L, kind: 'main', track: tr.id }], tasks } }, dryRun: false }, 'cli');
+  assert.equal(g.readiness(db, d.key).status, 'open');
+  assert.ok(r.reports.some((x) => x.text.includes(d.id) && x.text.includes('check the seam')), JSON.stringify(r.reports));
+});
+
 test('the apply writes the picture: lines, a branch that waits on its junction, the links in place of the import chain; a rerun writes only what the files changed', () => {
   const { db, tr, a, b, c, d, set } = board();
   const picture =(side, dVerdict, dWaits) => ({
@@ -76,14 +88,16 @@ test('the apply writes the picture: lines, a branch that waits on its junction, 
   assert.notEqual(t.trackSummary(db, { track: tr.id }).state, 'parked', 'the parent of a branch stays open');
   assert.equal(db.prepare("SELECT count(*) AS n FROM depends WHERE reason = 'from import'").get().n, 0, "the import's chain is gone");
   assert.match(db.prepare('SELECT reason FROM depends WHERE task = ? AND "on" = ?').get(d.key, c.key).reason, /D builds on C/);
-  assert.equal(g.readiness(db, d.key).status, 'completed');
+  assert.equal(g.readiness(db, d.key).status, 'done');
   assert.equal(g.readiness(db, b.key).status, 'open', 'a stale in-progress mark nobody holds goes back to open (Q130 130a)');
+  const stamp = db.prepare('SELECT body FROM notes WHERE record = ?').get(b.key);
+  assert.ok(stamp && isBoardLine(stamp.body, 'cli'), 'the picture stamp is a board line the task block counts');
   const merge = db.prepare("SELECT key FROM records WHERE json_extract(fields, '$.pictureKey') = 'the-merge'").get();
   assert.ok(merge && db.prepare('SELECT 1 FROM depends WHERE task = ? AND "on" = ?').get(merge.key, b.key), 'the proposed task is made and linked');
   const side = db.prepare("SELECT key FROM records WHERE kind = 'track' AND json_extract(fields, '$.name') = 'Side area'").get();
   assert.equal(t.trackView(db, { track: side.key }).junction.task.id, a.id, 'the step reference resolved to the task the import made');
   assert.equal(g.readiness(db, c.key).ready, false, "the side's first task waits on its junction");
-  db.prepare("UPDATE records SET fields = json_set(fields, '$.status', 'completed') WHERE key = ?").run(a.key);
+  db.prepare("UPDATE records SET fields = json_set(fields, '$.status', 'done') WHERE key = ?").run(a.key);
   assert.equal(g.readiness(db, c.key).ready, true);
   db.prepare("UPDATE records SET fields = json_set(fields, '$.status', 'open') WHERE key = ?").run(a.key);
 

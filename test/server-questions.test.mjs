@@ -13,6 +13,7 @@ const { renderRecord } = await import('../server/render.mjs');
 const { putRecord } = await import('../server/records.mjs');
 const tracks = await import('../server/verbs/tracks.mjs');
 const verbs = await import('../server/verbs/index.mjs');
+const seam = await import('../server/verbs/placement-seam.mjs');
 
 /* a clock at a local time, `more` for register's strict path */
 const at = (stamp, more = {}) => ({ now: () => new Date(stamp), ...more });
@@ -88,7 +89,7 @@ test('an answer to a question that moved amends it with the first answer beneath
   const pressed = { user: true };
   q.register(db, payload(), null, at('2026-10-25T09:00:00'));
   const seen = q.show(db, 'Q1', null, at('2026-10-25T09:00:00')).version;
-  q.answer(db, { id: 'Q1', pick: 'a', note: 'simple first' }, pressed, at('2026-10-25T10:00:00'));
+  q.answer(db, { id: 'Q1', pick: 'a', note: 'simple first\n# kept' }, pressed, at('2026-10-25T10:00:00'));
   /* a second chip pressed on the version it saw: the question moved and now stands answered */
   const note = 'isolation wins\n\nafter all';
   assert.equal(q.answer(db, { id: 'Q1', pick: '1b', note, version: seen }, pressed, at('2026-10-25T11:00:00')).amended, true);
@@ -96,7 +97,8 @@ test('an answer to a question that moved amends it with the first answer beneath
   assert.equal(amended.status, 'answered');
   const paras = amended.answer.split('\n\n');
   assert.match(paras[0], /isolation wins/);
-  assert.match(paras.at(-1), /simple first/, 'the first answer stays, beneath');
+  /* a # line reads back as written, through the amend's rewrite too */
+  assert.match(paras.at(-1), /simple first\n# kept$/, 'the first answer stays, beneath');
   assert.equal(paras.filter((p) => /simple first/.test(p)).length, 1);
   const line = lines(db).at(-1);
   assert.deepEqual([line.verb, line.changes.chosen], ['amend', ['a', 'b']]);
@@ -230,12 +232,13 @@ test('a session\'s names line holds only its own questions, blockers first, and 
   assert.equal(line({ session: 's-t' }), '', 'the old leg prints nothing');
   tracks.takeOver(db, { track: tr.id, session: 's-t' }, { session: 's-t' });
 
-  /* a session that only started a task follows it: its question files under the task's workstream, not the inbox */
+  /* a session whose agent runs a task follows it: its question files under the task's workstream, not the inbox */
   w.createRecord(db, { name: 'near work', description: 'd', workstream: 'WS-1' }, ctx);
-  w.taskUpdate(db, { id: 'T-1', status: 'in_progress' }, { session: 's-u' });
+  verbs.runVerb(db, 'openRun', { tasks: ['T-1'], agentId: 'u-1', job: 'lane-u' }, { session: 's-u' });
   const started = q.register(db, payload({ name: 'from a start', session: 's-u' }), null, at('2026-10-25T10:06:00', { inherit: true }));
   assert.equal(started.workstream, 'WS-1');
-  assert.ok(!w.readRecord(db, 'T-1').inHand, 'a start never takes the task in hand');
+  assert.ok(!w.readRecord(db, 'T-1').inHand, 'an agent\'s start never takes the task in hand');
+  verbs.runVerb(db, 'endRun', { agentId: 'u-1', how: 'finished' }, { session: 's-u' });
 
   /* tasks in hand across two workstreams; the held track's comes first, and with no track the refusal names them */
   w.createRecord(db, { name: 'far work', description: 'd', workstream: 'WS-2' }, ctx);
@@ -244,6 +247,9 @@ test('a session\'s names line holds only its own questions, blockers first, and 
   assert.deepEqual([first.workstream, first.track], ['WS-2', tr.id]);
   for (const id of ['T-1', 'T-2']) w.taskUpdate(db, { id, inHand: true, takeOver: true }, { session: 's-v' });
   assert.throws(() => q.register(db, payload({ name: 'no track', session: 's-v' }), null, at('2026-10-25T10:08:00', { inherit: true })), /T-1, T-2/);
+  /* a null track (an import's) stays off the held track */
+  const placed = q.register(db, payload({ name: 'imported', session: 's-t', workstream: 'WS-2', track: null }), null, at('2026-10-25T10:09:00', { inherit: true }));
+  assert.deepEqual([placed.workstream, placed.track], ['WS-2', undefined]);
 });
 
 /* a question records its track and the asking PC, and belongs to whichever
@@ -265,6 +271,11 @@ test('a question stores its track and PC, and the session that takes the track o
   tracks.takeOver(db, { track: tr.id, session: 's-r' }, { session: 's-r', pc: 'laptop' });
   assert.equal(scope('s-r').own, true, 'the resumed track\'s session owns it');
   assert.ok(!scope('s-t') || !scope('s-t').own, 'the old leg no longer does');
+  /* the held track's question is the session's from another repo too; any other keeps to its project */
+  const loose = q.register(db, payload({ name: 'off the line', session: 's-z' }), null, at('2026-10-25T10:01:00')).id;
+  const own = (session, project) => q.peekSessionScope(db, { project, session }, at('2026-10-25T11:00:00')).filter((x) => x.own).map((x) => x.id);
+  assert.deepEqual([own('s-r', 'C:/repos/other'), own('s-z', 'C:/repos/other'), own('s-z', 'C:/repos/my-app')], [[r.id], [], [loose]]);
+  assert.ok(q.namesLine(db, { project: 'C:/repos/other', session: 's-r' }, null, at('2026-10-25T11:00:00')).includes(r.id), 'its reply line names it too');
   assert.ok(q.show(db, r.id, null, at('2026-10-25T11:00:00')).subscribers.includes('s-r'));
   /* an answer pressed elsewhere names whose it reached, for the presser's toast */
   const { owner } = q.answer(db, { id: r.id, pick: 'a' }, { session: 's-other' }, at('2026-10-25T12:00:00'));
@@ -324,4 +335,66 @@ test('every question the verbs wrote reads back with today\'s parser, its front 
   /* an import's label and row ref kept from register, and listed */
   assert.deepEqual([fronts[0].labels, fronts[0].refs], [['import:my-app'], ['onboard:question:q1']]);
   assert.deepEqual(q.list(db, { all: true }, null, t('11:00')).find((r) => r.id === 'Q1').refs, ['onboard:question:q1']);
+});
+
+/* the press on a placement question creates the task as the
+   filing session, with no model turn; talk and drop create nothing; a stale place creates nothing. */
+test('a placement question\'s answer creates the task at the place pressed, once, and talk, drop and a stale place create nothing', () => {
+  const db = freshBoard();
+  const { PLACEMENT_LABEL } = seam;
+  const on = (hm) => at('2026-11-16T' + hm + ':00');
+  const as = (hm) => ({ session: 's-f', now: new Date('2026-11-16T' + hm + ':00') });
+  w.createRecord(db, { kind: 'workstream', name: 'near', description: 'd' }, as('08:00'));
+  tracks.newTrack(db, { name: 'the line', workstream: 'WS-1', session: 's-f' }, { session: 's-f' });
+  tracks.newTrack(db, { name: 'the export', workstream: 'WS-1' }, 'cli');
+  for (const [name, labels] of [['build it', []], ['review it', ['review']], ['old step', []]]) w.createRecord(db, { name, description: 'd', track: 'TR-1', labels }, as('08:01'));
+  const tasks = () => db.prepare("SELECT count(*) AS n FROM records WHERE kind = 'task'").get().n;
+  const OPTS = ['do it on this track', 'put it where asked', "let's talk where it fits", 'drop it'].map((option, i) => ({ type: 'abcd'[i], option }));
+  const sent = (asked, over = {}) => payload({
+    name: 'fix the parser', session: 's-f', track: 'TR-1', labels: [PLACEMENT_LABEL], options: OPTS, pick: 'b',
+    ask: 'On this track (a), where asked (b, my pick), talk (c) or drop (d)?',
+    placement: { session: 's-f', track: 'TR-1', draft: { name: 'fix the parser', description: 'The parser drops a line.', priority: 'high' },
+      here: { before: ['T-1'] }, asked, from: { via: 'place' }, ...over },
+  });
+  const ask = (asked, over = {}) => q.register(db, { ...sent(asked, over), [seam.BOARD_ASKS]: true }, null, on('09:00')).id;
+  const user = { user: 's-u' };
+  /* a request never registers one: its press would create a task with no filing call behind it */
+  assert.throws(() => q.register(db, sent({ tier: 3, track: 'TR-2', whyElsewhere: 'x' }), null, on('08:59')), refused(/placement/));
+  assert.throws(() => q.register(db, payload({ labels: [PLACEMENT_LABEL] }), null, on('08:59')), refused(/placement/));
+
+  /* a: at here on the held track, its journal naming the press; the answer's row carries what it made */
+  const qa = ask({ tier: 3, track: 'TR-2', whyElsewhere: 'the export owns parsing' });
+  /* nor does an edit reword it or move its track, which stops the finish */
+  assert.throws(() => q.editQuestion(db, { id: qa, clearTrack: true }, { session: 's-f' }, on('09:05')), refused(/placement/));
+  const n0 = tasks();
+  const ra = q.answer(db, { id: qa, pick: 'a' }, user, on('09:10'));
+  const made = ra.placement.created;
+  assert.deepEqual([ra.placement.outcome, made.track, made.before, tasks()], ['here', 'TR-1', ['T-1'], n0 + 1]);
+  const row = lines(db).filter((l) => l.verb === 'answer').at(-1);
+  assert.deepEqual([row.changes.outcome[1], row.changes.created[1].id], ['here', made.id]);
+  assert.ok(String(w.readRecord(db, made.id).journal).includes(qa + ' (fix the parser) was answered'));
+  /* the same press again creates nothing; an amend once created is refused naming the task */
+  assert.equal(q.answer(db, { id: qa, pick: 'a' }, user, on('09:11')).already, true);
+  assert.throws(() => q.answer(db, { id: qa, pick: 'b', amend: true }, user, on('09:12')), refused(new RegExp(made.id)));
+  assert.equal(tasks(), n0 + 1);
+
+  /* b: at the place asked, a new parked track made for it */
+  const qb = ask({ tier: 3, newTrack: 'later fixes', unparkWhen: 'track-ends TR-2', whyElsewhere: 'it needs the export first' });
+  const rb = q.answer(db, { id: qb, pick: 'b' }, user, on('09:20')).placement;
+  assert.equal(db.prepare('SELECT status FROM records WHERE label = ?').get(rb.created.track).status, 'parked', JSON.stringify(rb));
+
+  /* talk, then an amend to b moves the existing task the key names */
+  const qc = ask({ tier: 3, track: 'TR-2', whyElsewhere: 'the export owns it' }, { task: 'T-3', draft: undefined });
+  assert.deepEqual(q.answer(db, { id: qc, pick: 'c' }, user, on('09:30')).placement, { outcome: 'talk' });
+  const moved = q.answer(db, { id: qc, pick: 'b', amend: true }, user, on('09:31')).placement.created;
+  assert.deepEqual([moved.id, moved.track], ['T-3', 'TR-2']);
+
+  /* the drop verb and a stale place create nothing; the answer stands */
+  const n1 = tasks();
+  const qd = ask({ tier: 3, track: 'TR-2', whyElsewhere: 'x' });
+  q.drop(db, { id: qd, note: 'not needed' }, user, on('09:40'));
+  const qs = ask({ tier: 3, track: 'TR-2', whyElsewhere: 'x' });
+  w.editRecord(db, { id: 'T-1', status: 'done' }, as('09:45'));
+  const rs = q.answer(db, { id: qs, pick: 'a' }, user, on('09:50'));
+  assert.deepEqual([q.show(db, qd, null, on('09:51')).placement.outcome, rs.status, rs.placement.outcome, tasks()], ['drop', 'answered', 'stale', n1]);
 });

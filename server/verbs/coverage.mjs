@@ -1,15 +1,16 @@
 /* Review coverage: the commits each task finished
    with, the reviews that read them, the due signal, and the review station as the gate:
-   a completed review reopens when work it reads changes, and a track's finish waits. */
+   work after a completed review is the next review's, and a track's finish waits. */
 import { readTx, tx } from '../db.mjs';
 import { actorOf, addNote, labelOf } from '../records.mjs';
 import { UsageError, resolveRecord } from './labels.mjs';
-import { TASK_KEYS, TrackRefusal, headOf, loadRecord, logLine, needText, writeFront } from './graph.mjs';
+import { TrackRefusal, headOf, loadRecord, logLine, needText } from './graph.mjs';
 import { isReview } from './found.mjs';
 import { chainOver, parseRecordWith, resolveChain } from './profile-rules.mjs';
 import { loadProfiles } from './profiles.mjs';
 import { lookupFor } from './labels.mjs';
 import { sharesProject } from './questions.mjs';
+import { aimOf } from './task-block.mjs';
 
 const ms = (s) => { const n = Date.parse(String(s ?? '')); return Number.isFinite(n) ? n : null; };
 const VIA = ['message', 'agent', 'in-hand', 'guess', 'manual'];
@@ -85,8 +86,7 @@ export function commitLink(db, input = {}, actor) {
       logLine(db, { at: c.at, verb: 'commit', kind: t ? 'task' : 'commit', rec: t ? headOf(t) : { id: '', name: '' },
         changes: { commit: [null, commitWords(repo, sha)] }, by: c.by, pc: c.pc, note: 'via ' + via });
     }
-    const reopened = t && added + removed > 0 ? afterTask(db, t.key, { commit: { sha, at: String(input.at).trim() } }, actor).reopened : [];
-    return { repo, sha, task: t ? t.fields.id : '', created: !had, ...(reopened.length ? { reopened } : {}) };
+    return { repo, sha, task: t ? t.fields.id : '', created: !had };
   });
 }
 
@@ -115,9 +115,8 @@ export function commitMove(db, input = {}, actor) {
       .run(row.repo, row.sha, to.key, row.at, row.session, row.agent_job, row.files, row.added, row.removed, c.at);
     logLine(db, { at: c.at, verb: 'commit', kind: 'task', rec: headOf(to), changes: { commit: [row.task || null, to.key] }, by: c.by, pc: c.pc,
       note: commitWords(row.repo, row.sha) + ' moved: ' + reason });
-    /* the moved commit is new work on its task: it uncovers it and reopens what read it */
-    const reopened = row.added + row.removed > 0 ? afterTask(db, to.key, { commit: { sha: row.sha, at: row.at } }, actor).reopened : [];
-    return { repo: row.repo, sha: row.sha, from: row.task ? labelOf(db, row.task) : '', to: to.fields.id, moved: true, ...(reopened.length ? { reopened } : {}) };
+    /* the moved commit is new work on its task: it uncovers it for the next review */
+    return { repo: row.repo, sha: row.sha, from: row.task ? labelOf(db, row.task) : '', to: to.fields.id, moved: true };
   });
 }
 
@@ -166,9 +165,10 @@ const countedCommits = (db, key, ignore) => db.stmt('SELECT sha, at, via, added,
   .map((r) => ({ ...r, ...linesOf(r, ignore) })).filter((r) => r.added + r.removed > 0);
 const newestOf = (rows) => rows.reduce((best, r) => (best && ms(best.at) >= ms(r.at) ? best : r), null);
 
-/* A review that completed once and was reopened since: its kept covers still count. */
-const STOOD = `(r.status = 'completed' OR (r.status <> 'dropped' AND EXISTS (SELECT 1 FROM activity a WHERE a.record = c.review
-  AND json_extract(a.line, '$.changes.status[0]') = 'completed')))`;
+/* A review that completed once and was reopened since (by a session, or by the board's
+   old review reopen): its kept covers still count. */
+const STOOD = `(r.status = 'done' OR (r.status <> 'dropped' AND EXISTS (SELECT 1 FROM activity a WHERE a.record = c.review
+  AND json_extract(a.line, '$.changes.status[0]') IN ('done', 'completed'))))`;
 
 /* THE COVERAGE RULE: a code task is covered when a completed (or reopened) review's cover
    reaches through_at at or after every one of its counted commits. `ignore` is review.ignore's. */
@@ -188,15 +188,24 @@ export function coveredState(db, taskKey, ignore = []) {
   return { ...base, covered: true, by: labelOf(db, best.review), through: best.through };
 }
 
-/* When a task first went in_progress since it last reopened (else since it began),
-   from its activity rows, else null. */
+/* Activity rows from before migration 015 name a task's done completed, so a reader of the log takes both. */
+const doneWord = (s) => s === 'done' || s === 'completed';
+
+/* Each time a task's work began, sorted: its runs' starts, and the flips to in_progress
+   a board from before migration 015 logged. */
+function startsOf(db, key) {
+  const rows = db.stmt(`SELECT r.started AS at FROM run_tasks rt JOIN runs r ON r.id = rt.run WHERE rt.task = ?
+    UNION ALL SELECT at FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[1]') = 'in_progress'`).all(key, key);
+  return rows.map((r) => ms(r.at)).filter((n) => n !== null).sort((x, y) => x - y);
+}
+
+/* When a task's work first began since it last reopened (else since it began), else null. */
 function startedAt(db, key) {
   const rows = db.stmt(`SELECT at, json_extract(line, '$.changes.status[0]') AS was, json_extract(line, '$.changes.status[1]') AS now
     FROM activity WHERE record = ? AND json_extract(line, '$.changes.status') IS NOT NULL ORDER BY seq`).all(key);
   let from = null;
-  for (const r of rows) if (r.was === 'completed' && r.now !== 'completed') from = ms(r.at);
-  const t = rows.filter((r) => r.now === 'in_progress').map((r) => ms(r.at)).filter((n) => n !== null && (from === null || n >= from));
-  return t.length ? Math.min(...t) : null;
+  for (const r of rows) if (doneWord(r.was) && !doneWord(r.now)) from = ms(r.at);
+  return startsOf(db, key).find((n) => from === null || n >= from) ?? null;
 }
 
 /* What a review reads up to: its start (a fix finished after it started stays
@@ -205,19 +214,19 @@ const cutOf = (db, review, c) => startedAt(db, review.key) ?? ms(review.fields.c
 
 /* The cut of a review's first completion: its first start before it, else that completion; null if never completed. */
 function firstCut(db, key) {
-  const rows = db.stmt(`SELECT at, json_extract(line, '$.changes.status[1]') AS now FROM activity
-    WHERE record = ? AND json_extract(line, '$.changes.status') IS NOT NULL ORDER BY seq`).all(key);
-  const done = rows.findIndex((r) => r.now === 'completed');
-  if (done < 0) return null;
-  const go = rows.slice(0, done).find((r) => r.now === 'in_progress');
-  return ms((go || rows[done]).at);
+  const done = db.stmt(`SELECT at, json_extract(line, '$.changes.status[1]') AS now FROM activity
+    WHERE record = ? AND json_extract(line, '$.changes.status') IS NOT NULL ORDER BY seq`).all(key).find((r) => doneWord(r.now));
+  if (!done) return null;
+  const at = ms(done.at);
+  const go = startsOf(db, key)[0];
+  return go !== undefined && at !== null && go <= at ? go : at;
 }
 
-/* When a task's work began: its first in_progress ever, else its first commit, else its filing.
+/* When a task's work began: its first start ever, else its first commit, else its filing.
    A task sat before a review when it began before the review's first cut: later work is a later wave's. */
 function begunAt(db, key) {
   const least = (rows) => rows.map((r) => ms(r.at)).filter((n) => n !== null).reduce((m, n) => (m === null || n < m ? n : m), null);
-  const go = least(db.stmt(`SELECT at FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[1]') = 'in_progress'`).all(key));
+  const go = startsOf(db, key)[0];
   const rec = db.stmt('SELECT created FROM records WHERE key = ?').get(key);
   return go ?? least(db.stmt('SELECT at FROM commits WHERE task = ?').all(key)) ?? ms(rec && rec.created) ?? -Infinity;
 }
@@ -252,14 +261,16 @@ function coversGiven(db, key) {
   const i = lines.findIndex((l) => l.verb === 'covers');
   if (i < 0) return false;
   const prev = lines[i + 1];
-  return !(prev && prev.now === 'completed' && Math.abs(ms(prev.at) - ms(lines[i].at)) <= 1000);
+  return !(prev && doneWord(prev.now) && Math.abs(ms(prev.at) - ms(lines[i].at)) <= 1000);
 }
 
-const completedOnce = (db, key) => !!db.stmt(`SELECT 1 FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[0]') = 'completed' LIMIT 1`).get(key);
+const completedOnce = (db, key) => !!db.stmt(`SELECT 1 FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[0]') IN ('done', 'completed') LIMIT 1`).get(key);
 
 /* Whether an open review reads `task` when it completes: a list it holds is what its first
-   completion keeps, and a given list is all it reads after a reopen too. */
+   completion keeps, and a given list is all it reads after a reopen too; one the board
+   reopened reads nothing new. */
 function willRead(db, review, task) {
+  if (boardReopened(db, review)) return false;
   const rows = db.stmt('SELECT task FROM covers WHERE review = ?').all(review).map((r) => r.task);
   if (!rows.length || rows.includes(task)) return true;
   return completedOnce(db, review) && !coversGiven(db, review);
@@ -288,7 +299,7 @@ function projectWs(db, wsKey) {
 
 /* The project's completed project-wide reviews, each with what it read up to. */
 function projectReviews(db, wsKeys) {
-  return db.stmt(`SELECT key FROM records WHERE kind = 'task' AND status = 'completed' AND json_extract(fields, '$.reviewScope') = 'project'
+  return db.stmt(`SELECT key FROM records WHERE kind = 'task' AND status = 'done' AND json_extract(fields, '$.reviewScope') = 'project'
     AND workstream IN (SELECT value FROM json_each(?))`).all(JSON.stringify(wsKeys))
     .map((r) => { const rec = loadRecord(db, r.key); return { key: r.key, cut: cutOf(db, rec) }; });
 }
@@ -305,7 +316,7 @@ function defaultList(db, review, c) {
   if (scopeOf(review.fields) === 'project') {
     const ws = projectWs(db, wsOf(db, review.key));
     const prev = projectReviews(db, ws).filter((r) => r.key !== review.key && r.cut < cut).reduce((m, r) => (m === null || r.cut > m ? r.cut : m), null);
-    return db.stmt(`SELECT key, json_extract(fields, '$.closed') AS closed, fields FROM records WHERE kind = 'task' AND status = 'completed' AND key <> ?
+    return db.stmt(`SELECT key, json_extract(fields, '$.closed') AS closed, fields FROM records WHERE kind = 'task' AND status = 'done' AND key <> ?
       AND workstream IN (SELECT value FROM json_each(?)) ORDER BY created, key`).all(review.key, JSON.stringify(ws))
       .filter((t) => ms(t.closed) !== null && ms(t.closed) <= cut && (prev === null || since(t, prev)) && !isReview(JSON.parse(t.fields)))
       .filter(open).map((t) => t.key);
@@ -315,11 +326,18 @@ function defaultList(db, review, c) {
   /* completing again after a reopen: only the work new since it last completed that sat before it */
   const prev = c && c.again ? readBefore(db, review.key) : null;
   return db.stmt(`SELECT r.key, json_extract(r.fields, '$.closed') AS closed, r.fields FROM track_items ti JOIN records r ON r.key = ti.task
-    WHERE ti.track = ? AND r.status = 'completed' AND r.key <> ? ORDER BY ti.position`).all(row.track, review.key)
+    WHERE ti.track = ? AND r.status = 'done' AND r.key <> ? ORDER BY ti.position`).all(row.track, review.key)
     .filter((t) => ms(t.closed) !== null && ms(t.closed) <= cut && !isReview(JSON.parse(t.fields)))
     .filter((t) => prev === null || (since(t, prev) && satBefore(db, t.key, review.key)))
     .filter(open)
     .map((t) => t.key);
+}
+
+/* What a review reads: its covers list, else the default its completion would take now. */
+export function reviewReads(db, key) {
+  const rows = db.stmt('SELECT task FROM covers WHERE review = ?').all(key).map((r) => r.task);
+  if (rows.length) return { listed: true, keys: rows };
+  return { listed: false, keys: defaultList(db, loadRecord(db, key), null) };
 }
 
 /* When a task's counted work last reached the board: the later of each commit's time and its link. */
@@ -331,8 +349,8 @@ function lastLinked(db, key, ignore) {
 
 /* When a reopened review last completed before its latest reopen, else null. */
 function readBefore(db, key) {
-  const r = db.stmt(`SELECT at FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[1]') = 'completed'
-    AND seq < (SELECT max(seq) FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[0]') = 'completed') ORDER BY seq DESC LIMIT 1`).get(key, key);
+  const r = db.stmt(`SELECT at FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[1]') IN ('done', 'completed')
+    AND seq < (SELECT max(seq) FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[0]') IN ('done', 'completed')) ORDER BY seq DESC LIMIT 1`).get(key, key);
   return r ? ms(r.at) : null;
 }
 
@@ -362,120 +380,74 @@ export function reviewCovers(db, input = {}, actor) {
   if (list && list.some((t) => !text(t))) throw new UsageError('review covers names T-n ids');
   return tx(db, () => {
     const review = taskOf(db, input.review ?? input.id ?? '');
-    if (!isReview(review.fields)) throw new UsageError(review.fields.id + ' is not a review task: label it review, or name it "Review ..."');
+    if (!isReview(review.fields)) throw new UsageError(review.fields.id + ' is not a review task: label it review');
     const keys = list ? [...new Set(list.map((t) => taskOf(db, t).key))] : defaultList(db, review, c);
     if (keys.includes(review.key)) throw new UsageError('a review never covers itself');
     return { review: review.fields.id, covers: writeCovers(db, review, keys, c, !!list), default: !list };
   });
 }
 
-/* A review task completing with no covers list takes the default; one completing again
-   after a reopen keeps the covers its reopen left and adds the work new since it last
-   completed, or with a given list reads that list again and nothing else. Answers the
-   covered ids, or null when it wrote none. */
+/* A review task completing with no covers list takes the default; one a session reopened
+   keeps the covers its reopen left and adds the work new since it last completed, or with
+   a given list reads that list again and nothing else; one the board's old review reopen
+   reopened keeps its covers as they stand, the work since being the next review's. Answers
+   the covered ids, or null when it wrote none. */
 export function reviewDone(db, key, actor) {
   const review = loadRecord(db, key);
   if (!review || !isReview(review.fields)) return null;
   const kept = db.stmt('SELECT task FROM covers WHERE review = ? ORDER BY task').all(key).map((r) => r.task);
   const again = completedOnce(db, key);
   if (kept.length && !again) return null;
+  if (again && boardReopened(db, key)) return kept.length ? kept.map((k) => labelOf(db, k)) : null;
   const c = { ...actorOf(actor), again };
   const given = kept.length > 0 && coversGiven(db, key);
   const keys = given ? kept : [...new Set([...kept, ...defaultList(db, review, c)])];
   return keys.length ? writeCovers(db, review, keys, c, given).map((x) => x.id) : null;
 }
 
-/* the review station's own act, said as the board's */
+/* The actor of the board's own review reopen, since taken out; its rows stay on old boards. */
 export const REVIEW_BY = 'board:review';
 
-/* a completed review goes back to open with a journal note naming the task. It drops
-   the covers that change outdated and keeps the rest, so its next completion reads only the
-   new work; what waits on it waits again. A given list keeps every row: it is what it reads. */
-function reopen(db, review, task, why, c) {
-  const given = coversGiven(db, review.key);
-  const diff = writeFront(db, review, { status: 'open', closed: undefined, updated: c.at }, TASK_KEYS);
-  const { ignore } = reviewSettings(db, review.key);
-  for (const cv of given ? [] : db.stmt('SELECT task, through_at FROM covers WHERE review = ?').all(review.key)) {
-    const last = newestOf(countedCommits(db, cv.task, ignore));
-    if (cv.task === task || ms(cv.through_at) === null || (last && ms(last.at) > ms(cv.through_at))) {
-      db.stmt('DELETE FROM covers WHERE review = ? AND task = ?').run(review.key, cv.task);
-    }
-  }
-  const body = 'Reopened: ' + why + '. It covers that work when it completes again.';
-  addNote(db, review.key, { at: c.at, actor: REVIEW_BY, body });
-  logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(review), changes: diff, by: REVIEW_BY, pc: c.pc, note: body });
-  return review.fields.id;
+/* Whether a review's latest move off completed was the board's old reopen. */
+function boardReopened(db, key) {
+  const r = db.stmt(`SELECT json_extract(line, '$.by') AS by FROM activity WHERE record = ?
+    AND json_extract(line, '$.changes.status[0]') IN ('done', 'completed') ORDER BY seq DESC LIMIT 1`).get(key);
+  return !!r && r.by === REVIEW_BY;
 }
 
-/* The completed reviews a change to task `t` reopens, at full depth: one covering it that a
-   newer commit outdates, and a track review after it (afterOn) that it completed after, when
-   it began before that review's first cut, the review's list was not given, and no open
-   review station after it reads it, as trackReview's planned reads it. */
-function reopens(db, t, ev, c) {
-  const out = new Map();
-  const sha = ev.commit ? shortSha(ev.commit.sha) : '';
-  const at = ev.commit ? ms(ev.commit.at) : ms(t.fields.closed) ?? c.date.getTime();
-  const words = (key) => t.fields.id + ' ' + (ev.commit ? 'gained commit ' + sha : 'completed') + ' after ' + labelOf(db, key) + ' completed';
-  const ended = db.stmt(`SELECT 1 FROM track_items ti JOIN records tr ON tr.key = ti.track WHERE ti.task = ? AND tr.status IN ('done', 'dropped', 'folded')`);
-  const add = (key) => {
-    /* a finished track's review stays done: the work reads uncovered for a project-wide review */
-    if (out.has(key) || ended.get(key)) return;
-    const s = reviewSettings(db, key);
-    if (s.depth !== 'full' || !coveredState(db, t.key, s.ignore).code) return;
-    out.set(key, words(key));
-  };
-  if (ev.commit) {
-    for (const cv of db.stmt(`SELECT c.review, c.through_at FROM covers c JOIN records r ON r.key = c.review
-        WHERE c.task = ? AND r.status = 'completed'`).all(t.key)) {
-      if (ms(cv.through_at) === null || at > ms(cv.through_at)) add(cv.review);
-    }
-  }
-  const pos = db.stmt('SELECT track, position FROM track_items WHERE task = ?').get(t.key);
-  if (pos && t.fields.status === 'completed') {
-    const after = afterOn(db, pos.track);
-    const me = { key: t.key, position: pos.position };
-    const reviews = db.stmt(`SELECT ti.task AS key, ti.position, r.status, r.fields FROM track_items ti JOIN records r ON r.key = ti.task
-      WHERE ti.track = ? AND ti.task <> ?`).all(pos.track, t.key)
-      .map((r) => ({ ...r, fields: JSON.parse(r.fields) })).filter((r) => isReview(r.fields) && after(r, me));
-    const follows = reviews.some((r) => r.status !== 'completed' && r.status !== 'dropped' && willRead(db, r.key, t.key));
-    for (const r of follows ? [] : reviews) {
-      if (r.status !== 'completed' || scopeOf(r.fields) !== 'track' || ms(r.fields.closed) === null || at <= ms(r.fields.closed)) continue;
-      /* a given list reopens only for a newer commit on a task in it, the branch above */
-      if (coversGiven(db, r.key)) continue;
-      if (db.stmt('SELECT 1 FROM covers WHERE review = ? AND task = ?').get(r.key, t.key) && !ev.commit) continue;
-      if (!satBefore(db, t.key, r.key)) continue;
-      add(r.key);
-    }
-  }
-  return [...out].map(([key, why]) => ({ rec: loadRecord(db, key), why }));
+/* a review the board's old reopen left open with nothing new to read: no status
+   change or covers list since. Listed for the session to close; the board closes none. */
+function leftOpen(db, key) {
+  const r = db.stmt(`SELECT json_extract(line, '$.by') AS by, json_extract(line, '$.changes.status[0]') AS was,
+    json_extract(line, '$.changes.status[1]') AS now FROM activity WHERE record = ?
+    AND (verb = 'covers' OR json_extract(line, '$.changes.status') IS NOT NULL) ORDER BY seq DESC LIMIT 1`).get(key);
+  return !!r && r.by === REVIEW_BY && doneWord(r.was) && r.now === 'open';
 }
 
-/* THE SHARED CHECK, on every path a task completes or gains a commit (editRecord,
-   upkeep's own completion, the band's look press, track finish, the picture, commit link):
-   a review completing takes its default covers; work a completed review read reopens it. */
+/* THE SHARED CHECK, on every path a task completes (editRecord, upkeep's own
+   completion, the band's look press, track finish, the picture): a review completing takes
+   its default covers. Work after a completed review stays uncovered for the next. */
 export function afterTask(db, key, ev = {}, actor) {
   const t = loadRecord(db, key);
-  if (!t) return { covers: null, reopened: [] };
-  const c = actorOf(actor);
-  const covers = ev.completed ? reviewDone(db, key, actor) : null;
-  const reopened = isReview(t.fields) ? [] : reopens(db, t, ev, c).map((r) => reopen(db, r.rec, key, r.why, c));
-  return { covers, reopened };
+  if (!t) return { covers: null };
+  return { covers: ev.done ? reviewDone(db, key, actor) : null };
 }
 
 /* what holds a track's finish at full depth: a completed code task on it left
-   uncovered after its last completed review (after its place or its start), or any at all
-   with no review. */
+   uncovered after its last completed review (after its place or its start, or with counted
+   work linked after its start), or any at all with no review. */
 export function finishHeld(db, trackKey, s = reviewSettings(db, trackKey)) {
   if (s.depth !== 'full') return [];
   const rows = db.stmt('SELECT task, position FROM track_items WHERE track = ? ORDER BY position').all(trackKey).map((r) => ({ ...r, rec: loadRecord(db, r.task) })).filter((r) => r.rec);
   let last = null;
   for (const r of rows) {
-    if (r.rec.fields.status !== 'completed' || !isReview(r.rec.fields)) continue;
-    const cut = cutOf(db, r.rec);
+    if (r.rec.fields.status !== 'done' || !isReview(r.rec.fields)) continue;
+    /* one the board reopened read nothing new when it completed again: its first read stands */
+    const cut = (boardReopened(db, r.task) ? firstCut(db, r.task) : null) ?? cutOf(db, r.rec);
     if (!last || r.position > last.position) last = { position: r.position, cut };
   }
-  return rows.filter((r) => r.rec.fields.status === 'completed' && !isReview(r.rec.fields))
-    .filter((r) => !last || r.position > last.position || (ms(r.rec.fields.closed) ?? 0) > last.cut)
+  return rows.filter((r) => r.rec.fields.status === 'done' && !isReview(r.rec.fields))
+    .filter((r) => !last || r.position > last.position || (ms(r.rec.fields.closed) ?? 0) > last.cut || lastLinked(db, r.task, s.ignore) > last.cut)
     .filter((r) => { const st = coveredState(db, r.task, s.ignore); return st.code && !st.covered; })
     .map((r) => ({ id: r.rec.fields.id, name: r.rec.fields.name }));
 }
@@ -505,12 +477,12 @@ export function trackReview(db, trackKey, s = reviewSettings(db, trackKey)) {
   const reviews = [];
   const folded = new Set();
   const named = db.stmt('SELECT label, title FROM records WHERE key = ?');
-  const once = db.stmt(`SELECT 1 FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[0]') = 'completed' LIMIT 1`);
+  const once = db.stmt(`SELECT 1 FROM activity WHERE record = ? AND json_extract(line, '$.changes.status[0]') IN ('done', 'completed') LIMIT 1`);
   for (const { task, position } of db.stmt('SELECT task, position FROM track_items WHERE track = ? ORDER BY position').all(trackKey)) {
     const t = loadRecord(db, task);
     if (!t) continue;
     const f = t.fields;
-    const head = { id: f.id, key: task, name: f.name, position, status: f.status, closed: f.status === 'completed' ? f.closed || null : null };
+    const head = { id: f.id, key: task, name: f.name, position, status: f.status, closed: f.status === 'done' ? f.closed || null : null };
     if (isReview(f)) {
       const all = db.stmt('SELECT task, through FROM covers WHERE review = ?').all(task).map((r) => {
         const n = named.get(r.task) || {};
@@ -518,13 +490,13 @@ export function trackReview(db, trackKey, s = reviewSettings(db, trackKey)) {
         return { id: n.label || r.task, key: r.task, name: n.title || '', through: r.through, added: st.added, removed: st.removed, now: st.covered && st.by === f.id };
       }).sort(byId);
       /* a review that stood complete shows and folds only what it still covers; the rest are beads again */
-      const stood = f.status === 'completed' || (f.status !== 'dropped' && !!once.get(task));
+      const stood = f.status === 'done' || (f.status !== 'dropped' && !!once.get(task));
       const covers = (stood ? all.filter((cv) => cv.now) : all).map(({ now, ...cv }) => cv);
       if (stood) for (const cv of covers) folded.add(cv.key);
       reviews.push({ ...head, review: true, reviewScope: scopeOf(f), covers });
       continue;
     }
-    if (f.status !== 'completed') continue;
+    if (f.status !== 'done') continue;
     const st = coveredState(db, task, s.ignore);
     if (!st.code) continue;
     finished.push({ ...head, covered: st.covered, by: st.by, commits: st.commits, added: st.added, removed: st.removed, ...(st.guess ? { guess: st.guess } : {}) });
@@ -537,19 +509,27 @@ export function trackReview(db, trackKey, s = reviewSettings(db, trackKey)) {
   const waiting = new Set((held.length ? held : open).map((t) => t.id));
   const after = afterOn(db, trackKey);
   const late = finished.filter((t) => waiting.has(t.id));
-  const next = late.length ? reviews.find((r) => r.status !== 'completed' && r.status !== 'dropped'
-    && late.every((t) => after(r, t) && willRead(db, r.key, t.key))) : null;
+  const running = reviews.filter((r) => r.status !== 'done' && r.status !== 'dropped');
+  /* a running review whose given list holds late work is reading it; a step is planned only for the rest */
+  const holds = db.stmt('SELECT 1 FROM covers WHERE review = ? AND task = ?');
+  const reading = running.filter((r) => coversGiven(db, r.key) && !boardReopened(db, r.key))
+    .map((r) => ({ id: r.id, tasks: late.filter((t) => holds.get(r.key, t.key)).map((t) => t.id) })).filter((r) => r.tasks.length);
+  const rest = late.filter((t) => !reading.some((r) => r.tasks.includes(t.id)));
+  const next = rest.length ? running.find((r) => rest.every((t) => after(r, t) && willRead(db, r.key, t.key))) : null;
+  const stale = reviews.filter((r) => r.status === 'open' && leftOpen(db, r.key)).map((r) => ({ id: r.id, name: r.name }));
   return {
     depth: s.depth, due, ...(due ? { why: 'size' } : {}), size: s.tasks, since,
     uncovered: open.map((t) => ({ id: t.id, name: t.name })), lines: open.reduce((n, t) => n + t.added + t.removed, 0),
-    locked: held.length > 0, held: held.map((t) => t.id), planned: next ? next.id : null,
+    /* planned: the review for the rest, else the first reading one when they read it all */
+    locked: held.length > 0, held: held.map((t) => t.id), planned: next ? next.id : !rest.length && reading.length ? reading[0].id : null,
+    ...(reading.length ? { reading } : {}), ...(stale.length ? { leftOpen: stale } : {}),
     /* a completed review on this track folds what it covered; the rest stay beads */
     finished: finished.filter((t) => !folded.has(t.key)), reviews,
   };
 }
 
 /* The readout without its lists, as the kickoff, the handoff and the summary carry it. */
-export const reviewHead = (r) => (r ? { depth: r.depth, due: r.due, ...(r.why ? { why: r.why } : {}), size: r.size, since: r.since, uncovered: r.uncovered, lines: r.lines, locked: r.locked, held: r.held, planned: r.planned } : null);
+export const reviewHead = (r) => (r ? { depth: r.depth, due: r.due, ...(r.why ? { why: r.why } : {}), size: r.size, since: r.since, uncovered: r.uncovered, lines: r.lines, locked: r.locked, held: r.held, planned: r.planned, ...(r.reading ? { reading: r.reading } : {}), ...(r.leftOpen ? { leftOpen: r.leftOpen } : {}) } : null);
 
 /* The raw facts for a track or a workstream: its code tasks with their coverage, its
    reviews with what each covered, the unowned commits in its repos since it began (each
@@ -576,16 +556,18 @@ export function coverage(db, input = {}) {
     for (const k of keys) {
       const t = loadRecord(db, k);
       const tr = trackOf.get(k);
-      const head = { id: t.fields.id, key: k, name: t.fields.name, track: tr ? labelOf(db, tr.track) : null, status: t.fields.status, completed: t.fields.status === 'completed' ? t.fields.closed || null : null };
+      const head = { id: t.fields.id, key: k, name: t.fields.name, track: tr ? labelOf(db, tr.track) : null, status: t.fields.status, completed: t.fields.status === 'done' ? t.fields.closed || null : null };
       if (isReview(t.fields)) {
         const covers = db.stmt('SELECT task, through, through_at FROM covers WHERE review = ?').all(k)
           .map((r) => ({ id: labelOf(db, r.task), through: r.through, throughAt: r.through_at })).sort(byId);
-        reviews.push({ ...head, reviewScope: scopeOf(t.fields), covers, ...(coversGiven(db, k) ? { given: true } : {}) });
+        reviews.push({ ...head, reviewScope: scopeOf(t.fields), covers, ...(coversGiven(db, k) ? { given: true } : {}),
+          ...(t.fields.status === 'open' && leftOpen(db, k) ? { leftOpen: true } : {}) });
         continue;
       }
       const st = coveredState(db, k, ignoreAt(tr && tr.track));
       if (!st.code) continue;
-      tasks.push({ ...head, commits: st.commits, added: st.added, removed: st.removed, covered: st.covered, by: st.by, guess: st.guess });
+      const aim = aimOf(db, k);
+      tasks.push({ ...head, commits: st.commits, added: st.added, removed: st.removed, covered: st.covered, by: st.by, guess: st.guess, intent: aim.intent, decisions: aim.decisions });
     }
     const ws = scope.kind === 'workstream' ? scope : scope.fields.workstream ? loadRecord(db, scope.fields.workstream) : null;
     const repos = new Set((ws && Array.isArray(ws.fields.projectRepos) ? ws.fields.projectRepos : []).map(String));

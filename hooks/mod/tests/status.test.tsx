@@ -3,7 +3,7 @@
  * row. */
 import { describe, expect, test } from 'claude-code/testing'
 import { statusModel, statusPicture } from '../../../lib/mod-core.mjs'
-import { start, world } from './world.ts'
+import { COLD_START, plain, start, world } from './world.ts'
 
 const PLUGIN = 'askerdo'
 const HINT = { isDraft: false, isWorking: false, hint: '? for shortcuts' }
@@ -47,11 +47,22 @@ describe('the status line', () => {
     expect(hand.text).toContain('+1')
     expect(hand.tip).toContain('T-3')
     expect(seg(statusModel({ thread: { id: 'TR-4', name: 'e2e line' }, hand: [] }), 'task')).toBeUndefined()
-    /* a side track's segment is its chain; its card adds the now set with agents */
+    /* a side track's segment is its chain; its card says each task's word with who,
+       one row per task as the board sends them, and the bar's alt counts the unconfirmed apart */
     const chain = 'TR-7 under TR-5, 1 parked behind this'
-    const side = seg(statusModel({ thread: { id: 'TR-7', name: 'side', state: 'active', chain, now: [{ id: 'T-41', agent: 'api-builder' }] } }), 'thread')
+    const at = Date.parse('2026-11-15T12:00:00Z'), ago = (min: number) => new Date(at - min * 60000).toISOString()
+    const now = [{ id: 'T-41', agent: 'api-builder', word: { is: 'running', worker: 'agent', job: 'api-builder', since: ago(12) } },
+      { id: 'T-42', agent: 'row-lane', word: { is: 'unconfirmed', worker: 'agent', job: 'row-lane', pc: 'desk PC', since: ago(40) } }]
+    const readySet = [{ id: 'T-43', agent: 'finisher', word: { is: 'ready', next: 'settle', worker: 'agent', job: 'finisher', how: 'finished', since: ago(5) } },
+      { id: 'T-44', session: 's-1', word: { is: 'ready', next: 'continue', worker: 'session', session: 's-1', how: 'handed_on', since: ago(9) } }]
+    const side = seg(statusModel({ thread: { id: 'TR-7', name: 'side', state: 'active', chain, now, readySet, done: 1, total: 6, session: 's-1' }, now: at }), 'thread')
     expect([side.text, side.pic.label]).toEqual([chain, chain])
-    expect(side.tip).toContain('T-41, api-builder')
+    const rows = side.card.groups[1].map((r: any) => [r.lead.state, r.lines.flat().map((p: any) => p.text).join('')])
+    const row = (id: string) => rows.find((r: any) => r[1].startsWith(id + ',')) || []
+    expect([row('T-41')[0], row('T-42')[0], row('T-43')[0], row('T-44')[0]]).toEqual(['now', 'left', 'ready', 'ready'])
+    expect([/api-builder/.test(row('T-41')[1]), /desk PC/.test(row('T-42')[1]), /settle/.test(row('T-43')[1]), /this session.*handed on/.test(row('T-44')[1])]).toEqual([true, true, true, true])
+    const alt = side.card.groups[1][0].lines[0][0].pic.alt
+    expect([/\b1 running/.test(alt), /\b1 unconfirmed/.test(alt), /landing|stopped/.test(alt)]).toEqual([true, true, false])
     /* the task's tooltip says its intent and newest note in its rows; no link, no press line */
     /* each wait carries its short name */
     const graph = { view: { tracks: [{ id: 'TR-4', name: 'e2e line', tasks: [{ id: 'T-9', name: 'wire it', waitsOn: ['after T-84', 'after Q12'] }], names: { 'T-84': 'the move' } }] } }
@@ -100,15 +111,30 @@ describe('the status line', () => {
     const none = mark({ blocking: 0, waiting: 0, questions: [] })
     expect([one.pic.face, one.pic.label, one.press, mark({ blocking: 0, waiting: 2 }).pic.face, none.pic.face, none.pic.label, none.press])
       .toEqual(['blocking', '1', 'questions', 'waiting', 'quiet', undefined, 'home'])
+    /* something asleep turns the quiet face to the moon and the waiting face to the sky crescent;
+       blocking keeps its plain dot; the card names the first five, then a count */
+    const asleep = Array.from({ length: 7 }, (_, i) => ({ id: 'Q' + (20 + i), name: 'nap ' + i, wake: 'until Nov 20' }))
+    const nap = (elsewhere: any) => statusModel({ reading: { percent: 5 }, elsewhere, asleep }).mark
+    const [q, w, b] = [nap({ blocking: 0, waiting: 0, questions: [] }), nap({ blocking: 0, waiting: 2 }), nap({ blocking: 1, waiting: 2 })]
+    expect([q.pic.face, w.pic.face, b.pic.face, q.card.asleep.map((r: any) => r.name), q.card.asleepMore, w.card.asleep.length])
+      .toEqual(['asleep', 'waiting-asleep', 'blocking', ['nap 0', 'nap 1', 'nap 2', 'nap 3', 'nap 4'], 2, 5])
+    /* the waiting crescent is the moon's shape in the waiting dot's inks, never the moon's */
+    const art = (pic: any) => statusPicture(pic).source
+    expect([art(w.pic).includes('mask='), art(w.pic).includes('#39C9FF'), art(w.pic).includes('#FFE08A'), art(b.pic).includes('mask=')])
+      .toEqual([true, true, false, false])
   })
 
-  test('the hint line keeps the app\'s hint and draws the segments at its end, each with its card; the meters alone before the first load; a cloud session\'s line draws too', async ($: any, on: any) => {
+  test('the hint line keeps the app\'s hint and draws the segments at its end, each with its card; the meters alone before the first load; a cloud session\'s line draws too', COLD_START, async ($: any, on: any) => {
     const w = world(on)
     on('ui.render', { component: 'PromptHint' }, () => ({ type: 'Box', props: { key: 'engine-hint' }, children: [] }))
     /* a reading draws before the band's first load, and nothing of the board does */
     const before = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'PromptHint', props: HINT })
     expect(await before.find({ key: 'engine-hint' })).toBeDefined()
-    expect(await segKeys(before)).toEqual(['status-context'])
+    /* the first figures land at the once a second gate, not at once */
+    const unread = await segKeys(before)
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    expect([unread, await segKeys(before)]).toEqual([[], ['status-context']])
     await before.unmount()
     w.usage.rateLimits = [{ kind: 'seven_day', percentUsed: 29 }]
     await start($, w)
@@ -210,6 +236,8 @@ describe('the status line', () => {
     expect([markCard.children[0].children[0].type, !!qrow, JSON.stringify(qrow).includes('"Button"')]).toEqual(['Svg', true, false])
     /* the first model reply's figures replace the blank week ring with its own; no five-hour rate, no 5 ring */
     await $.session.measure({ context: { window: 1000000 }, rateLimits: [{ kind: 'seven_day', percentUsed: 29 }], changed: ['rateLimits'] })
+    /* a figure draws at the gate's next release */
+    await w.clock.advance(1000)
     await w.clock.settle()
     expect([await ui.find({ key: 'status-hour' }), await percentOf('status-week')]).toEqual([undefined, '29%'])
     await ui.unmount()
@@ -230,7 +258,7 @@ describe('the status line', () => {
     await w.clock.settle()
     const label = async (ui: any, k: string) => {
       const seg = await ui.find({ key: 'status-' + k })
-      return seg ? faceOf(seg).find((c: any) => c && c.type === 'Text')?.children.join('') : undefined
+      return seg ? plain(faceOf(seg).find((c: any) => c && c.type === 'Text')?.children.join('')) : undefined
     }
     const at = async (bodyColumns: number) => {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: { ...BAND, bodyColumns } })

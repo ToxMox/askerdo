@@ -11,7 +11,7 @@
 |3 FORECAST|🟢|no input needed here, safe to walk away; the footer carries what's next|
 |3 FORECAST|🔜|input will be needed soon: a gate, decision or check-in at the next step or the one after; one further off is 🟢 until then|
 |3 FORECAST|🙋|input outstanding: an ask in this reply, a standing go-gate|
-|3 FORECAST|🏁|finished: the arc is closed, nothing pending here; a next arc staged by a depth or asked-for handoff rides its resume command|
+|3 FORECAST|🏁|finished: the arc is closed, nothing pending here; a next arc staged by a handoff the mod's note called for or that was asked for rides its resume command|
 |counts|⏳|progress counter on multi-part work|
 |input label|⬇️|starts the label line above a fenced block the user must type or click|
 |parked|💤|zero-obligation parked idea, wherever it appears; work worth recommending never gets it|

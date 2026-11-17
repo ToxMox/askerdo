@@ -18,6 +18,7 @@ const u = await import('../server/verbs/upkeep.mjs');
 const { writeHandoff } = await import('../server/verbs/handoffs.mjs');
 const { needsYouModel, overviewModel, workstreamKey, workstreamModel } = await import('../server/web/data.mjs');
 const { freshBoard } = await import('./helpers/board-db.mjs');
+const { addActivity } = await import('../server/records.mjs');
 
 process.env.ASKERDO_SANDBOX_HOME = tempDir('askerdo-store-');
 
@@ -53,9 +54,9 @@ test('a reused label: a page by it and a day shows the holder then; an old row o
     const old = w.createRecord(b.db, { kind: 'workstream', name: 'Lighthouse rebuild', description: 'd' }, on('2026-01-01'));
     const ws = w.createRecord(b.db, { kind: 'workstream', name: 'Harbour', description: 'd' }, on('2026-01-01'));
     const lamp = w.createRecord(b.db, { kind: 'task', name: 'Paint the lamp room', description: 'd', workstream: ws.id }, on('2026-01-01'));
-    const hang = w.createRecord(b.db, { kind: 'task', name: 'Hang the lamp', description: 'd', workstream: ws.id }, on('2026-01-01'));
+    const hang = w.createRecord(b.db, { kind: 'task', name: 'Hang the lamp', description: 'd\n## Lamp notes\n\n```\n# a shell comment\n```', workstream: ws.id }, on('2026-01-01'));
     const tr = t.newTrack(b.db, { name: 'Lamp line', workstream: ws.id, tasks: [lamp.id] }, on('2026-01-01'));
-    w.editRecord(b.db, { id: lamp.id, status: 'completed' }, on('2026-01-02'));
+    w.editRecord(b.db, { id: lamp.id, status: 'done' }, on('2026-01-02'));
     w.noteRecord(b.db, { id: hang.id, text: 'Waits on ' + lamp.id + ' drying.' }, on('2026-01-02'));
     w.taskUpdate(b.db, { id: hang.id, inHand: true }, on('2026-01-02'));
     w.closeRecord(b.db, { id: old.id, outcome: 'done' }, on('2026-01-02'));
@@ -64,6 +65,13 @@ test('a reused label: a page by it and a day shows the holder then; an old row o
     assert.deepEqual([now.id, rope.id], [old.id, lamp.id], 'both labels rested and were reused');
     const cookie = await signIn(b);
     const get = async (p) => (await fetch(b.url + p, { headers: { cookie } })).text();
+    /* a gate link from before keys holds the label; it gates the task that held it then, never the reuser */
+    const glass = q.register(b.db, { name: 'lamp glass', gist: 'Which glass?', projectDir: 'C:/repos/harbour', session: 's1', blocking: false, ask: 'Clear (a) or red (b)?',
+      gates: [lamp.id], options: [{ type: 'a', option: 'clear' }, { type: 'b', option: 'red' }] }, null, { now: on('2026-01-01').now });
+    const gk = b.db.prepare('SELECT key FROM records WHERE label = ?').get(glass.id).key;
+    b.db.prepare(`UPDATE links SET "to" = ? WHERE "from" = ? AND type = 'gates'`).run(lamp.id, gk);
+    assert.ok(!(await get('/r/' + rope.id)).includes('lamp glass'), 'the reused label brings no gate');
+    assert.ok((await get('/r/' + lamp.id + '?at=2026-01-10')).includes('lamp glass'), 'the old link gates the task it meant');
     const then = await fetch(b.url + '/r/' + old.id + '?at=2026-01-10', { headers: { cookie } });
     assert.equal(then.status, 200);
     assert.match(heading(await then.text()), /Lighthouse rebuild/);
@@ -82,6 +90,9 @@ test('a reused label: a page by it and a day shows the holder then; an old row o
     /* the holder reads as a session, never its raw id, and an empty Intent draws no heading */
     assert.match(hangPage, /<dt>inHand<\/dt><dd>a session<\/dd>/);
     assert.ok(!/>Intent</.test(hangPage), 'no heading over an empty Intent');
+    /* the writer's own ## line is kept, empty, and drawn below the record's sections, never as one */
+    assert.ok(/<h4 class="uh">Lamp notes</.test(hangPage) && !/<h3>Lamp notes/.test(hangPage), hangPage);
+    assert.ok(/<code># a shell comment/.test(hangPage), 'a fenced # line reads as written');
   } finally { await b.close(); }
 });
 
@@ -153,6 +164,12 @@ test('the drawn pages and the task page: a station opens its own task, a track p
     assert.ok(items === 4 && !/<p><b>/.test(qBody), 'two gist and two stakes items, never a paragraph: ' + qBody);
     assert.ok(!/ready to start/i.test(hangPage) && /ready to start/i.test(await get('/r/' + paint.id)), 'held, and the task before it ready');
     assert.ok((await get('/r/' + rope.id)).includes('/r/' + hang.key), 'the far task waiting on it is named on its page');
+    /* a writer's own "## Options" line stays theirs; the page draws the real section once */
+    q.answer(b.db, { id: ask.id, pick: 'a' }, { user: true }, day);
+    const again = q.register(b.db, { name: 'lamp colour again', gist: 'Red after all?', projectDir: 'C:/repos/harbour', session: 's1', blocking: false,
+      ask: 'Red (a, my pick) or clear (b)?', pick: 'a', revisits: [ask.id], reversal: 'Ships asked for red\n## Options', options: [{ type: 'a', option: 'red' }, { type: 'b', option: 'clear' }] }, null);
+    const againPage = await get('/r/' + again.key);
+    assert.ok(/<h4 class="uh">Options</.test(againPage) && !/<table>/.test(againPage) && !/<h3>Options/.test(againPage), againPage);
   } finally { await b.close(); }
 });
 
@@ -228,16 +245,19 @@ test('what waits on you reads the same on every view: a question, a live handoff
   const line = t.newTrack(db, { name: 'Lamp line', workstream: ws.id, tasks: [paint.id, hang.id] }, on('2026-03-01'));
   q.register(db, { name: 'lamp colour', gist: 'Which glass?', projectDir: 'C:/repos/harbour', session: 's1', blocking: true,
     ask: 'Clear (a, my pick) or red (b)?', pick: 'a', gates: [hang.id], options: [{ type: 'a', option: 'clear' }, { type: 'b', option: 'red' }] }, null, on('2026-03-02'));
-  w.noteRecord(db, { id: paint.id, text: 'started' }, on('2026-03-02'));
+  w.editRecord(db, { id: paint.id, inHand: true }, on('2026-03-02'));
   w.readRecord(db, { id: paint.id, session: 's2' });
   o.overrideRequest(db, { kind: 'fix', items: [{ record: paint.id, intent: 'White walls' }], reason: 'an audit', summary: 'Rewrite the intent' }, on('2026-03-02'));
-  w.editRecord(db, { id: lens.id, close: 'look' }, on('2026-03-02'));
-  w.editRecord(db, { id: lens.id, landed: true }, on('2026-03-02'));
   const h = writeHandoff(db, { track: line.id, focus: 'Paint next.', state: 'Half done.', verify: [{ path: 'C:/repos/harbour' }], waitingOnUser: ['Pick the glass'], session: 's1' }, on('2026-03-02'));
   w.noteRecord(db, { id: hang.id, text: 'a later note moves the line' }, on('2026-03-05'));
+  /* a snoozed question sits in the page's asleep list, in no view's count */
+  const nap = q.register(db, { name: 'lens maker', gist: 'Who?', projectDir: 'C:/repos/harbour', session: 's1', blocking: true,
+    ask: 'Ana (a, my pick) or Bo (b)?', pick: 'a', options: [{ type: 'a', option: 'Ana' }, { type: 'b', option: 'Bo' }] }, null, on('2026-03-03'));
+  q.snooze(db, { id: nap.id, wakeOn: lens.id }, null, on('2026-03-03'));
 
   const opts = { now: new Date(2026, 2, 6, 12) };
   const all = needsYouModel(db, {}, opts);
+  assert.deepEqual([all.asleep.map((x) => x.id), all.asleep[0].snooze.wakeOn, all.items.some((i) => i.id === nap.id)], [[nap.id], lens.id, false]);
   const kinds = [...new Set(all.items.map((i) => i.kind))];
   assert.deepEqual(kinds, ['question', 'handoff', 'override', 'call'], 'each kind, the question first: ' + all.items.map((i) => i.text).join(' | '));
   const over = overviewModel(db, opts);
@@ -261,11 +281,13 @@ test('the activity page lists newest first and a workstream keeps its own; the r
     u.upkeepSwitch(b.db, { on: true }, on('2026-01-01'));
     const harbour = w.createRecord(b.db, { kind: 'workstream', name: 'Harbour', description: 'd' }, on('2026-01-01'));
     const orchard = w.createRecord(b.db, { kind: 'workstream', name: 'Orchard', description: 'd' }, on('2026-01-02'));
-    w.createRecord(b.db, { kind: 'task', name: 'Paint the lamp room', description: 'd', workstream: harbour.id }, on('2026-01-03'));
+    const lamp = w.createRecord(b.db, { kind: 'task', name: 'Paint the lamp room', description: 'd', workstream: harbour.id }, on('2026-01-03'));
+    /* an imported line from before records had keys names its record by label alone */
+    addActivity(b.db, { ts: '2026-01-03T09:00:00-05:00', verb: 'note', kind: 'task', id: lamp.id, name: 'Sand the lamp room', by: 'cli' });
     const pears = w.createRecord(b.db, { kind: 'task', name: 'Pick the pears', description: 'd', workstream: orchard.id }, on('2026-01-04'));
     for (const n of [1, 2, 3]) w.noteRecord(b.db, { id: pears.id, text: 'basket ' + n }, on('2026-01-04'));
-    /* a hand change and a plain edit after it in the same minute (upkeep's echo) */
-    w.editRecord(b.db, { id: pears.id, status: 'in_progress' }, on('2026-01-04'));
+    /* a take and a plain edit after it in the same minute: the take is its run's line */
+    w.editRecord(b.db, { id: pears.id, inHand: true }, on('2026-01-04'));
     w.editRecord(b.db, { id: pears.id, priority: 'high' }, on('2026-01-04'));
     const asked = q.register(b.db, {
       name: 'which rope', gist: 'Rope?', projectDir: 'C:/repos/harbour-app', session: 's2', blocking: false,
@@ -287,7 +309,7 @@ test('the activity page lists newest first and a workstream keeps its own; the r
     const notes = all.split('<li>').filter((li) => li.includes('Pick the pears') && /noted/.test(li));
     assert.ok(notes.length === 1 && / 3 times/.test(notes[0]), 'three notes in one minute fold into one line with its count');
     const edits = all.split('<li>').filter((li) => li.includes('Pick the pears') && /edited/.test(li));
-    assert.ok(edits.length === 1 && /in progress/.test(edits[0]) && !/times/.test(edits[0]), 'the hand change and its echo are one line that says the move: ' + edits.join(' | '));
+    assert.ok(edits.length === 1 && !/times/.test(edits[0]), 'the plain edit is one line of its own: ' + edits.join(' | '));
     const lis = all.split('<li>').map((li) => li.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' '));
     const prof = lis.filter((li) => /lean-marks/.test(li));
     assert.ok(prof.length === 2 && prof.every((li) => !/profile profile/.test(li) && li.split('lean-marks').length === 2)
@@ -297,11 +319,11 @@ test('the activity page lists newest first and a workstream keeps its own; the r
     assert.deepEqual(hands.map((li) => ['let go', 'taken over', 'taken in hand'].filter((h) => li.includes(h)).join()), ['let go', 'taken over', 'taken in hand'],
       'three hand rows, upkeep folded in: ' + hands.join(' | '));
     assert.ok(hands.every((li) => !/ now |times/.test(li)), hands.join(' | '));
-    /* the record page's status chip reads in words */
+    /* a task's chip says its word: taken in hand in January and never renewed since */
     const page = await get('/r/' + pears.id);
-    assert.ok(/>in progress</.test(page) && !/>in_progress</.test(page), 'the chip says in progress');
+    assert.ok(/>unconfirmed</.test(page), 'the chip says unconfirmed');
     const mine = await get('/activity?ws=' + harbour.id);
-    assert.ok(mine.includes('Paint the lamp room') && !mine.includes('Pick the pears'), "the filter keeps that workstream's lines");
+    assert.ok(mine.includes('Paint the lamp room') && mine.includes('Sand the lamp room') && !mine.includes('Pick the pears'), "the filter keeps that workstream's lines");
     const card = (await get('/rulings')).split('<article').find((c) => c.includes('>' + asked.id + '<'));
     assert.ok(card && card.includes('harbour-app') && card.includes('hemp rope'), "its project names the group, its row the pick's words");
   } finally { await b.close(); }

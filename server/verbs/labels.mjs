@@ -17,7 +17,7 @@ export const LABEL_KINDS = Object.freeze({
   question: { prefix: 'Q', sep: '', ended: ['answered', 'dropped'] },
   workstream: { prefix: 'WS', sep: '-', ended: ['closed'] },
   plan: { prefix: 'P', sep: '-', ended: ['closed'] },
-  task: { prefix: 'T', sep: '-', ended: ['dropped', 'completed'] },
+  task: { prefix: 'T', sep: '-', ended: ['dropped', 'done'] },
   thread: { prefix: 'TH', sep: '-', ended: ['done', 'dropped'] },
   knowledge: { prefix: 'K', sep: '-', ended: ['superseded', 'withdrawn'] },
   procedure: { prefix: 'PR', sep: '-', ended: ['retired'] },
@@ -146,6 +146,32 @@ export function resolveRecord(db, token, { kinds, day } = {}) {
   const earlier = db.stmt(ROW + " WHERE key IN (SELECT key FROM labels WHERE label = ? AND origin = 'history')").all(label)
     .map(entryOf).filter(ok);
   return earlier.length ? latest(earlier) : null;
+}
+
+/* Gate links written before keys hold a label: each counts only for the record that held it on the day
+   its question was made (a gate link keeps no date of its own), so a reused label brings no other gate.
+   The questions whose label links mean each of `taskKeys`, as [{ task, from }]. */
+export function labelGates(db, taskKeys) {
+  const out = [];
+  const meant = new Map();
+  for (const key of taskKeys) {
+    for (const l of db.stmt(`SELECT DISTINCT l."from" AS f, l."to" AS label, json_extract(q.fields, '$.created') AS created FROM labels lb
+        CROSS JOIN links l ON l."to" = lb.label AND l.type = 'gates' JOIN records q ON q.key = l."from" WHERE lb.key = ?`).all(key)) {
+      const id = l.label + ' ' + l.f;
+      if (!meant.has(id)) meant.set(id, heldOn(db, l.label, stampDay(l.created)));
+      if (meant.get(id) === key) out.push({ task: key, from: l.f });
+    }
+  }
+  return out;
+}
+
+/* The key of the record a label named on `day`, as resolve --at reads it; with no holder that day, the resolver's own pick. */
+function heldOn(db, label, day) {
+  let hit = null;
+  try { hit = day ? resolveLabel(db, label, { at: day }).record : null; } catch { hit = null; }
+  if (hit) return hit.key;
+  const e = resolveRecord(db, label, { day: day || undefined });
+  return e ? e.key : null;
 }
 
 /* Every item of a refs list that names a record stored as its key. */

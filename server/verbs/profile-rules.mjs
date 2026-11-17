@@ -4,6 +4,7 @@
    way from its cache; server/verbs/profiles.mjs holds the verbs. */
 import { UsageError } from './labels.mjs';
 import { isKey } from '../records.mjs';
+import { ROLE_RE, agentsBlockFor, blockOf } from '../rules-block.mjs';
 
 /* The working-rule line each value writes into the rules in force; the settings'
    examples read these same lines. */
@@ -14,12 +15,12 @@ export const RULE_TEXT = {
     off: 'Write no new tests.',
   },
   'tests.fullRun': {
-    end: 'While working, run only the test files you touch; run the full suite once, at the end, before the last commit; take the starting count from the brief, never a before run.',
+    end: 'While working, run only the test files you touch; run the full suite once, at the end, before the last commit; take the starting count from the dispatch (its brief or its run details), never a before run.',
     merge: 'While working, run only the test files you touch; skip the full suite, it runs after the merge.',
     never: 'Run only the test files you touch; never the full suite.',
   },
   'tests.pinWording': { false: 'Never pin exact wording or bytes of output in a test; check the meaningful part.' },
-  'dispatch.stateNote': { true: 'When the brief names a -state.md note, keep it current: done with commit hashes, next, and a CONTINUE: line (CONTINUE: none when the brief is done, else the next step).' },
+  'dispatch.stateNote': { true: 'When the dispatch (its brief or its run details) names a -state.md note, keep it current: done with commit hashes, next, and a CONTINUE: line (CONTINUE: none when the work is done, else the next step).' },
   'dispatch.outputRule': { true: 'Final response under 2000 characters: outcomes, not process.' },
 };
 
@@ -71,9 +72,9 @@ export const SETTINGS = Object.freeze({
   },
   'agent.hardDeny': {
     kind: 'bool', def: false, label: 'Lock at the hard floor', takes: 'depth',
-    line: 'Past the hard floor, the agent may write only its state note.',
-    changes: "Refuses every tool past the hard floor but a write to the agent's state note, so it has to hand back.",
-    example: { kind: 'pair', a: ['Off', 'Past the hard floor the note turns urgent; every tool still works.'], b: ['On', 'Past the hard floor every tool is refused but a write to the state note.'] },
+    line: 'Past the hard floor, the agent may only write its state note and hand its report back.',
+    changes: "Refuses every tool past the hard floor but a write to the agent's state note and its hand-back of the report, so it has to hand back.",
+    example: { kind: 'pair', a: ['Off', 'Past the hard floor the note turns urgent; every tool still works.'], b: ['On', 'Past the hard floor every tool is refused but a write to the state note and the hand-back.'] },
   },
   /* the working rules; the built-in values are the built-in rules */
   'tests.policy': {
@@ -116,8 +117,9 @@ export const SETTINGS = Object.freeze({
   },
   'rules.add': {
     kind: 'lines', def: [], rule: true, list: true, label: 'Rule lines', takes: 'rules',
-    line: 'Working rules of your own, one line each, for sessions, agents or both.',
-    changes: 'Each line rides the rules in force wherever its profile reaches: the session alone, its agents alone, or both.',
+    line: 'Working rules of your own, one line each, for sessions, agents, one role of agents, or both.',
+    changes: 'Each line rides the rules in force wherever its profile reaches: the session alone, its agents alone, the agents of one role'
+      + ' (a subagent type, or a label on the task an agent is dispatched on), or both.',
     example: { kind: 'text', text: 'few-tests, for agents: Few tests: one only for a failure someone would actually hit or a standing ruling.' },
   },
   'rules.drop': {
@@ -130,12 +132,12 @@ export const SETTINGS = Object.freeze({
   'review.depth': {
     kind: 'choice', values: ['off', 'light', 'full'], def: 'light', label: 'Review coverage', takes: 'review',
     line: 'How closely the board tracks which finished code a review has read.',
-    changes: "Off computes and shows nothing. Light nudges on the Tracks tab, in the kickoff and the handoff once a track's unreviewed code tasks reach the review size. Full also reopens a completed review when work it read changes, so what waits on it waits again, and holds a track's finish until a review covers its finished code.",
+    changes: "Off computes and shows nothing. Light nudges on the Tracks tab, in the kickoff and the handoff once a track's unreviewed code tasks reach the review size. A commit after a review is done counts as unreviewed work for the next review; the review stays done. Full also holds a track's finish until a review covers its finished code.",
     choices: { off: 'off', light: 'a nudge', full: 'nudge and gates' },
     example: { kind: 'values', values: {
       off: 'Nothing about reviews on the Tracks tab, the kickoff or the handoff.',
       light: 'Five code tasks on TR-4 since its last review: the Tracks tab marks the track review due and the kickoff names it.',
-      full: 'T-12 gains a commit after its review T-14 completed: T-14 reopens and the tasks after it wait again; TR-4 finishes only once a review covers its code, or with a waiver.',
+      full: 'T-12 gains a commit after its review T-14 is done: T-14 stays done, T-12 counts as unreviewed, and TR-4 finishes only once a later review covers it, or with a waiver.',
     } },
   },
   'review.tasks': {
@@ -161,7 +163,7 @@ export const SETTINGS = Object.freeze({
   'pointers.knowledge': {
     kind: 'bool', def: true, label: 'Knowledge pointers', takes: 'pointers',
     line: 'A session editing a file a knowledge record names is pointed at that record.',
-    changes: "On, an edit of a file one of a knowledge record's file globs takes gets a toast and a one-line pointer naming the record and its title, once per record in a session; nothing is blocked. Off, knowledge records point at nothing. Decisions and procedure cards point either way.",
+    changes: "On, an edit of a file one of a knowledge record's file globs takes gets a toast and a one-line pointer naming the record and its title, once per record in a session (a read or a search too, when the glob is marked for it); nothing is blocked. Off, knowledge records point at nothing. Decisions and procedure cards point either way.",
     example: { kind: 'pair', a: ['Off', 'An edit of src/db/schema.ts draws no pointer, whatever the knowledge records name.'], b: ['On', 'An edit of src/db/schema.ts: knowledge K-41 (Migrations run in order) is about it; askerdo show K-41 reads it whole.'] },
   },
   /* a board user's options (config.json less the board keys and the queue,
@@ -695,7 +697,7 @@ export function settingsListText(r) {
     lines.push(family);
     for (const x of rows) {
       /* a space before each column, so a long slug or source never runs into the next */
-      if (x.kind === 'line') lines.push('  ' + x.slug.padEnd(22) + ' ' + (x.audience === 'both' ? '' : 'for ' + x.audience).padEnd(14) + ' ' + rowFrom(x));
+      if (x.kind === 'line') lines.push('  ' + x.slug.padEnd(22) + ' ' + (x.audience === 'both' ? '' : x.role ? 'for ' + x.role + ' agents' : 'for ' + x.audience).padEnd(14) + ' ' + rowFrom(x));
       else lines.push('  ' + x.key.padEnd(22) + ' ' + rowValue(x).padEnd(14) + ' ' + rowFrom(x).padEnd(30) + ' ' + (x.editable ? rowTakes(x) : 'read only: ' + x.why));
     }
     if (family === 'rule lines') lines.push('  (' + RULE_VERBS + ')');
@@ -725,16 +727,27 @@ export const BUILTIN_LINES = Object.freeze([
   { slug: 'every-part', text: 'Build every part of a task the user asks for: where a part needs a design call, make it with a stated pick and ask only what the user alone can decide; never recommend the cheap part now and the rest later.' },
   { slug: 'talk-before-filing', text: 'When the user reports a problem or asks for thoughts mid-arc, talk it through first: add a task only on their word, and make no unasked inline fix.' },
   { slug: 'lay-out-first', text: "Lay a line of work out on its track before starting it, each step a task with what it depends on, including the steps a working rule implies (a wave's review waits on its lanes, its fixes on the review, the user's look or checks on the fixes). Take the next task from the ready set, and put a step found later on the track before doing it." },
+  /* a loose end goes where it comes back on its own, off the track only on the user's word; an agent names its own in its final response */
+  { slug: 'nothing-left-behind', for: 'session', text: "Give anything left undone (work for later, a limit you named, a check still owed, a finding left unfixed) the nearest home that comes back on its own: a task at a real place on your track, else a question that asks the user where it goes, a decision or a knowledge record, unless the user drops it. A closed task's note, handoff prose, a state doc, a scratch file or a reply is not a home." },
   /* the session places review stations by judgement; the board keeps the ledger */
-  { slug: 'review-stations', text: "Put a review station on the track after each wave of parallel lanes, where work touched code another lane or track also touched, once five finished code tasks sit unreviewed, and before anything that ships, project-wide when it ships other tracks' work. A review task (labelled review, or named Review ...) covers what finished before it started, and the tasks after it wait on it." },
+  { slug: 'review-stations', text: "Put a review station on the track after each wave of parallel lanes, where work touched code another lane or track also touched, once five finished code tasks sit unreviewed, and before anything that ships, project-wide when it ships other tracks' work. A review task (labelled review) covers what finished before it started, and the tasks after it wait on it." },
   { slug: 'process', text: "Add no gate, guard, review stage or safety rule the user did not ask for unless you can name the failure it prevents; a new standing one waits for their yes, and a struck rule's code comes out with it." },
   { slug: 'naming', text: "Never coin ids in the board's namespaces (Q, T-, K-, TR-, WS-, P-) for anything else: name rows and steps plainly ('Row 1 (email)') and tell agents so in briefs that label rows. Name generated things for what they are, never with pieces of the user's name or login." },
   { slug: 'asking', for: 'session', text: "Fix and report a defect in your own task that has one right fix, never offer it as a choice; deferral is the user's call. Offer no workaround, data-losing or broken option; every menu has a none-of-these way out, a declined topic drops, and a recorded go is never re-asked. Your own cleanup is never a question; other deletes wait for a dry-run count and the user's yes." },
-  { slug: 'delegate-mechanical', for: 'session', text: "Hand mechanical work (data-file edits, filing records, merging agents' output, writing briefs) to an agent or a fork and read only its summary; keep in your own context what needs your judgment: the user's words, reviewers' findings and the final call." },
+  { slug: 'delegate-mechanical', for: 'session', text: "Hand mechanical work (data-file edits, filing records, writing briefs) to an agent or a fork and read only its summary; keep in your own context what needs your judgment: the user's words, reviewers' findings, whether a lane lands, waits or is reverted, and the final call." },
 ]);
 
-/* a line is for the session, its agents, or both (no `for`, every line saved before). */
+/* a line is for the session, its agents, or both (no `for`, every line saved before).
+   or for the agents of one role, stored as agents:<role>. */
 export const AUDIENCES = Object.freeze(['session', 'agents']);
+
+/* A stored or typed audience as { for, role }; null for both or one it cannot read. */
+export function audienceOf(raw) {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (AUDIENCES.includes(v)) return { for: v };
+  const m = /^agents:(.+)$/.exec(v);
+  return m && ROLE_RE.test(m[1]) ? { for: 'agents', role: m[1] } : null;
+}
 
 /* Built-in lines, then each level widest first: a profile's lines add or
    replace by slug, its drops remove a wider one. */
@@ -746,7 +759,7 @@ function linesOf(data, chain, active) {
       for (const slug of Array.isArray(s['rules.drop']) ? s['rules.drop'] : []) at.delete(slug);
       for (const l of Array.isArray(s['rules.add']) ? s['rules.add'] : []) {
         if (l && l.slug && l.text) {
-          at.set(l.slug, { slug: l.slug, text: l.text, ...(AUDIENCES.includes(l.for) ? { for: l.for } : {}), profile: n, record: chain[i].key, level: chain[i].level });
+          at.set(l.slug, { slug: l.slug, text: l.text, ...(audienceOf(l.for) || {}), profile: n, record: chain[i].key, level: chain[i].level });
         }
       }
     }
@@ -764,21 +777,6 @@ const ruleText = (key, v, eff) => {
 };
 const RULE_KEYS = ['tests.policy', 'tests.fullRun', 'tests.pinWording', 'dispatch.stateNote', 'dispatch.outputRule', 'agent.soft'];
 
-/* what the mod looks for, so one revision's block is appended once */
-export const RULES_HEAD = 'Rules in force (AskerDo rev ';
-
-function revisionOf(text) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
-  return h.toString(16).padStart(8, '0');
-}
-
-function blockOf(record, rows, who) {
-  const body = rows.map((r) => '- ' + r.text + ' [' + r.source + ']');
-  const revision = revisionOf(body.join('\n'));
-  return { revision, text: [RULES_HEAD + revision + ', for ' + record + (who ? ', ' + who : '') + '):', ...body].join('\n') };
-}
-
 /* The one renderer: every surface (the injected block, show-effective --rules,
    the main session's section) prints this. Two blocks: the session's and its
    agents'; the top-level text is the agents', the one a brief gets. */
@@ -789,10 +787,11 @@ export function rulesBlock(eff) {
     const t = ruleText(k, eff.settings[k].value, eff);
     if (t) rows.push({ rule: k, text: t, source: src(eff.settings[k]) });
   }
-  for (const l of eff.lines || []) rows.push({ rule: l.slug, text: l.text, source: src(l), ...(l.for ? { for: l.for } : {}) });
+  for (const l of eff.lines || []) rows.push({ rule: l.slug, text: l.text, source: src(l), ...(l.for ? { for: l.for } : {}), ...(l.role ? { role: l.role } : {}) });
   const split = rows.some((r) => r.for);
   const session = blockOf(eff.record, rows.filter((r) => r.for !== 'agents'), split ? 'this session' : '');
-  const agents = blockOf(eff.record, rows.filter((r) => r.for !== 'session'), split ? 'its agents' : '');
+  /* a role's lines ride only a dispatch playing that role (agentsBlockFor) */
+  const agents = blockOf(eff.record, rows.filter((r) => r.for !== 'session' && !r.role), split ? 'its agents' : '');
   const values = {};
   for (const k of RULE_KEYS) values[k] = eff.settings[k].value;
   /* the mod skips the drift line and the knowledge pointers on these */
@@ -800,8 +799,9 @@ export function rulesBlock(eff) {
   return { record: eff.record, inject: eff.settings['dispatch.inject'].value !== false, revision: agents.revision, text: agents.text, rows, values, session, agents };
 }
 
-/* Both blocks as the CLI prints them: one when no line names an audience. */
-export const rulesText = (b) => (b.session && b.session.text !== b.text ? b.session.text + '\n\n' + b.text : b.text);
+/* Both blocks as the CLI prints them: one when no line names an audience; then each role's. */
+export const rulesText = (b) => [b.session && b.session.text !== b.text ? b.session.text : '', b.text,
+  ...[...new Set((b.rows || []).map((r) => r.role).filter(Boolean))].map((role) => agentsBlockFor(b, [role]).text)].filter(Boolean).join('\n\n');
 
 /* ---- a board user's options ------------------------------------- */
 
@@ -946,7 +946,7 @@ function boardRows(data, chain, { board, under } = {}) {
   }
   for (const l of (eff && eff.lines) || []) {
     rows.push({
-      key: 'rules.add', family: 'rule lines', tab: 'rules', label: SETTINGS['rules.add'].label, takes: takesOf(SETTINGS['rules.add'], board), kind: 'line', slug: l.slug, words: l.text, audience: l.for || 'both',
+      key: 'rules.add', family: 'rule lines', tab: 'rules', label: SETTINGS['rules.add'].label, takes: takesOf(SETTINGS['rules.add'], board), kind: 'line', slug: l.slug, words: l.text, audience: l.for || 'both', ...(l.role ? { role: l.role } : {}),
       ...from(l.text, l.level, l.record, l.profile), editable: false, why: RULE_VERBS, changed: l.level !== 'built-in',
     });
   }
@@ -988,7 +988,7 @@ function filled(example, row, valueOf) {
 
 /* Every setting as one row: { key, family, tab, label, line, changes, example, takes,
    kind, values and choices | min, max, builtIn, value, layer, scope, record, profile, editable,
-   why, changed, overridden, places }, rule lines with slug, words and audience.
+   why, changed, overridden, places }, rule lines with slug, words and audience (and role, for one role's agents).
    `data` and `chain` are the board's (null with no board), `config` this PC's
    config.json (null on the board itself), `under` every holding with its chain. */
 export function settingRows(data, chain, config, { board = !!data, under } = {}) {

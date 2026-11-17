@@ -11,6 +11,7 @@ import * as pr from '../lib/procedures.mjs';
 import * as pm from '../lib/proc-match.mjs';
 import { cardKind, filesOf } from '../lib/record-refs.mjs';
 import { agentChecks } from '../lib/mod-core.mjs';
+import { decisionHits, turnCommands } from '../lib/decision-match.mjs';
 import { childEnv, fixtureCopy, tempDir } from './helpers/sandbox.mjs';
 import { cliRoute, runCli as cliRun } from './helpers/cli.mjs';
 import { slicer } from './helpers/shard.mjs';
@@ -263,8 +264,8 @@ const CARD = {
 
 test('a command matches inside a covered repo only; an edit matches its glob and contains', () => {
   const m = (tool, input, cwd = 'C:/src/proj') => pm.matchCall([CARD], { tool, input, cwd }).map((h) => h.why);
-  assert.deepEqual(m('PowerShell', { command: '.\\Bump-Version.ps1 -Version 2' }), ['the command contains bump-version.ps1']);
-  assert.deepEqual(m('Bash', { command: 'pwsh bump-version.ps1' }, 'c:\\src\\site\\sub'), ['the command contains bump-version.ps1']);
+  assert.deepEqual(m('PowerShell', { command: '.\\Bump-Version.ps1 -Version 2' }), ['the command runs bump-version.ps1']);
+  assert.deepEqual(m('Bash', { command: 'pwsh bump-version.ps1' }, 'c:\\src\\site\\sub'), ['the command runs bump-version.ps1']);
   assert.deepEqual(m('Bash', { command: 'pwsh bump-version.ps1' }, 'C:/src/other'), []);
   assert.deepEqual(m('Bash', { command: 'ls' }), []);
   assert.deepEqual(m('Edit', { file_path: 'C:\\src\\proj\\src\\deep\\App.csproj', new_string: '<PackageReference Include="x" />' }),
@@ -283,12 +284,53 @@ test('a command matches inside a covered repo only; an edit matches its glob and
     'git add -- a && git commit -m "release: 1.2.3" -- a']) assert.equal(run(used), 1, used);
   for (const said of ['grep -rn "node --test" docs', 'git commit -m "run node --test first"', 'ls # then node --test',
     'echo "git commit -m \\"release: 1.2.3\\""']) assert.equal(run(said), 0, said);
-  /* a bare word is a program the command runs, a dotted one a file argument */
-  const BOX = { ...CARD, commands: ['ssh', 'docker', 'install.sh', 'run-tests.mjs'] };
+  /* a bare word is a program the command runs, a dotted one a file it runs (never a git add or cp of it) */
+  const BOX = { ...CARD, commands: ['ssh', 'docker', 'install.sh', 'run-tests.mjs', 'check.py'] };
   const box = (command) => pm.matchCall([BOX], { tool: 'Bash', input: { command }, cwd: 'C:/src/proj' }).map((h) => h.why);
   for (const used of ['docker exec askerdo-board node cli.mjs status', 'ssh box "ls /mnt"', 'sudo DOCKER_HOST=x docker ps',
-    'node scripts/run-tests.mjs test/a.test.mjs', 'bash server/unraid/install.sh']) assert.equal(box(used).length, 1, used);
+    'node scripts/run-tests.mjs test/a.test.mjs', 'bash server/unraid/install.sh', 'pytest tests/check.py', 'uv run tests/check.py'])
+    assert.equal(box(used).length, 1, used);
   assert.deepEqual(box('docker ps'), ['the command runs docker']);
+  /* a decision's fragment inside a run path (the CLI under ~/.claude/askerdo) draws no pointer; the governed run still does */
+  const ruled = [{ id: 'K-9', project: 'C:/src/proj', commands: ['/askerdo', 'scripts/build.mjs'] }];
+  const ptr = (command) => decisionHits(ruled, { tool: 'Bash', input: { command }, cwd: 'C:/src/proj' }).length;
+  assert.equal(ptr('node ~/.claude/askerdo/cli.mjs show T-1 --json'), 0);
+  /* a slash command never matches a path argument ending in its name, only a prompt that runs it */
+  assert.equal(ptr('node C:/Users/u/.claude/askerdo/cli.mjs list --project C:/src/askerdo'), 0);
+  assert.equal(ptr('claude -p "/askerdo questions"'), 1);
+  assert.equal(ptr('node C:/src/proj/scripts/build.mjs --check'), 1);
+  /* a ruling naming no links takes the commands that ran something and no edited file, each pointing again */
+  const turn = turnCommands([{ tool: 'Edit', input: { file_path: 'C:\\src\\proj\\lib\\a.mjs' } }, { tool: 'Write', input: { file_path: 'C:/elsewhere/b.md' } },
+    { tool: 'Bash', input: { command: 'cd C:/src/proj && git status && git add -- lib/a.mjs && git commit -m x -- lib/a.mjs && git push origin dev && npm publish' } },
+    { tool: 'Bash', input: { command: 'git push --force origin dev' } }, { tool: 'Bash', input: { command: 'git push -f origin main && git push origin --delete old' } },
+    { tool: 'Bash', input: { command: 'node ~/.claude/askerdo/cli.mjs show T-1' } },
+    { tool: 'Read', input: { file_path: 'C:/src/proj/README.md' } }]);
+  /* the session's own git bookkeeping is no ruling's subject; a forced push may be */
+  assert.deepEqual(turn, ['npm publish', 'git push --force origin', 'git push -f origin', 'git push origin --delete']);
+  assert.equal(decisionHits([{ id: 'K-7', project: 'C:/src/proj', commands: turn }], { tool: 'Bash', input: { command: 'npm publish' }, cwd: 'C:/src/proj' }).length, 1);
+  /* a read or a search points only at a glob marked for it; a search matches by its scope and pattern */
+  const marked = [{ id: 'K-8', project: 'C:/src/proj', files: ['src/**', '(read) docs/index.md', '(search) lib/** | TODO'] }];
+  const on = (tool, input, cwd = 'C:/src/proj') => decisionHits(marked, { tool, input, cwd }).map((h) => h.why);
+  assert.deepEqual(on('Read', { file_path: 'C:\\src\\proj\\docs\\index.md' }), ['the read of docs/index.md matches (read) docs/index.md']);
+  for (const [tool, input] of [['Read', { file_path: 'C:/src/proj/src/a.ts' }], ['Read', { file_path: 'C:/src/proj/docs/other.md' }],
+    ['Edit', { file_path: 'C:/src/proj/docs/index.md', new_string: 'x' }], ['Grep', { pattern: 'todo', path: 'src' }],
+    ['Grep', { pattern: 'fixme', path: 'lib' }], ['Glob', { pattern: 'docs/**/*.md' }]]) assert.deepEqual(on(tool, input), [], tool + ' ' + JSON.stringify(input));
+  for (const [tool, input, cwd] of [['Grep', { pattern: 'TODO' }], ['Grep', { pattern: 'todo', path: 'C:/src/proj/lib/x' }],
+    ['Grep', { pattern: 'TODO', glob: 'lib/**/*.mjs' }], ['Glob', { pattern: '**/*TODO*' }, 'C:/src/proj/lib']]) assert.equal(on(tool, input, cwd).length, 1, tool + ' ' + JSON.stringify(input));
+  /* an edit's contains word matches in any case, and an edit that does not write it stays silent */
+  const worded = [{ id: 'K-6', project: 'C:/src/proj', files: ['lib/a.mjs | Opus'] }];
+  const wrote = (new_string) => decisionHits(worded, { tool: 'Edit', input: { file_path: 'C:/src/proj/lib/a.mjs', new_string }, cwd: 'C:/src/proj' }).length;
+  assert.equal(wrote('runBy: agent:opus'), 1);
+  assert.equal(wrote('runBy: agent'), 0);
+  /* a flag or an environment setting matches the run carrying it, never a read or a git command naming it */
+  const TONE = { ...CARD, commands: ['--counter-tone', 'APP_DRY_RUN', 'APP_TEST_TONES=true'] };
+  const tone = (command) => pm.matchCall([TONE], { tool: 'PowerShell', input: { command }, cwd: 'C:/src/proj' }).map((h) => h.why);
+  assert.deepEqual(tone('& "C:/node/node.exe" tools/app-smoke.mjs app.exe out/x --asio-signal 512 --counter-tone --tone-peak 0.5'), ['the command runs with --counter-tone']);
+  for (const used of ["$env:APP_DRY_RUN = '1'\nnode tools/noise-stream.js", 'APP_DRY_RUN=1 node tools/noise-stream.js',
+    'flutter.bat build apk --dart-define=APP_TEST_TONES=true']) assert.equal(tone(used).length, 1, used);
+  for (const said of ['rg -- --counter-tone tools', 'grep -rn APP_DRY_RUN tools', "$env:APP_DRY_RUN = '1'", 'echo $env:APP_DRY_RUN',
+    'git commit -m "APP_TEST_TONES=true" -- a', 'git log -S APP_DRY_RUN', 'node tools/noise-stream.js --counter-tones'])
+    assert.equal(tone(said).length, 0, said);
   /* a launcher's command is matched as what it runs; read-only inner commands stay unmatched */
   for (const used of ['ls | xargs -I {} docker image rm {}', 'find . -name x -exec docker rm {} \\;', 'wsl -d ubuntu -- docker ps',
     'pwsh -NoProfile -Command "docker ps"', 'bash -lc "cd x && node scripts/run-tests.mjs"', "node -e \"require('child_process').execSync('docker ps')\""])
@@ -296,7 +338,9 @@ test('a command matches inside a covered repo only; an edit matches its glob and
   for (const said of ['ls | xargs grep docker', 'find . -exec grep -l docker {} +', 'bash -c "echo docker"', "node -e \"console.log('docker ps')\""])
     assert.equal(box(said).length, 0, said);
   for (const said of ['grep -rn "without docker" docs/guide', 'node -e "// start docker first\nrun()"', 'git commit -m "fix install.sh"',
-    'rg docker lib', 'git log -- server/unraid/install.sh', "cat > SKILL.md <<'EOF'\ndocker exec x\nEOF", 'node build.mjs # needs docker']) assert.equal(box(said).length, 0, said);
+    'rg docker lib', 'git log -- server/unraid/install.sh', "cat > SKILL.md <<'EOF'\ndocker exec x\nEOF", 'node build.mjs # needs docker',
+    'git add -- server/unraid/install.sh && git commit -m "x" -- server/unraid/install.sh', 'git checkout -- scripts/run-tests.mjs',
+    'cp server/unraid/install.sh /tmp/i.sh']) assert.equal(box(said).length, 0, said);
   /* a live-install card skips a command that sets the sandbox seam */
   const JOIN = { ...CARD, everywhere: true, live: true, commands: ['askerdo.mjs join'] };
   const join = (command) => pm.matchCall([JOIN], { tool: 'Bash', input: { command }, cwd: 'C:/x' }).length;
@@ -306,12 +350,17 @@ test('a command matches inside a covered repo only; an edit matches its glob and
 });
 
 test('the pointer note names the file and the run verb; a stale card says why', () => {
-  const note = pm.procNote({ ...CARD, stale: ['gone: scripts/x.mjs'] }, 'the command contains bump-version.ps1');
-  assert.ok(note.startsWith('AskerDo procedure pointer (nothing was blocked): the command contains bump-version.ps1, which is procedure PR-2 Cut a release.'));
+  const note = pm.procNote({ ...CARD, stale: ['gone: scripts/x.mjs'] }, 'the command runs bump-version.ps1');
+  assert.ok(note.startsWith('AskerDo procedure pointer (nothing was blocked): the command runs bump-version.ps1, which is procedure PR-2 Cut a release.'));
   assert.ok(note.includes('C:/src/proj/docs/procedures/release.md'));
   assert.ok(note.includes('The card is stale (gone: scripts/x.mjs)'));
   assert.ok(note.includes('askerdo proc ran release clean'));
   assert.ok(!pm.procNote(CARD, 'x', { agent: true }).includes('proc ran'), 'T-12: a subagent is never asked to write the board');
+  /* the mod records a command's run only for a card that opts in; then only a deviation is asked for */
+  assert.deepEqual([pm.recordsRun(CARD, 'Bash'), pm.recordsRun({ ...CARD, record: 'command' }, 'PowerShell'), pm.recordsRun({ ...CARD, record: 'command' }, 'Edit')], [false, true, false]);
+  const cmd = pm.procNote(CARD, 'x', { recorded: true });
+  assert.ok(!cmd.includes('proc ran release clean') && /deviated.*--fixed.*--one-off.*--filed/.test(cmd));
+  assert.ok(!pm.procNote(CARD, 'x', { agent: true, recorded: true }).includes('proc ran'));
   assert.ok(!/[\u2013\u2014]/.test(note));
   assert.deepEqual(pm.badgeOf({ ...CARD, flag: 'x', stale: ['y'] }).badge, 'flagged');
   assert.deepEqual(pm.badgeOf({ ...CARD, verifiedAt: '2026-10-20' }).badge, 'fresh');
@@ -322,6 +371,9 @@ test('/askerdo proc words, ran and scan parse; a deviated run needs its note', (
   assert.deepEqual(pm.parseProc('version bump'), { sub: 'find', words: 'version bump' });
   assert.deepEqual(pm.parseProc('ran release clean'), { sub: 'ran', name: 'release', result: 'clean', note: '' });
   assert.deepEqual(pm.parseProc('ran release Deviated "the tray step"'), { sub: 'ran', name: 'release', result: 'deviated', note: 'the tray step' });
+  assert.deepEqual(pm.parseProc('ran release deviated "the tray step" --one-off "no tray change"'),
+    { sub: 'ran', name: 'release', result: 'deviated', note: 'the tray step', oneOff: 'no tray change' });
+  assert.equal(pm.parseProc('ran release deviated step 4 was off --filed T-12').filed, 'T-12');
   assert.match(pm.parseProc('ran release deviated').error, /needs a note/);
   assert.match(pm.parseProc('ran release').error, /^Usage/);
   assert.deepEqual(pm.parseProc('scan'), { sub: 'scan' });
@@ -383,17 +435,17 @@ test('the proc verbs on a board: scan from a second checkout, find, ran, trigger
     const id = made.created[0];
     const find = await cliRun(['proc', 'find', 'demo', 'build', '--json'], { env, cwd: dir });
     assert.deepEqual(JSON.parse(find.out).map((c) => c.id), [id]);
-    const ran = await cliRun(['proc', 'ran', 'demo', 'deviated', '--note', 'skipped step 2', '--json'], { env, cwd: lane });
+    /* a fix names a commit of this checkout that changed the card's file, which the PC reads in git */
+    assert.equal((await cliRun(['proc', 'ran', 'demo', 'deviated', '--note', 'skipped step 2', '--fixed', 'f'.repeat(40)], { env, cwd: lane })).code, 1);
+    const ran = await cliRun(['proc', 'ran', 'demo', 'deviated', '--note', 'skipped step 2', '--fixed', 'HEAD', '--json'], { env, cwd: lane });
     assert.equal(ran.code, 0, ran.err);
-    assert.equal(JSON.parse(ran.out).flag, 'skipped step 2');
+    assert.deepEqual([JSON.parse(ran.out).outcome.kind, JSON.parse(ran.out).outcome.ref], ['fixed', git(lane, 'rev-parse', 'HEAD')]);
+    /* once a clean run verified HEAD, that commit no longer fixes a later deviation */
+    assert.equal((await cliRun(['proc', 'ran', 'demo', 'clean'], { env, cwd: lane })).code, 0);
+    assert.equal((await cliRun(['proc', 'ran', 'demo', 'deviated', '--note', 'skipped step 2', '--fixed', 'HEAD'], { env, cwd: lane })).code, 1);
     assert.equal((await cliRun(['proc', 'ran', 'demo', 'deviated'], { env, cwd: dir })).code, 1, 'a deviated run needs its note');
-    /* a plugin card's fix goes to the plugin's repo, never the installed copy it was read from */
-    const ew = await cliRun(['proc', 'ran', 'join-a-pc', 'deviated', '--note', 'x', '--json'], { env, cwd: dir });
-    assert.equal(ew.code, 0, ew.err);
-    const draft = JSON.parse(ew.out).draft;
-    assert.ok(draft.includes('github.com/toxmox/askerdo') && !slash(draft).toLowerCase().includes(slash(pluginRoot).toLowerCase()), draft);
     const trig = JSON.parse((await cliRun(['proc', 'triggers', '--project', lane, '--no-scan', '--json'], { env, cwd: lane })).out);
-    assert.deepEqual(trig.filter((c) => !c.everywhere).map((c) => [c.id, c.badge]), [[id, 'flagged']]);
+    assert.notEqual(trig.find((c) => c.id === id).badge, 'flagged', 'a fixed card carries no flag');
     /* the plugin's own cards for every project come back beside the repo's, at the plugin's folder */
     assert.ok(trig.some((c) => c.everywhere && slash(c.path).toLowerCase().startsWith(slash(pluginRoot).toLowerCase() + '/')), JSON.stringify(trig.map((c) => c.path)));
     assert.equal(slash(trig[0].path).toLowerCase(), (lane + '/docs/procedures/demo.md').toLowerCase(), 'the watcher sees it at its own checkout');

@@ -2,7 +2,7 @@
    runner, and the import-export round trip against a store the old writers made. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tempDir } from './helpers/sandbox.mjs';
 import { oldStore } from './helpers/old-store.mjs';
@@ -12,7 +12,8 @@ const { openDb, tx, TxError } = await import('../server/db.mjs');
 const { migrate, migrations, SchemaError } = await import('../server/migrate.mjs');
 const { handoffTextAsKept, importStore } = await import('../server/import.mjs');
 const { READS_FILE, exportStore } = await import('../server/render.mjs');
-const { editKnowledge } = await import('../server/verbs/work.mjs');
+const { editKnowledge, readRecord } = await import('../server/verbs/work.mjs');
+const { taskRuns } = await import('../server/verbs/runs.mjs');
 const { putHandoff } = await import('../server/records.mjs');
 const { newTrack, trackSummary } = await import('../server/verbs/tracks.mjs');
 const { procedureCards, recordRun } = await import('../server/verbs/procedures.mjs');
@@ -78,4 +79,12 @@ test('every kind today\'s writers made imports and exports back byte for byte', 
   assert.deepEqual({ ...back.prepare('SELECT track, pc FROM handoffs WHERE key = ?').get(key) }, { track: tr.key, pc: 'pc-a' });
   assert.equal(trackSummary(back, { track: tr.id }).state, 'waiting', 'the track still has its handoff');
   assert.deepEqual(procedureCards(back).map((c) => c.badge), procedureCards(db).map((c) => c.badge));
+
+  /* an export from before migration 015 imports with the runs the migration makes */
+  const file = join(root, 'tasks', 'cw6yg2cm-the-renderer.md');
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/^status: open$/m, 'status: in_progress\nagent: lane-old'));
+  const pre = board();
+  importStore(pre, root);
+  assert.deepEqual(taskRuns(pre, { task: 'T-1' }).runs.map((r) => [r.worker, r.job, r.ended]), [['agent', 'lane-old', null]]);
+  assert.deepEqual([readRecord(pre, 'T-1').status, readRecord(pre, 'T-1').agent], ['open', 'lane-old']);
 });

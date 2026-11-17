@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -27,4 +27,22 @@ test('no prompt, tool call or stop hook is registered, and every hook script is 
     .filter((a) => a.startsWith(at));
   assert.ok(scripts.length > 0, 'the registry names its scripts');
   for (const a of scripts) assert.ok(existsSync(join(root, a.slice(at.length))), a);
+});
+
+/* The engine's TypeScript loader lets a second top-level function of one name replace the
+   first with no error, so a clash shows only where a case draws it. Reads column-0 lines. */
+test('no mod source file declares a top-level function name twice', () => {
+  const dir = join(root, 'hooks', 'mod');
+  const files = readdirSync(dir, { recursive: true }).filter((f) => /\.tsx?$/.test(f));
+  assert.ok(files.some((f) => f === 'index.ts'), 'the mod core is read');
+  const decl = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([\w$]+)/;
+  for (const f of files) {
+    const seen = new Map();
+    readFileSync(join(dir, f), 'utf8').split('\n').forEach((line, i) => {
+      const name = decl.exec(line)?.[1];
+      if (!name) return;
+      assert.ok(!seen.has(name), `${f}: function ${name} at line ${seen.get(name)} and again at line ${i + 1}`);
+      seen.set(name, i + 1);
+    });
+  }
 });

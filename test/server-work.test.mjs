@@ -20,10 +20,15 @@ const u = await import('../server/verbs/upkeep.mjs');
 const tr = await import('../server/verbs/tracks.mjs');
 const { writeHandoff, resumeTrack } = await import('../server/verbs/handoffs.mjs');
 const qv = await import('../server/verbs/questions.mjs');
+const { addItem } = await import('../server/verbs/graph.mjs');
+const { taskBlock } = await import('../server/verbs/task-block.mjs');
 const pf = await import('../server/verbs/profiles.mjs');
 const pv = await import('../server/verbs/procedures.mjs');
 const pr = await import('../server/verbs/projects.mjs');
 const cv = await import('../server/verbs/conversion.mjs');
+const { openWordsWarning, laneNote } = await import('../lib/mod-core.mjs');
+const { leftAtClose } = await import('../server/handoff-text.mjs');
+const { rewriteOffer, droppedTexts, titleLine } = await import('../lib/note-scope.mjs');
 
 /* noon on a day, as a session acting then */
 const on = (day, session = 's1') => {
@@ -79,12 +84,12 @@ test('labels rest and are reused by date, a reopen after archive relabels, and e
 
 /* A referenced workstream or plan must EXIST, and records match the spec skeletons'
    key order. */
-test('a task is created under a workstream that exists, serves its outcomes, and its file reads back in today\'s order', () => {
+test('a task is created under a workstream that exists, serves its outcomes, and its file reads back in today\'s order', async () => {
   const db = freshBoard();
   const ws = w.createRecord(db, { kind: 'workstream', name: 'Board', description: 'One board.', outcomes: ['one board for every machine'] }, on('2026-10-25'));
   assert.throws(() => w.createRecord(db, { name: 'ghost', description: 'd', workstream: 'WS-9' }, on('2026-10-25')), /unknown workstream id: WS-9/);
   assert.throws(() => w.createRecord(db, { name: 'ghost', description: 'd', workstream: ws.id, serves: ['o2'] }, on('2026-10-25')), /no outcome o2/);
-  const loose = w.createRecord(db, { name: 'Loose', description: 'd', workstream: ws.id }, on('2026-10-25'));
+  const loose = w.createRecord(db, { name: 'Loose', description: '## Plan\nsteps\n # spaced\n# Goal', intent: '# Aim\n## Done', workstream: ws.id }, on('2026-10-25'));
   assert.match(loose.warnings[0], /serves none of WS-1/, 'T-6: a flag, never a refusal');
   const t = w.createRecord(db, {
     name: 'Work verbs', description: 'Tasks over SQLite.', intent: 'Keep today\'s shapes.', workstream: ws.id,
@@ -106,6 +111,16 @@ test('a task is created under a workstream that exists, serves its outcomes, and
   assert.equal(rec.front.workstream, ws.key);
   assert.equal(rec.sections.Intent, 'Keep today\'s shapes.');
   assert.deepEqual(w.listWork(db, { kind: 'task', workstream: 'WS-1' }).map((x) => x.id), ['T-1', 'T-2']);
+  /* heading lines, a spaced one and a note's read back as written, and open no section */
+  w.noteRecord(db, { id: loose.id, text: '# Found\n # kept' }, on('2026-10-25'));
+  const back = w.readRecord(db, loose.id);
+  assert.deepEqual([back.description, back.intent], ['## Plan\nsteps\n # spaced\n# Goal', '# Aim\n## Done']);
+  assert.ok(back.journal.endsWith(': # Found\n # kept'), back.journal);
+  assert.deepEqual(Object.keys(back.sections).filter((s) => s !== 'Journal'), ['Description', 'Intent']);
+  assert.equal(w.listWork(db, { kind: 'task' })[0].description, '## Plan\nsteps\n # spaced\n# Goal');
+  /* a search hit prints the note's # line as written, never dropped as a section */
+  const { search: find } = await import('../server/verbs/search.mjs');
+  assert.ok(find(db, { text: 'Found' }).hits[0].lines.includes('# Found'));
 });
 
 /* Edit flips exactly the named fields plus updated, and an edit that changes no value
@@ -115,8 +130,8 @@ test('an edit moves only what it names, a no-op writes nothing, a stale version 
   const t1 = w.createRecord(db, { name: 'One', description: 'd' }, on('2026-10-25'));
   const t2 = w.createRecord(db, { name: 'Two', description: 'd' }, on('2026-10-25'));
   const before = w.readRecord(db, t1.id);
-  const r = w.editRecord(db, { id: t1.id, name: 'One again', status: 'in_progress', addLabel: ['hub', 'hub'], inHand: true }, on('2026-10-26'));
-  assert.deepEqual(r.changed, ['name', 'status', 'labels', 'inHand']);
+  const r = w.editRecord(db, { id: t1.id, name: 'One again', addLabel: ['hub', 'hub'], inHand: true }, on('2026-10-26'));
+  assert.deepEqual(r.changed, ['name', 'labels', 'inHand']);
   const after = w.readRecord(db, t1.id);
   assert.equal(after.name, 'One again');
   assert.deepEqual(after.labels, ['hub']);
@@ -126,7 +141,7 @@ test('an edit moves only what it names, a no-op writes nothing, a stale version 
   assert.notEqual(after.updated, before.updated);
 
   const seq = lines(db).length;
-  const same = w.editRecord(db, { id: t1.id, status: 'in_progress', addLabel: ['hub'] }, on('2026-10-27'));
+  const same = w.editRecord(db, { id: t1.id, status: 'open', addLabel: ['hub'] }, on('2026-10-27'));
   assert.deepEqual(same.changed, []);
   assert.equal(lines(db).length, seq, 'a no-op leaves no activity row');
   assert.equal(w.readRecord(db, t1.id).version, after.version, 'and no new version');
@@ -140,17 +155,71 @@ test('an edit moves only what it names, a no-op writes nothing, a stale version 
   assert.throws(() => w.taskUpdate(db, { id: t2.id, inHand: true }, { ...on('2026-10-28', 's2'), pc: 'pc2' }), (e) => /in hand with a session \(took it yesterday/.test(e.message) && !/\bs1\b/.test(e.message));
   /* the answer says which way the hand moved */
   assert.equal(w.taskUpdate(db, { id: t2.id, inHand: true, takeOver: true }, on('2026-10-28', 's2')).hand, 'taken');
-  assert.deepEqual(lines(db).at(-1).changes.inHand, ['s1', 's2'], 'the row the first session hears it from');
+  const over = lines(db).find((l) => l.verb === 'run' && l.changes.how && l.changes.how[1] === 'taken_over');
+  assert.deepEqual(over.changes.session, ['s1', null], 'the row the first session hears it from');
   assert.deepEqual(w.heldTask(db, { session: 's1' }).map((t) => t.id), [t1.id]);
   assert.equal(w.taskUpdate(db, { id: t2.id, letGo: true }, on('2026-10-28', 's2')).hand, 'let go');
 
-  /* a task's intent rewrites in place before its work starts; after a note, the note is the amend */
+  /* a task's intent rewrites in place before its work starts; a note alone (the board
+     writes some) starts nothing; once started, a note carrying the new text is the amend */
   const t3 = w.createRecord(db, { name: 'Three', description: 'd', intent: 'first plan' }, on('2026-10-25'));
+  w.noteRecord(db, { id: t3.id, text: 'found a snag' }, on('2026-10-25'));
   w.editRecord(db, { id: t3.id, intent: 'second plan' }, on('2026-10-25'));
   assert.equal(w.readRecord(db, t3.id).intent, 'second plan');
-  w.noteRecord(db, { id: t3.id, text: 'found a snag' }, on('2026-10-26'));
-  assert.throws(() => w.editRecord(db, { id: t3.id, intent: 'third plan' }, on('2026-10-26')), /has started[\s\S]*note T-3/);
-  assert.equal(w.readRecord(db, t3.id).intent, 'second plan');
+  w.taskUpdate(db, { id: t3.id, inHand: true }, on('2026-10-26'));
+  assert.throws(() => w.editRecord(db, { id: t3.id, intent: 'third plan' }, on('2026-10-26')), /has started[\s\S]*note T-3 --intent/);
+  const amend = w.taskUpdate(db, { id: t3.id, note: 'split by surface: the pane half moves out', intent: 'third plan' }, on('2026-10-26'));
+  assert.deepEqual(amend.note.amended, ['intent']);
+  assert.equal(w.readRecord(db, t3.id).intent, 'third plan');
+  const rows = recordHistory(db, { id: t3.id }).rows;
+  assert.deepEqual(rows.map((r) => [r.old, r.new]), [['first plan', 'second plan'], ['second plan', 'third plan']]);
+  assert.match(rows[1].why, /split by surface/, 'the note is the why');
+  /* a bare note naming a scope change is offered the rewrite, prefilled; an amend is not */
+  const bare = w.noteRecord(db, { id: t3.id, text: 'rescoped again' }, on('2026-10-27'));
+  assert.ok(rewriteOffer(bare, 'rescoped again').includes('"d"'), 'the current description rides the offer');
+  assert.equal(rewriteOffer(amend.note, 'split by surface'), '');
+  assert.equal(rewriteOffer(bare, 'used the cache instead of a read; a narrow fix'), '', 'ordinary words offer nothing');
+  /* a board older than the amend answers with neither amended nor current: the rewrite was dropped */
+  const restated = w.noteRecord(db, { id: t3.id, text: 'restated', intent: 'third plan' }, on('2026-10-27'));
+  assert.deepEqual([droppedTexts(amend.note, { intent: 'x' }), droppedTexts(restated, { intent: 'third plan' })], [[], []]);
+  assert.deepEqual(droppedTexts({ id: t3.id, note: 'n' }, { intent: 'x' }), ['intent']);
+
+  /* a take hands over the task's block: the rewrite, an open step, the answered gate, a decision
+     with its words, the notes since the rewrite, and how many earlier notes it leaves out */
+  addItem(db, { task: t3.id, text: 'measure the pane at 238' }, on('2026-10-27'));
+  const q = qv.register(db, { name: 'pane colour', gist: 'Which?', projectDir: 'C:/repos/x', session: 's1', blocking: true, ask: 'Clear (a, my pick) or red (b)?',
+    pick: 'a', gates: [t3.id], options: [{ type: 'a', option: 'clear' }, { type: 'b', option: 'red' }] }, null, on('2026-10-27'));
+  qv.answer(db, { id: q.id, pick: 'b', note: 'only on the blocking chip' }, null, on('2026-10-27'));
+  decide(db, { title: 'The pane moves out', words: 'move the pane half out', tasks: [t3.id], global: true }, on('2026-10-27'));
+  /* the board's and the mod's own lines are counted, never printed; a typed done claim prints */
+  w.noteRecord(db, { id: t3.id, text: laneNote(218000, 'Pane lane', false) }, on('2026-10-27'));
+  w.noteRecord(db, { id: t3.id, text: leftAtClose(['T-9 on TR-2']) }, on('2026-10-27'));
+  w.noteRecord(db, { id: t3.id, text: 'Done: the pane half moved out, measured at 238' }, on('2026-10-27'));
+  const block = w.taskUpdate(db, { id: t3.id, inHand: true }, on('2026-10-28')).block;
+  for (const want of ['third plan', 'measure the pane at 238', 'only on the blocking chip', 'move the pane half out', 'rescoped again', 'Done: the pane half moved out', 'show ' + t3.id + ' --journal']) {
+    assert.ok(block.includes(want), want + ' in the block:\n' + block);
+  }
+  assert.ok(!block.includes('found a snag'), 'a note from before the rewrite is counted, not shown');
+  assert.ok(!/Lane size|was answered|as it closed/.test(block), 'a board line is counted, not printed:\n' + block);
+  assert.match(block, /\b1 earlier note and 3 board lines\b/);
+  /* a confirmed ruling is carried by its statement and K-n, its words left in the record */
+  const sure = decide(db, { title: 'The pane keeps its width', words: 'yes keep that width please', tasks: [t3.id], global: true, confirmed: true }, on('2026-10-28'));
+  const held = taskBlock(db, { id: t3.id }).text;
+  assert.ok(held.includes(sure.id + ' The pane keeps its width') && !held.includes('keep that width please') && held.includes('move the pane half out'), held);
+  /* an intent rewritten alone prints the title it left; a renamed task keeps its old title in the history */
+  assert.ok(titleLine(amend.note).includes('"Three"'));
+  const renamed = w.taskUpdate(db, { id: t3.id, note: 'The user turned the pane down', name: 'Three, the pane kept', description: 'keep the pane' }, on('2026-10-28'));
+  assert.deepEqual(renamed.note.amended, ['name', 'description']);
+  assert.equal(titleLine(renamed.note), '');
+  assert.deepEqual(recordHistory(db, { id: t3.id }).rows.filter((r) => r.field === 'name').map((r) => [r.old, r.new, r.why]), [['Three', 'Three, the pane kept', 'The user turned the pane down']]);
+
+  /* a track's goal takes the same amend */
+  const ws = w.createRecord(db, { kind: 'workstream', name: 'W', description: 'd' }, on('2026-10-25'));
+  const trk = tr.newTrack(db, { name: 'Lane', workstream: ws.id, goal: 'the sweep fixes' }, on('2026-10-25'));
+  w.noteRecord(db, { id: trk.id, text: 'now also the read path', goal: 'the sweep fixes and the read path' }, on('2026-10-26'));
+  assert.equal(L.resolveRecord(db, trk.id).front.goal, 'the sweep fixes and the read path');
+  assert.deepEqual(recordHistory(db, { id: trk.id }).rows.map((r) => [r.field, r.old]), [['goal', 'the sweep fixes']]);
+  assert.throws(() => w.noteRecord(db, { id: trk.id, text: 'x', intent: 'y' }, on('2026-10-26')), /takes no intent/);
 });
 
 /* A linked wake lands in the ENDING verb's own write, never a second one. */
@@ -158,14 +227,14 @@ test('an ending wakes the questions snoozed on it in the same transaction, and g
   const db = freshBoard();
   const t = w.createRecord(db, { name: 'Counter', description: 'd' }, on('2026-10-25'));
   const ask = (key, id, fields) => putRecord(db, { key, kind: 'question', slug: 'q', body: '', fields: { id, key, name: id + ' asks', status: 'snoozed', ...fields } });
-  ask('qqqqqqq1', 'Q1', { snooze: { wakeOn: t.key, wakeStatus: 'completed' }, answered: undefined });
+  ask('qqqqqqq1', 'Q1', { snooze: { wakeOn: t.key, wakeStatus: 'done' }, answered: undefined });
   ask('qqqqqqq2', 'Q2', { status: 'open', blocking: true, gates: [t.key] });
   assert.deepEqual(w.waitsOn(db, t.id).map((q) => [q.id, q.blocking]), [['Q2', true]]);
 
-  w.editRecord(db, { id: t.id, status: 'completed' }, { ...on('2026-10-26'), pc: 'pc-1' });
+  w.editRecord(db, { id: t.id, status: 'done' }, { ...on('2026-10-26'), pc: 'pc-1' });
   const q = L.resolveRecord(db, 'Q1').front;
   assert.equal(q.status, 'open');
-  assert.equal(q.wokeBy, t.id + ' completed');
+  assert.equal(q.wokeBy, t.id + ' done');
   assert.equal(q.snooze, undefined);
   assert.deepEqual(Object.keys(q), ['id', 'key', 'name', 'status', 'wokeBy'], 'the echo sits where the snooze was');
   const [edit, wake] = lines(db).slice(-2);
@@ -197,7 +266,7 @@ test('note appends a stamped note, gives a journal-less workstream its Journal, 
   assert.match(w.readRecord(db, 'WS-1').journal, /# not a heading\n\n2026-10-26T12:00:00[+-]\d\d:\d\d: and again$/);
   assert.equal(lines(db).at(-1).note, 'and again');
   putRecord(db, { key: 'qqqqqqq1', kind: 'question', slug: 'q', body: '', fields: { id: 'Q1', key: 'qqqqqqq1', name: 'q', status: 'open' } });
-  assert.throws(() => w.noteRecord(db, { id: 'Q1', text: 'x' }, on('2026-10-26')), /is a question/);
+  assert.throws(() => w.noteRecord(db, { id: 'Q1', text: 'x' }, on('2026-10-26')), /is a question.*decision/);
 });
 
 /* Knowledge supersede mints the replacement or links one, and a superseded record
@@ -244,11 +313,20 @@ test('knowledge supersede mints or links the replacement, a superseded fact stay
   const n1 = q1.id.slice(1);
   const said = decide(db, { title: 'Cards', words: n1 + 'b, cards it is', question: q1.id, global: true }, on('2026-10-26'));
   assert.deepEqual([said.answered, said.warning, qv.show(db, { id: q1.id }).status], [q1.id + 'b', undefined, 'answered']);
+  /* a ruling that answers a question is confirmed by the board, and an edit keeps the mark */
+  w.editKnowledge(db, { id: said.id, addRef: ['onboard:fact:y'] }, on('2026-10-26'));
+  assert.deepEqual([said.confirmed, w.readRecord(db, said.id).confirmed, d.confirmed], [true, true, undefined]);
   const odd = decide(db, { title: 'Rows', words: q2.id.slice(1) + 'z please', question: q2.id, global: true }, on('2026-10-26'));
   assert.ok(!odd.answered && /still open/.test(odd.warning), 'a letter no option has answers nothing');
   const bare = decide(db, { title: 'Rows', words: 'rows', question: q2.id, global: true }, on('2026-10-26'));
   assert.ok(bare.warning.startsWith(q2.id) && /still open/.test(bare.warning) && !bare.answered, bare.warning);
-  assert.equal(decide(db, { title: 'Again', words: n1 + 'a', question: q1.id, global: true }, on('2026-10-26')).warning, undefined, 'an answered question gives no warning');
+  const again = decide(db, { title: 'Again', words: n1 + 'a', question: q1.id, global: true }, on('2026-10-26'));
+  assert.equal(again.warning, undefined, 'an answered question gives no warning');
+  /* naming a question confirms nothing by itself: an open one, or a title that is not the option pressed, stays unconfirmed */
+  assert.deepEqual([bare.confirmed, again.confirmed], [undefined, undefined]);
+  /* words that ask the session back leave the choice open; the decide reply warns, and settled words do not */
+  assert.ok(openWordsWarning('option a, a stop button on the right or the left or something. Thoughts/ideas?', d.id).includes(d.id));
+  assert.equal(openWordsWarning(n1 + 'b, cards it is', d.id), '');
 
   /* rewritten in place until another session reads it; then an amend keeps the number and the old text */
   const k = w.createKnowledge(db, { type: 'decision', title: 'Bands first', body: 'bands', global: true, session: 's1' }, on('2026-10-26'));
@@ -262,9 +340,11 @@ test('knowledge supersede mints or links the replacement, a superseded fact stay
   assert.ok(w.readRecord(db, k.id).refs.includes('onboard:fact:x'));
   /* a gotcha's file globs reach the mod's watcher beside the decisions (its files alone), and an edit adds one */
   const g = w.createKnowledge(db, { type: 'gotcha', title: 'Schema edits need a migration', body: 'b', files: ['src\\db\\**'], commands: ['npm run db'], projects: ['C:/repos/app'] }, on('2026-10-27'));
-  w.editKnowledge(db, { id: g.id, addFile: ['./migrations/*.sql'] }, on('2026-10-27'));
+  w.editKnowledge(db, { id: g.id, addFile: ['./migrations/*.sql', '(Search, read) docs\\db.md'] }, on('2026-10-27'));
   const fired = decisionTriggers(db, { project: 'C:/repos/app' }).find((t) => t.id === g.id);
-  assert.deepEqual([fired.type, fired.files, fired.commands], ['gotcha', ['src/db/**', 'migrations/*.sql'], []]);
+  assert.deepEqual([fired.type, fired.files, fired.commands], ['gotcha', ['src/db/**', 'migrations/*.sql', '(read search) docs/db.md'], []]);
+  /* a misspelt occasion would never point, so it is refused */
+  assert.throws(() => w.editKnowledge(db, { id: g.id, addFile: ['(raed) docs/db.md'] }, on('2026-10-27')), /edit, read or search/);
   /* the lease names the caller's device, as the amend does, never the hostname its input sent */
   const desk = { ...on('2026-10-27', 's2'), pc: 'DESK' };
   const line = tr.newTrack(db, { name: 'Desk line', workstream: ws.id }, 'cli');
@@ -294,45 +374,65 @@ const upkeepBoard = () => {
 };
 const statusOf = (db, id) => L.resolveRecord(db, id).front.status;
 
-test('with upkeep on a task taken in hand reads in progress, and back to open after a handoff lets it go', () => {
+test('a task taken in hand reads running from its run, and ready after a handoff lets it go', () => {
   const { db, ws } = upkeepBoard();
   const line = tr.newTrack(db, { name: 'Hand line', workstream: ws.id, session: 's1' }, { session: 's1' });
+  /* a fact takes the held track's workstream only when that workstream is the fact's project's */
+  const fact = (repo) => w.readRecord(db, w.createKnowledge(db, { type: 'gotcha', title: 'Fact in ' + repo, body: 'b', projectRepos: [repo] }, { session: 's1' }).id).workstreams?.length || 0;
+  assert.deepEqual([fact('github.com/me/app'), fact('github.com/me/other')], [1, 0]);
   const t = tr.capture(db, { track: line.id, name: 'Wire it' }, 'cli');
-  u.upkeepSwitch(db, { on: true }, 'cli');
+  const reads = () => w.readRecord(db, t.id).word.is;
   w.taskUpdate(db, { id: t.id, inHand: true }, { session: 's1' });
-  assert.equal(statusOf(db, t.id), 'in_progress');
-  assert.equal(lines(db).at(-1).by, 'board:upkeep');
+  assert.deepEqual([reads(), statusOf(db, t.id)], ['running', 'open']);
   const h = writeHandoff(db, { track: line.id, focus: 'Go on.', state: 'Wired half.', verify: [{ path: 'C:/repo' }], session: 's1' }, { session: 's1' });
-  assert.deepEqual([statusOf(db, t.id), h.inHand], ['open', [t.id]], 'let go, and the handoff names it');
+  assert.deepEqual([reads(), h.inHand], ['ready', [t.id]], 'let go, and the handoff names it');
   assert.ok(lines(db).filter((l) => l.id === t.id).at(-1).note.includes(h.id), 'the cause names the handoff');
   resumeTrack(db, { track: line.id, session: 's2' }, { session: 's2' });
-  assert.equal(statusOf(db, t.id), 'in_progress', 'the resume gives it back in hand');
+  assert.equal(w.readRecord(db, t.id).word.next, 'continue', 'the resume gives nothing back in hand; it reads to continue');
 });
 
-test('a task closes when the task its close names completes; a look task never closes on its own and shows as a band call once landed', () => {
+test('a task closes when the task its close names completes; a look or a when fact is no close', () => {
   const { db, ws } = upkeepBoard();
-  const [first, after, look] = ['First', 'After', 'Looked at'].map((name) => w.createRecord(db, { name, description: 'd', workstream: ws.id }, on('2026-10-25')));
+  const [first, after, look, held] = ['First', 'After', 'Looked at', 'Held by a step'].map((name) => w.createRecord(db, { name, description: 'd', workstream: ws.id }, on('2026-10-25')));
+  /* a look is a question gating a task labelled look; a fact is the description's done clause */
+  for (const bad of [{ close: 'look' }, { close: 'when the docs build' }, { landed: true }]) {
+    assert.throws(() => w.editRecord(db, { id: look.id, ...bad }, on('2026-10-26')), /label|description|question/, JSON.stringify(bad));
+  }
   u.upkeepSwitch(db, { on: true }, 'cli');
+  w.editRecord(db, { id: held.id, close: 'with ' + first.id }, on('2026-10-26'));
+  addItem(db, { task: held.id, text: 'measure the pane' }, 'cli');
   w.editRecord(db, { id: after.id, close: 'with ' + first.id }, on('2026-10-26'));
   const logged = lines(db).at(-1).changes.close;
   assert.ok(logged[0] === null && logged[1].startsWith('with ' + first.id), 'the old and the new condition, by label: ' + logged);
-  assert.throws(() => w.editRecord(db, { id: look.id, landed: true }, on('2026-10-26')), /look/, 'landed is for a look task');
-  w.editRecord(db, { id: look.id, close: 'look' }, on('2026-10-26'));
 
-  w.editRecord(db, { id: first.id, status: 'completed' }, on('2026-10-27'));
-  assert.equal(statusOf(db, after.id), 'completed');
+  w.editRecord(db, { id: first.id, status: 'done' }, on('2026-10-27'));
+  assert.equal(statusOf(db, after.id), 'done');
+  /* a close-with cannot throw into the ending's write, so the task stays open and says why */
+  assert.equal(statusOf(db, held.id), 'open');
+  assert.ok(lines(db).some((l) => l.id === held.id && l.by === 'board:upkeep' && /measure the pane/.test(l.note)));
   const closed = lines(db).find((l) => l.id === after.id && l.by === 'board:upkeep');
   assert.ok(closed.note.includes(first.id), closed.note);
-  assert.equal(statusOf(db, look.id), 'open');
-  assert.deepEqual(u.bandCalls(db, {}, on('2026-10-27')).rows, [], 'no call before it lands');
 
-  w.editRecord(db, { id: look.id, landed: true }, on('2026-10-27'));
-  const [row] = u.bandCalls(db, {}, on('2026-10-27')).rows;
-  assert.deepEqual([row.kind, row.record, row.presses.map((p) => p.label)], ['look', look.key, ['Close', 'Not yet']]);
-  assert.equal(statusOf(db, look.id), 'open', 'landed is not a close');
-  const notYet = row.presses[1];
-  u[notYet.verb](db, notYet.input, { user: true });
-  assert.deepEqual(u.bandCalls(db, {}, on('2026-10-27')).rows, []);
+  /* a look is a task labelled look that ends in one question; asking ends the asker's run, "not yet" makes it ready with the words */
+  w.editRecord(db, { id: look.id, addLabel: ['look'], inHand: true }, on('2026-10-27'));
+  const ask = (name, gates = [look.id]) => qv.register(db, { name, gist: 'g', projectDir: 'C:/repos/x', session: 's1', blocking: false, gates,
+    ask: 'Right (a, my pick) or not yet (b)?', pick: 'a', options: [{ type: 'a', option: 'Right' }, { type: 'b', option: 'Not yet' }] }, { session: 's1' }, on('2026-10-27'));
+  const word = () => w.readRecord(db, look.id).word;
+  const q1 = ask('the pane at 238');
+  assert.deepEqual([word().is, word().on.some((x) => x.includes(q1.id)), db.prepare('SELECT count(*) AS n FROM runs WHERE ended IS NULL').get().n], ['waiting', true, 0]);
+  qv.answer(db, { id: q1.id, pick: 'b', note: 'the legend overlaps the axis' }, { user: true }, on('2026-10-28'));
+  assert.deepEqual([word().is, word().next], ['ready', 'continue']);
+  assert.match(taskBlock(db, { id: look.id }).text, /legend overlaps the axis/);
+  w.editRecord(db, { id: look.id, inHand: true }, on('2026-10-29'));
+  /* a gate added after registration ends the asker's run the same way */
+  const q2 = ask('the pane at 238, again', []);
+  qv.editQuestion(db, { id: q2.id, addGate: [look.id] }, { session: 's1' }, on('2026-10-29'));
+  assert.deepEqual([word().is, db.prepare('SELECT count(*) AS n FROM runs WHERE ended IS NULL').get().n], ['waiting', 0]);
+  qv.answer(db, { id: q2.id, pick: 'a' }, { user: true }, on('2026-10-30'));
+  assert.equal(statusOf(db, look.id), 'open', 'nothing on the board closes a look');
+  w.taskUpdate(db, { id: look.id, status: 'done' }, on('2026-10-30'));
+  assert.equal(statusOf(db, look.id), 'done');
+  assert.ok(!u.bandCalls(db, {}, on('2026-10-30')).rows.some((r) => r.record === look.key), 'a look takes no band row');
   /* an empty workstream past a stall is a call; an empty inbox never is */
   const empty = w.createRecord(db, { kind: 'workstream', name: 'Empty', description: 'd' }, on('2026-10-01'));
   const inbox = w.createRecord(db, { kind: 'workstream', name: 'app: inbox', description: 'd', labels: ['inbox'] }, on('2026-10-01'));
@@ -342,12 +442,11 @@ test('a task closes when the task its close names completes; a look task never c
 
 test('the dry run lists the catch-up without writing, upkeep on applies the same list, and its calls reach a session that holds nothing', () => {
   const { db, ws } = upkeepBoard();
-  const [stale, held, done, follows] = ['Stale', 'Held', 'Done', 'Follows'].map((name) => w.createRecord(db, { name, description: 'd', workstream: ws.id }, on('2026-10-25')));
-  w.editRecord(db, { id: stale.id, status: 'in_progress' }, on('2026-10-25'));
+  const [held, done, follows] = ['Held', 'Done', 'Follows'].map((name) => w.createRecord(db, { name, description: 'd', workstream: ws.id }, on('2026-10-25')));
   w.editRecord(db, { id: held.id, inHand: true }, on('2026-10-25'));
   w.editRecord(db, { id: follows.id, close: 'with ' + done.id }, on('2026-10-25'));
-  w.editRecord(db, { id: done.id, status: 'completed' }, on('2026-10-25'));
-  assert.deepEqual([stale, held, follows].map((t) => statusOf(db, t.id)), ['in_progress', 'open', 'open'], 'off, nothing moves');
+  w.editRecord(db, { id: done.id, status: 'done' }, on('2026-10-25'));
+  assert.deepEqual([held, follows].map((t) => statusOf(db, t.id)), ['open', 'open'], 'off, nothing moves');
 
   const count = () => db.prepare('SELECT count(*) AS n FROM activity').get().n;
   const before = count();
@@ -355,13 +454,13 @@ test('the dry run lists the catch-up without writing, upkeep on applies the same
   assert.equal(count(), before, 'the dry run writes nothing');
   assert.equal(u.upkeepOn(db), false);
   const acts = (list) => list.map((c) => c.act + ' ' + c.id + ': ' + c.cause);
-  assert.deepEqual(dry.changes.map((c) => c.act + ' ' + c.id).sort(), ['back to open ' + stale.id, 'close ' + follows.id, 'in progress ' + held.id].sort());
+  assert.deepEqual(dry.changes.map((c) => c.act + ' ' + c.id), ['close ' + follows.id], 'a hand moves no status');
   /* the catch-up's own writes are no movement, so the stalled inbox stays a call */
   const inbox = (rows) => rows.filter((x) => x.kind === 'judgment' && x.record === ws.key).map((x) => x.since.slice(0, 10));
   assert.deepEqual(inbox(dry.bandCalls), ['2026-10-25']);
   const r = u.upkeepSwitch(db, { on: true }, on('2026-11-01'));
   assert.deepEqual(acts(r.changes), acts(dry.changes));
-  assert.deepEqual([stale, held, follows].map((t) => statusOf(db, t.id)), ['open', 'in_progress', 'completed']);
+  assert.deepEqual([held, follows].map((t) => statusOf(db, t.id)), ['open', 'done']);
   /* a fresh session in the workstream's project sees it; one in another project does not */
   const calls = (repo) => inbox(u.bandCalls(db, { session: 'fresh', projectRepo: repo }, on('2026-11-02')).rows);
   assert.deepEqual([calls('github.com/me/app'), calls('github.com/me/other')], [['2026-10-25'], []]);
@@ -424,27 +523,27 @@ test('an override: Allow fixes a used record and keeps the old text; Keep stops 
 test('an override batch rewrites tasks all or nothing and sets each close; a batch may hold a ruling, as a reversal', () => {
   const { db, ws } = upkeepBoard();
   const [a, b, c] = ['Alpha', 'Beta', 'Gamma'].map((name) => w.createRecord(db, { name, description: 'old ' + name, workstream: ws.id }, on('2026-10-25')));
-  for (const t of [a, b]) w.noteRecord(db, { id: t.id, text: 'started' }, on('2026-10-25'));
+  for (const t of [a, b]) w.editRecord(db, { id: t.id, inHand: true }, on('2026-10-25'));
   const ruling = decide(db, { title: 'Rows first', words: 'rows', global: true }, on('2026-10-25'));
   w.readRecord(db, { id: ruling.id, session: 's2' });
-  const items = [{ record: a.id, intent: 'Alpha, clean', close: { kind: 'with', task: c.id } }, { record: b.id, description: 'Beta, clean', close: { kind: 'look' } }];
+  const items = [{ record: a.id, intent: 'Alpha, clean', close: { kind: 'with', task: c.id } }, { record: b.id, description: 'Beta, clean', close: { kind: 'with', task: c.id } }];
   const mixed = o.overrideRequest(db, { kind: 'fix', items: [...items, { record: ruling.id, name: 'Rows' }], reason: 'T-316', summary: 'Two tasks and a ruling', dryRun: true }, on('2026-10-26'));
   assert.equal(mixed.reversal, true, 'a ruling rides a batch, which is then a reversal');
   const dry = o.overrideRequest(db, { kind: 'fix', items, reason: 'T-316: one clean intent and close per task', summary: 'Two tasks', dryRun: true }, on('2026-10-26'));
   assert.deepEqual([dry.dryRun, dry.measure.records, db.prepare('SELECT count(*) AS n FROM overrides').get().n], [true, 2, 0], 'a dry run measures and writes nothing');
   const first = ask(db, 'fix', items, '2026-10-26');
-  w.editRecord(db, { id: b.id, close: 'when the look is done' }, on('2026-10-26'));
+  w.editRecord(db, { id: b.id, close: 'with ' + a.id }, on('2026-10-26'));
   assert.throws(() => o.overrideDecide(db, { request: first.request, decision: 'allow' }, pressed('2026-10-27')), /changed since asked \(T-\d+\)/);
   assert.equal(w.readRecord(db, a.id).intent, '', 'nothing of the batch applied');
 
   const r = ask(db, 'fix', items, '2026-10-27');
   assert.notEqual(r.request, first.request, 'asked again from the text as it stands, it replaces the stale request');
   const [row] = u.bandCalls(db, { session: 's1' }, on('2026-10-27')).rows;
-  assert.deepEqual([row.kind, row.count, row.mine, row.presses.map((p) => p.label)], ['override', 2, true, ['Allow', 'Keep']], 'the asker sees its own row');
+  assert.deepEqual([row.kind, row.count, row.mine, row.presses.map((p) => p.label)], ['override', 2, true, ['Fix', 'Keep']], 'the asker sees its own row, its press named for its act');
   o[row.presses[0].verb](db, row.presses[0].input, pressed('2026-10-27'));
   assert.deepEqual([w.readRecord(db, a.id).intent, w.readRecord(db, b.id).description], ['Alpha, clean', 'Beta, clean']);
   const closeOf = (id) => L.resolveRecord(db, id).front.close;
-  assert.deepEqual([closeOf(a.id), closeOf(b.id)], [{ kind: 'with', on: c.key }, { kind: 'look' }]);
+  assert.deepEqual([closeOf(a.id), closeOf(b.id)], [{ kind: 'with', on: c.key }, { kind: 'with', on: c.key }]);
   assert.equal(db.prepare('SELECT count(*) AS n FROM overrides').get().n, 0, 'the row goes');
   assert.equal(lines(db).at(-1).changes.asker[1], 's1', 'the decision names the asking session for its inbox');
 

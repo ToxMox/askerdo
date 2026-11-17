@@ -112,8 +112,8 @@ test('the seam moves the launcher and the ensure to the copy', () => {
   assert.ok(out.includes('output style regenerated'), out);
   assert.ok(readFileSync(join(rig, 'cli.mjs'), 'utf8').includes('bin/askerdo.mjs'));
   assert.deepEqual(readdirSync(sb.root), ['pc'], 'the home store was written to anyway');
-  /* a seam is a sandbox, so the ensure is skipped by name rather than handed the root
-     and refused (the root guard still refuses it if reached) */
+  /* a seam is a sandbox, so the sync skips the ensure by name: the mod's first call starts
+     a sandbox's server, so no test sync leaves one behind */
   const log = readFileSync(join(rig, 'log'), 'utf8');
   assert.match(log, /board ensure skipped: sandbox seam/, log);
   /* nothing beside the copy but the sandbox home the style went to */
@@ -335,7 +335,7 @@ test('a replaced copy syncs nothing and says so', () => {
 
 /* Codex's AGENTS.override.md, only beside an AGENTS.md, git-ignored locally, never over one AskerDo did not write */
 test('the AGENTS.override.md writer: beside an AGENTS.md only, excluded once, unchanged text kept, a foreign file left alone', async () => {
-  const { writeAgentsOverride, overrideText, OVERRIDE, OVERRIDE_MAX } = await import('../lib/agents-override.mjs');
+  const { writeAgentsOverride, overrideText, OVERRIDE, OVERRIDE_MAX, REST } = await import('../lib/agents-override.mjs');
   const repo = (agents) => {
     const dir = join(tempDir('ttd-hub-home-'), 'proj');
     mkdirSync(join(dir, '.git', 'info'), { recursive: true });
@@ -343,7 +343,8 @@ test('the AGENTS.override.md writer: beside an AGENTS.md only, excluded once, un
     return dir;
   };
   const rows = [{ text: 'Run the linter before each commit.' }, { text: 'Keep each function short.' }];
-  const excluded = (dir) => readFileSync(join(dir, '.git', 'info', 'exclude'), 'utf8').split('\n').filter((l) => l.includes(OVERRIDE)).length;
+  const excludedAs = (dir, name) => readFileSync(join(dir, '.git', 'info', 'exclude'), 'utf8').split('\n').filter((l) => l === '/' + name).length;
+  const excluded = (dir) => excludedAs(dir, OVERRIDE);
 
   const dir = repo('# Proj\n\nUse tabs.\n\n## AskerDo\n\n- the board pointer for Claude\n');
   assert.equal(writeAgentsOverride(dir, rows).did, 'wrote');
@@ -362,10 +363,34 @@ test('the AGENTS.override.md writer: beside an AGENTS.md only, excluded once, un
   assert.equal(writeAgentsOverride(theirs, rows).did, 'left');
   assert.equal(readFileSync(join(theirs, OVERRIDE), 'utf8'), 'my own override\n');
 
-  /* over Codex's cap AGENTS.md's text stays whole and the rules are cut, counted */
-  const big = 'x'.repeat(OVERRIDE_MAX - 400);
-  const cut = overrideText(big, rows.concat(Array.from({ length: 20 }, (_, i) => 'Rule number ' + i + ' of the long list.')));
-  assert.ok(cut.text.includes(big) && cut.left > 0 && Buffer.byteLength(cut.text) <= OVERRIDE_MAX, String(cut.left));
+  /* every procedure card is named with the file holding its steps */
+  const cards = [{ id: 'PR-1', name: 'Release the app', path: dir.replace(/\\/g, '/') + '/docs/procedures/release.md', commands: ['npm publish'], files: [], words: ['release'], badge: 'fresh' },
+    { id: 'PR-2', name: 'Join a PC', path: 'C:/plugin/docs/procedures/join-a-pc.md', commands: [], files: ['.mcp.json'], words: [], badge: 'stale', reasons: ['changed since'], everywhere: true }];
+  assert.equal(writeAgentsOverride(dir, rows, [], null, { cards }).did, 'wrote');
+  const withCards = readFileSync(join(dir, OVERRIDE), 'utf8');
+  assert.ok(withCards.includes('`docs/procedures/release.md`') && withCards.includes('`npm publish`') && withCards.includes('C:/plugin/docs/procedures/join-a-pc.md'), withCards);
+
+  /* over Codex's cap AGENTS.md's text stays whole; what is left out goes whole to the rest file the override names, which
+     goes again once everything fits */
+  const big = 'x'.repeat(OVERRIDE_MAX - 1000);
+  const many = rows.concat(Array.from({ length: 20 }, (_, i) => 'Rule number ' + i + ' of the long list.'));
+  writeFileSync(join(dir, 'AGENTS.md'), big);
+  const over = writeAgentsOverride(dir, many, [{ name: 'Never edit generated files', files: ['gen/**'] }], null, { cards });
+  const main = readFileSync(over.path, 'utf8');
+  const both = main + readFileSync(over.rest, 'utf8');
+  assert.ok(main.includes(big) && main.includes(REST) && Buffer.byteLength(main) <= OVERRIDE_MAX && many.every((r) => both.includes(typeof r === 'string' ? r : r.text))
+    && both.includes('PR-1') && both.includes('PR-2') && both.includes('generated files'), over.leftBy);
+  assert.equal(excludedAs(dir, REST), 1);
+  writeAgentsOverride(dir, rows);
+  assert.equal(existsSync(over.rest), false);
+  /* the project's own Codex config sets the budget */
+  mkdirSync(join(dir, '.codex'));
+  writeFileSync(join(dir, '.codex', 'config.toml'), 'project_doc_max_bytes = 1024\n');
+  writeFileSync(join(dir, 'AGENTS.md'), '# Proj\n');
+  const small = writeAgentsOverride(dir, many, [], null, { cards });
+  assert.ok(small.left > 0 && Buffer.byteLength(readFileSync(small.path, 'utf8')) <= 1024, JSON.stringify(small));
+  /* an AGENTS.md over the budget on its own still leaves the rest file's name inside what Codex reads */
+  assert.ok(Buffer.from(overrideText('y'.repeat(2000), many, [], { max: 1024 }).text).subarray(0, 1024).toString().includes(REST));
   /* a decision on the project's files reaches Codex worded with its scope; a rule's detail pointer, which Codex cannot open, goes */
   const scoped = overrideText('# Proj', [{ text: 'Keep commits small. (detail: K-4)' }], [{ name: 'Never edit generated files', files: ['src/gen/**'], commands: [] }]).text;
   assert.ok(scoped.includes('- Keep commits small.\n') && /When editing `src\/gen\/\*\*`: Never edit generated files/.test(scoped), scoped);

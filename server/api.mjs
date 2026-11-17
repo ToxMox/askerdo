@@ -11,12 +11,16 @@ import { ADMIN_HEADER, ADMIN_SECRET_FILE, API, COOKIE, PROTOCOL, PROTOCOL_HEADER
 import { tx } from './db.mjs';
 import { clockOf, labelOf, logVerb, stampNow } from './records.mjs';
 import { loadRecord } from './verbs/graph.mjs';
+import { dropPcMap } from './verbs/pc-maps.mjs';
 import { VERBS, runVerb } from './verbs/index.mjs';
 import { resolveRecord } from './verbs/labels.mjs';
 import { lastSeq } from './verbs/snapshot.mjs';
 import { stateOf } from './verbs/tracks.mjs';
-import { boardVersion } from './version.mjs';
+import { withWorkers } from './verbs/runs.mjs';
+import { shownWorkers } from './verbs/graph.mjs';
+import { boardCommit, boardVersion } from './version.mjs';
 import { createWeb } from './web/index.mjs';
+import { ONCE_PER_CHANGE, createReadPool, dearRead } from './read-pool.mjs';
 
 const BODY_MAX = 2 * 1024 * 1024;
 const KEEPALIVE_MS = 20000;
@@ -88,6 +92,8 @@ export function revokeToken(db, device) {
   try {
     const n = Number(db.stmt('UPDATE tokens SET revoked = ? WHERE device = ? AND revoked IS NULL').run(stampNow(), d).changes);
     dropGrants(db, d);
+    /* a revoked PC's project map would be served to every PC forever */
+    dropPcMap(db, d);
     db.exec('COMMIT');
     return { device: d, revoked: n };
   } catch (e) { if (db.isTransaction) db.exec('ROLLBACK'); throw e; }
@@ -240,8 +246,8 @@ export function recordHead(db, key, line = {}) {
     if (h) return { key: h.key, label: h.label, kind: 'handoff', status: h.status, title: h.focus, ...(h.track ? { track: labelOf(db, h.track) } : {}) };
     return { key: key || null, label: line.id || null, kind: line.kind || null, gone: true };
   }
-  const f = JSON.parse(r.fields);
-  const head = { key: r.key, label: r.label, kind: r.kind, status: r.status, title: r.title, version: r.version, updated: r.updated };
+  const f = r.kind === 'task' ? withWorkers(JSON.parse(r.fields), shownWorkers(db, [r.key], Date.now()).get(r.key)) : JSON.parse(r.fields);
+  const head = { key: r.key, label: r.label, kind: r.kind, status: r.kind === 'task' ? f.status : r.status, title: r.title, version: r.version, updated: r.updated };
   for (const k of HEAD_FIELDS[r.kind] || []) {
     if (f[k] === undefined || f[k] === null || f[k] === '') continue;
     head[k] = k === 'workstream' ? labelOf(db, f[k]) : f[k];
@@ -350,6 +356,11 @@ function statusOf(e) {
   return 500;
 }
 
+/* the board's pages that read the whole board; settings, sign in and the assets stay on its thread */
+const isPage = (path) => path === '/' || ['/ws/', '/r/', '/override/'].some((p) => path.startsWith(p)) || ['/needs-you', '/activity', '/rulings', '/search'].includes(path);
+
+const BUSY = 'the board is busy: this read took over 5 s; try again';
+
 function send(res, status, body, headers = {}) {
   const text = JSON.stringify(body) + '\n';
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(text), ...headers });
@@ -360,9 +371,12 @@ function send(res, status, body, headers = {}) {
    `backupsDir` is a folder or a function read at each backup;
    `clock` lets a request set the verbs' clock (test boards only); `web(req, res,
    ctx)` serves the pages and returns true when it answered: the board's own web
-   views (server/web) unless a caller passes another, or null for none. */
-export function createApi({ db, dataDir = null, archiveDir, timingsFile, backupsDir, clock = false, web, adminSecret = secret() } = {}) {
+   views (server/web) unless a caller passes another, or null for none; `readPool` stands in for
+   the read threads (null for none). */
+export function createApi({ db, dataDir = null, archiveDir, timingsFile, backupsDir, clock = false, web, adminSecret = secret(), readPool } = {}) {
   if (!db) throw new TypeError('createApi needs the database');
+  /* the board's own pages can be drawn on a read thread; a caller's own web cannot */
+  const ownWeb = web === undefined;
   if (web === undefined) web = createWeb({ db });
   const archive = archiveDir !== undefined ? archiveDir : dataDir ? join(dataDir, 'archive') : null;
   const timingsPath = timingsFile !== undefined ? timingsFile : dataDir ? join(dataDir, 'timings.log') : null;
@@ -374,8 +388,12 @@ export function createApi({ db, dataDir = null, archiveDir, timingsFile, backups
   const clients = new Set();
   /* read once: the files under a running board are replaced only with a restart */
   const version = boardVersion();
+  const commit = boardCommit();
   let sent = lastSeq(db);
   let writes = 0;
+  let closed = false;
+  /* read threads on the board's file; a board in memory runs every read here */
+  const pool = readPool !== undefined ? readPool : createReadPool(typeof db.location === 'function' ? db.location() : null);
 
   const checkpoint = () => { try { db.exec('PRAGMA wal_checkpoint(PASSIVE)'); } catch {} };
 
@@ -427,6 +445,11 @@ export function createApi({ db, dataDir = null, archiveDir, timingsFile, backups
 
   /* The actor is the token's device plus the session the body names. */
   function call(name, body, device) {
+    const { actor, opts } = callArgs(body, device);
+    return runVerb(db, name, body.input, actor, opts);
+  }
+
+  function callArgs(body, device) {
     const actor = { pc: device };
     for (const k of ['session', 'by']) if (typeof body[k] === 'string' && body[k].trim()) actor[k] = body[k].trim();
     /* the user's press */
@@ -436,7 +459,49 @@ export function createApi({ db, dataDir = null, archiveDir, timingsFile, backups
     const opts = {};
     for (const k of ['strict', 'inherit']) if (typeof o[k] === 'boolean') opts[k] = o[k];
     if (clock && o.now !== undefined) { opts.now = o.now; actor.now = o.now; }
-    return runVerb(db, name, body.input, actor, opts);
+    return { actor, opts };
+  }
+
+  /* a page an open browser reads again after each change, drawn on a read thread; false
+     when the thread could not, and the board's thread draws it as before */
+  async function offPage(res, url, device) {
+    let p;
+    try { p = await pool.page(url.href, device); } catch (e) {
+      if (closed) { res.destroy(); return true; }
+      if (!e || !e.capped) return false;
+      /* past the cap it is answered busy, never drawn again here */
+      res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '5' });
+      res.end(BUSY + '\n');
+      return true;
+    }
+    if (!p) return false;
+    res.writeHead(p.status, p.headers);
+    res.end(p.body);
+    return true;
+  }
+
+  /* a dear read on a read thread, a picture once per board change for every PC; a refusal
+     or a stopped thread runs it here instead, so its words and status are the board's own; a read
+     past the cap is answered busy, since running it here would hold the board for every PC */
+  async function offThread(label, res, name, input, actor, opts, inline) {
+    const t = performance.now();
+    let text;
+    try {
+      text = await (ONCE_PER_CHANGE.has(name) && opts.now === undefined
+        ? pool.once(name + ' ' + JSON.stringify(input ?? null), lastSeq(db), () => pool.run(name, input, actor, opts))
+        : pool.run(name, input, actor, opts));
+    } catch (e) {
+      // a read the close failed answers nothing: its thread's exit can land after the caller closed the db
+      if (closed) { res.destroy(); return undefined; }
+      if (!e || !e.capped) return timed(label, res, inline);
+      send(res, 503, { ok: false, error: BUSY }, { 'retry-after': '5' });
+      timing(label, performance.now() - t, 503);
+      return undefined;
+    }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(text) });
+    res.end(text);
+    timing(label, performance.now() - t, 200);
+    return undefined;
   }
 
   function timed(label, res, fn) {
@@ -476,8 +541,9 @@ export function createApi({ db, dataDir = null, archiveDir, timingsFile, backups
     const after = raw === undefined || raw === null || raw === '' ? NaN : Number(raw);
     res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-accel-buffering': 'no' });
     res.write('retry: 2000\n\n');
-    /* no id, so it moves no cursor: each connection says the board's version first */
-    res.write(frame('board', { version }));
+    /* no id, so it moves no cursor: each connection says the board's version first, and the
+       device the board knows this PC by, so its "this PC" is right before any of its rows */
+    res.write(frame('board', { version, device }));
     const top = lastSeq(db);
     const client = { res, cursor: top, device };
     if (!Number.isInteger(after) || after < 0 || after > top || top - after > GAP_MAX) {
@@ -546,7 +612,7 @@ export function createApi({ db, dataDir = null, archiveDir, timingsFile, backups
     const path = url.pathname;
     try {
       if (path === '/health' && req.method === 'GET') {
-        return send(res, 200, { ok: true, protocol: PROTOCOL, seq: lastSeq(db), version });
+        return send(res, 200, { ok: true, protocol: PROTOCOL, seq: lastSeq(db), version, commit });
       }
       if (path.startsWith('/admin/')) {
         const body = req.method === 'POST' ? await readBody(req) : {};
@@ -581,6 +647,10 @@ export function createApi({ db, dataDir = null, archiveDir, timingsFile, backups
           if (rest.startsWith('verbs/')) {
             const name = decodeURIComponent(rest.slice(6));
             if (!Object.hasOwn(VERBS, name)) throw new HttpError(404, 'the board has no verb named ' + JSON.stringify(name));
+            if (pool && dearRead(name, body.input)) {
+              const { actor, opts } = callArgs(body, device);
+              return offThread(name, res, name, body.input, actor, opts, () => call(name, body, device));
+            }
             return timed(name, res, () => call(name, body, device));
           }
           if (rest === 'login-link') {
@@ -595,13 +665,18 @@ export function createApi({ db, dataDir = null, archiveDir, timingsFile, backups
           const device = authOf(req, { cookieOk: true });
           if (rest === 'events') return events(req, res, url, device);
           if (rest === 'snapshot') return timed('GET snapshot', res, () => runVerb(db, 'boardSnapshot', {}, {}));
-          if (rest === 'working-set') return timed('GET working-set', res, () => runVerb(db, 'workingSet', {}, {}));
+          if (rest === 'working-set') {
+            if (pool) return offThread('GET working-set', res, 'workingSet', {}, {}, {}, () => runVerb(db, 'workingSet', {}, {}));
+            return timed('GET working-set', res, () => runVerb(db, 'workingSet', {}, {}));
+          }
           if (rest === 'activity') return timed('GET activity', res, () => activityAfter(url));
           /* one command on a PC prints every tier's summary */
           if (rest === 'timings') return send(res, 200, { ok: true, result: { rows: timingSummary(timingsPath), lastCheck: lastCheck(checksPath) } });
           if (rest.startsWith('records/')) return timed('GET record', res, () => record(decodeURIComponent(rest.slice(8))));
           if (rest.startsWith('workstreams/')) {
             const ws = decodeURIComponent(rest.slice(12));
+            const input = { workstream: ws, all: url.searchParams.get('all') === '1' };
+            if (pool) return offThread('GET workstream', res, 'workstreamView', input, {}, {}, () => runVerb(db, 'workstreamView', input, {}));
             return timed('GET workstream', res, () => runVerb(db, 'workstreamView', { workstream: ws, all: url.searchParams.get('all') === '1' }, {}));
           }
         }
@@ -612,6 +687,7 @@ export function createApi({ db, dataDir = null, archiveDir, timingsFile, backups
         try { device = authOf(req, { cookieOk: true }); } catch { device = null; }
         /* a write from a page counts the web session alone, never a bearer token */
         const ctx = { db, device, url, WEB, session: () => webDevice(db, cookieOf(req)), readForm: () => readForm(req), tokens: () => listTokens(db), wrote: () => afterWrite(res, pump()) };
+        if (pool && ownWeb && device && req.method === 'GET' && isPage(path) && await offPage(res, url, device)) return undefined;
         if (await web(req, res, ctx)) return undefined;
       }
       throw new HttpError(404, 'not found');
@@ -632,6 +708,7 @@ export function createApi({ db, dataDir = null, archiveDir, timingsFile, backups
 
   return {
     server,
+    pool,
     pump,
     clients,
     adminSecret,
@@ -652,7 +729,9 @@ export function createApi({ db, dataDir = null, archiveDir, timingsFile, backups
       });
     },
     close() {
+      closed = true;
       clearInterval(beat);
+      if (pool) pool.close();
       if (web && web.close) web.close();
       for (const c of clients) c.res.end();
       clients.clear();

@@ -2,7 +2,6 @@
    draw from, built from the track views and
    the picture verbs' extras. Pure: the mod runs it too, so it imports only the pure graph. */
 import { graphOf, viewLook } from './graph.mjs';
-import { endedOf, endedParts } from './draw.mjs';
 
 const DAY = 86400000;
 const LOOK_DAYS = 30;
@@ -21,14 +20,26 @@ export function shortOf(name) {
   return m ? m[1] : s;
 }
 
+/* a track's short name, or the words after the cut when it would say its workstream's short name again */
+export function trackShort(name, wsName) {
+  const s = shortOf(name), w = shortOf(wsName);
+  if (!w || s.toLowerCase() !== w.toLowerCase()) return s;
+  const rest = String(name || '').slice(s.length).replace(/^(?: \(|: )/, '').replace(/\)$/, '').trim();
+  return rest ? rest.charAt(0).toUpperCase() + rest.slice(1) : s;
+}
+
 const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
 const list = (v) => (Array.isArray(v) ? v : []);
 const arr = (v) => [].concat(v || []).filter(Boolean);
 
+/* Equal chains go to the lower task number, here and on the track page (server/verbs/graph.mjs): it is on every
+   station and the same on every board and render, where the board's own row order follows random record keys. */
+const numOf = (id) => { const m = /(\d+)$/.exec(String(id || '')); return m ? Number(m[1]) : Infinity; };
+export const byNumber = (a, b) => numOf(a) - numOf(b) || 0;
+
 /* Section 3: the longest chain of open tasks over their waits plus each parked track's unpark
    condition: track-ends TR-a makes the parked track's first tasks wait on TR-a's last ones,
-   task-completes T-m on T-m. `views` (trackView rows) stand in for `tasks` ({ id, tr, deps, zero }).
-   A tie goes as the track page's (server/verbs/graph.mjs): the first in `tasks` order, each `deps` in the board's order. */
+   task-completes T-m on T-m. `views` (trackView rows) stand in for `tasks` ({ id, tr, deps }). */
 export function critOf({ views, tasks, parks = [] } = {}) {
   const rows = tasks || critTasks(views || []);
   const by = new Map(rows.map((t) => [t.id, t]));
@@ -53,15 +64,14 @@ export function critOf({ views, tasks, parks = [] } = {}) {
     if (on.has(id)) return { len: 0, path: [] };
     on.add(id);
     let best = { len: 0, path: [] };
-    for (const d of deps.get(id)) { const r = chain(d); if (r.len > best.len) best = r; }
+    for (const d of [...deps.get(id)].sort(byNumber)) { const r = chain(d); if (r.len > best.len) best = r; }
     on.delete(id);
-    const own = by.get(id).zero ? 0 : 1;
-    const out = { len: best.len + own, path: own ? [...best.path, id] : best.path };
+    const out = { len: best.len + 1, path: [...best.path, id] };
     memo.set(id, out);
     return out;
   };
   let best = { len: 0, path: [] };
-  for (const t of rows) { const r = chain(t.id); if (r.len > best.len) best = r; }
+  for (const t of [...rows].sort((a, b) => byNumber(a.id, b.id))) { const r = chain(t.id); if (r.len > best.len) best = r; }
   return { n: best.len, from: best.path[0] || null, to: best.path[best.path.length - 1] || null, path: best.path };
 }
 
@@ -72,7 +82,7 @@ function reaches(deps, from, to) {
   return walk(from);
 }
 
-/* the open tasks of trackView rows with their open waits, each track's by position; a promoted task adds no length */
+/* the open tasks of trackView rows with their open waits, each track's by position */
 function critTasks(tvs) {
   const open = new Set();
   for (const tv of tvs) for (const t of list(tv.tasks)) open.add(t.id);
@@ -80,7 +90,7 @@ function critTasks(tvs) {
   for (const tv of tvs) {
     const deps = {};
     for (const e of list(tv.edges)) if (!e.done && open.has(e.on)) (deps[e.task] = deps[e.task] || []).push(e.on);
-    for (const t of byPosition(list(tv.tasks))) out.push({ id: t.id, tr: tv.id, deps: deps[t.id] || [], ...(t.pointer ? { zero: true } : {}) });
+    for (const t of byPosition(list(tv.tasks))) out.push({ id: t.id, tr: tv.id, deps: deps[t.id] || [] });
   }
   return out;
 }
@@ -126,24 +136,24 @@ function addWs(P, view, x, held, pc) {
   const xk = x.tasks || {};
   const { g, D } = graphOf(tvs, Date.parse(P.at) || 0, viewLook(), { keepReview: false });
   const byTr = new Map(tvs.map((tv) => [tv.id, tv]));
-  const nameOf = (tr) => (byTr.has(tr) ? shortOf(byTr.get(tr).name) : '');
+  const nameOf = (tr) => (byTr.has(tr) ? trackShort(byTr.get(tr).name, x.name || view.name) : '');
   for (const [id, a] of Object.entries(x.answers || {})) P.ans[id] = answerOf(a);
   const ansOf = (q) => (q && P.ans[q] ? q : undefined);
   for (const gt of g.tasks) {
     const d = D.tasks[gt.id];
     const waits = d.waits.filter((w) => !w.track).map((w) => w.id);
     const cross = d.waits.filter((w) => w.track).map((w) => w.id);
-    let st = gt.kept ? 'done' : d.kind === 'pointer' ? 'waits' : d.kind;
-    /* in the session's own hand, still waiting on open tasks */
-    if (st === 'now' && !gt.agent && waits.length + cross.length) st = 'held';
+    /* the station is the task's word as graphOf reads it */
+    const st = gt.kept ? 'done' : d.kind;
     const e = xk[gt.id] || {};
     const ans = ansOf((x.taskAns || {})[gt.id]);
     P.tasks[gt.id] = {
       id: gt.id, key: gt.key, url: gt.url || null, tr: gt.track, ws: wsId, name: gt.full, st, waits, cross, frees: [],
       ...(gt.review ? { review: true } : {}), ...(e.low ? { low: true } : {}), ...(e.by ? { by: e.by } : {}),
-      ...(st === 'now' || st === 'held' ? (gt.agent ? { agent: gt.agent } : { session: true }) : {}),
-      /* its agent stopped; the station lands with no train car */
-      ...(st === 'now' && endedOf(gt) ? { ended: endedOf(gt) } : {}),
+      ...(gt.word && !gt.kept ? { word: gt.word } : {}),
+      ...(st === 'now' || st === 'left' ? (gt.agent ? { agent: gt.agent } : { session: true }) : {}),
+      /* its own checklist, so a row says what holds it open */
+      ...(gt.checklist ? { progress: { done: gt.checklist.done, total: gt.checklist.total } } : {}),
       ...(ans ? { ans } : {}),
       times: { created: e.created || null, ...(e.started ? { started: e.started } : {}), ...(e.closed ? { closed: e.closed } : {}) },
     };
@@ -152,7 +162,7 @@ function addWs(P, view, x, held, pc) {
   for (const f of Object.values(x.far || {})) {
     if (P.tasks[f.id]) continue;
     P.tasks[f.id] = {
-      id: f.id, key: f.key, url: f.url || null, tr: f.tr || null, ws: f.ws || null, name: f.name || '', st: f.st || 'waits',
+      id: f.id, key: f.key, url: f.url || null, tr: f.tr || null, ws: f.ws || null, name: f.name || '', st: f.st || 'waits', ...(f.word ? { word: f.word } : {}),
       waits: [], cross: list(f.waits), frees: [], far: true, ...(f.trName ? { trName: f.trName } : {}), ...(f.wsName ? { wsName: f.wsName } : {}),
       times: { created: f.created || null },
     };
@@ -166,21 +176,20 @@ function addWs(P, view, x, held, pc) {
     const e = xt[tv.id] || {};
     const own = g.tasks.filter((t) => t.track === tv.id && !t.kept).map((t) => P.tasks[t.id]);
     const ownIds = new Set(own.map((t) => t.id));
-    /* a station whose agent ended counts apart from running */
-    const running = own.filter((t) => (t.st === 'now' || t.st === 'held') && !t.ended).length;
-    const landing = own.filter((t) => t.ended === 'finished').length;
-    const stopped = own.filter((t) => t.ended === 'stopped').length;
+    const running = own.filter((t) => t.st === 'now').length;
+    const unconfirmed = own.filter((t) => t.st === 'left').length;
     const ready = own.filter((t) => t.st === 'ready').length;
-    const names = own.filter((t) => t.st === 'now' && t.agent && !t.ended).map((t) => t.agent);
+    /* an unconfirmed agent draws no car, since nothing has heard it */
+    const names = own.filter((t) => t.st === 'now' && t.agent).map((t) => t.agent);
     const junctions = g.tasks.filter((t) => t.kept && t.track === tv.id).map((t) => t.id);
-    const short = shortOf(tv.name);
+    const short = trackShort(tv.name, x.name || view.name);
     /* due by the board's own reading (the review size reached), counting what waits */
     const rd = tv.review && tv.review.due && Array.isArray(tv.review.uncovered) ? tv.review.uncovered.length : 0;
     const stalled = stalledWords(tv.stalled, e.stalledDays);
     return {
       id: tv.id, key: tv.key, url: tv.url || null, ws: wsId, name: tv.name, ...(short !== tv.name ? { short } : {}),
-      state: tv.state, words: trackWords(tv, e, names.length, nameOf, held, pc), ...(stalled ? { stalled } : {}),
-      open: own.length, ready, running, ...(landing ? { landing } : {}), ...(stopped ? { stopped } : {}), waiting: own.length - running - landing - stopped - ready, done: tv.done || 0, chain: (tv.critical || {}).length || 0,
+      state: tv.state, words: trackWords(tv, e, names.length, nameOf, held, pc), ...(stalled ? { stalled } : {}), ...(tv.hold ? { hold: true } : {}),
+      open: own.length, ready, running, ...(unconfirmed ? { unconfirmed } : {}), waiting: own.length - running - unconfirmed - ready, done: tv.done || 0, chain: (tv.critical || {}).length || 0,
       ...(tv.holder || names.length ? { train: { agents: names.length, names, session: Boolean(tv.holder) } } : {}),
       from: ((tv.junction || {}).task || {}).id || null,
       spine: list((tv.critical || {}).path).filter((id) => ownIds.has(id)),
@@ -215,9 +224,8 @@ function addWs(P, view, x, held, pc) {
   const order = new Map(tvs.map((tv, i) => [tv.id, i]));
   links.push(...[...waitsBy.values()].sort((a, b) => order.get(a.from) - order.get(b.from) || order.get(a.to) - order.get(b.to)));
   const parks = tracks.filter((t) => t.unpark).map((t) => ({ tr: t.id, kind: t.unpark.kind, on: t.unpark.on }));
-  /* each task's waits as the view gave them, the board's order, so a tie goes as on the track page */
   const crit = critOf({ tasks: tvs.flatMap((tv) => byPosition(g.tasks.filter((t) => t.track === tv.id && !t.kept)))
-    .map((t) => ({ id: t.id, tr: t.track, deps: D.tasks[t.id].waits.map((w) => w.id), ...(t.promotedTo ? { zero: true } : {}) })), parks });
+    .map((t) => ({ id: t.id, tr: t.track, deps: D.tasks[t.id].waits.map((w) => w.id) })), parks });
   const short = shortOf(x.name || view.name || '');
   P.ws[wsId] = {
     id: wsId, key: x.key || null, url: x.url || null, name: x.name || '', ...(short && short !== x.name ? { short } : {}),
@@ -244,9 +252,9 @@ function ovWords(w) {
 function ovCounts(w) {
   const trs = list(w.tracks);
   const inbox = w.inbox ? ', inbox ' + w.inbox + (w.inboxDue ? ', ' + w.inboxDue + ' due' : '') : '';
-  if (w.running || w.landing || w.stopped) {
-    const waiting = w.open - w.running - (w.landing || 0) - (w.stopped || 0) - w.ready;
-    const rest = [w.running ? w.running + ' running' : '', ...endedParts(w), w.ready ? w.ready + ' ready' : '', waiting ? waiting + ' waiting' : ''].filter(Boolean);
+  if (w.running || w.unconfirmed) {
+    const r = w.running || 0, u = w.unconfirmed || 0, k = w.ready || 0, waiting = w.open - r - u - k;
+    const rest = [r ? r + ' running' : '', u ? u + ' unconfirmed' : '', k ? k + ' ready' : '', waiting > 0 ? waiting + ' waiting' : ''].filter(Boolean);
     return w.open + ' open: ' + rest.join(', ') + inbox;
   }
   const u = ovState(w) === 'parked' ? trs.find((t) => t.state === 'parked' && t.unpark) : null;

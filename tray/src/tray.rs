@@ -40,25 +40,34 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::registry::{self, wide};
-use crate::{App, Card, Dot, EXIT_OK, Face, Recent, alert, console, icon, net};
+use crate::{App, Asleep, Card, Dot, EXIT_OK, Face, Recent, alert, console, icon, net};
 
-/* The six faces, compiled in: an install that lost an asset cannot leave this
-   tray blank. THREE PER
-   TASKBAR THEME, in the one order the Dot enum has (waiting, quiet, blocking):
+/* The ten faces, compiled in: an install that lost an asset cannot leave this
+   tray blank. FIVE PER
+   TASKBAR THEME, in the one order the Dot enum has (waiting, quiet, blocking),
+   then the asleep face, which only ever stands in for the quiet one,
+   then the waiting face with something asleep, the sky crescent:
    the dark set carries the cream check the package drew for a dark taskbar and
    the light set the orange one, because a single .ico does not recolour itself
    with the Windows theme. Which set is worn is icon::Taskbar's answer, read
    from the SYSTEM personalization setting and never from the board's theme. */
-pub const ART_DARK: [&[u8]; 3] = [
+pub const ART_DARK: [&[u8]; 5] = [
     include_bytes!("../../assets/tray-waiting.ico"),
     include_bytes!("../../assets/tray-quiet.ico"),
     include_bytes!("../../assets/tray-blocking.ico"),
+    include_bytes!("../../assets/tray-asleep.ico"),
+    include_bytes!("../../assets/tray-waiting-asleep.ico"),
 ];
-pub const ART_LIGHT: [&[u8]; 3] = [
+pub const ART_LIGHT: [&[u8]; 5] = [
     include_bytes!("../../assets/tray-light-waiting.ico"),
     include_bytes!("../../assets/tray-light-quiet.ico"),
     include_bytes!("../../assets/tray-light-blocking.ico"),
+    include_bytes!("../../assets/tray-light-asleep.ico"),
+    include_bytes!("../../assets/tray-light-waiting-asleep.ico"),
 ];
+
+/* Win32's szTip holds 128 UTF-16 units with the terminating null */
+const TIP_MAX: usize = 127;
 
 const WM_TRAY_ICON: u32 = 0x0400 + 1;
 pub const WM_TRAY_UPDATE: u32 = 0x0400 + 2;
@@ -116,19 +125,16 @@ struct State {
        is simply never asked for. Read in the three functions that touch it and
        nowhere else, so there is one switch and not a condition per call site. */
     icon_on: bool,
-    /* both sets, parsed once at start: six .ico files are 116 KB of frames and
+    /* both sets, parsed once at start: ten .ico files are 193 KB of frames and
        parsing one on every theme flip would be work done at the worst moment */
-    dark: [Vec<icon::Frame>; 3],
-    light: [Vec<icon::Frame>; 3],
+    dark: [Vec<icon::Frame>; 5],
+    light: [Vec<icon::Frame>; 5],
     theme: icon::Taskbar,
     size: u32,
     current: HICON,
-    /* What was last put on the shell, so an unchanged beat draws nothing. The
-       theme rides in it, so a flip with the same dot and size still redraws;
-       the count rides in it for the TOOLTIP alone (the icon carries
-       no count), so a board that goes from 3 blocking to 5 still refreshes the
-       words even though the picture is the same one. */
-    shown: Option<(Dot, u32, u32, icon::Taskbar)>,
+    /* What was last put on the shell, so an unchanged beat draws nothing: the
+       face's art index, the tooltip's words (its counts and asleep names, puts no count on the icon), the size and the theme. */
+    shown: Option<(usize, String, u32, icon::Taskbar)>,
     taskbar_created: u32,
     /* THE CARD URLS AS THE OPEN MENU SHOWED THEM, frozen at build time
        and never read at click time. The network thread can replace Face.cards
@@ -998,30 +1004,25 @@ fn refresh(force: bool) {
         if !s.icon_on {
             return;
         }
-        let (dot, blocking) = {
+        let (dot, art_at, tip) = {
             let face = s.app.face.lock().unwrap();
-            (face.dot, face.blocking)
+            (
+                face.dot,
+                art_index(face.dot, face.asleep),
+                tooltip(face.dot, face.blocking, face.asleep, &face.asleep_cards, &s.app.args.version),
+            )
         };
-        /* the number the TOOLTIP will say, and the only reason a count is in
-           the gate at all: the icon is the delivered frame for the dot and
-           nothing else, so it does not move when the count
-           does, but the words under the cursor do. Zero off the blocking
-           state, because that is what the tooltip says there. */
-        let tip_count = if dot == Dot::Blocking { blocking } else { 0 };
-        let want = (dot, tip_count, s.size, s.theme);
-        if !force && s.shown == Some(want) {
+        let want = (art_at, tip, s.size, s.theme);
+        if !force && s.shown.as_ref() == Some(&want) {
             return;
         }
+        let tip = want.1.clone();
 
         let set = match s.theme {
             icon::Taskbar::Dark => &s.dark,
             icon::Taskbar::Light => &s.light,
         };
-        let art = &set[match dot {
-            Dot::Waiting => 0,
-            Dot::Quiet => 1,
-            Dot::Blocking => 2,
-        }];
+        let art = &set[art_at];
         /* the delivered frame, untouched: nothing is composited over it */
         let px = icon::face(art, s.size);
         let next = icon::to_hicon(&px, s.size);
@@ -1041,8 +1042,7 @@ fn refresh(force: bool) {
         let mut nid = base_nid(s.hwnd);
         nid.uFlags = NIF_ICON | NIF_TIP;
         nid.hIcon = next;
-        let tip = tooltip(dot, blocking, &s.app.args.version);
-        for (i, unit) in wide(&tip).into_iter().take(127).enumerate() {
+        for (i, unit) in wide(&tip).into_iter().take(TIP_MAX).enumerate() {
             nid.szTip[i] = unit;
         }
         if unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) } == 0 {
@@ -1059,8 +1059,9 @@ fn refresh(force: bool) {
                icon carries no count, so the words are where the
                count is read back */
             s.app.journal.line(&format!(
-                "icon {} size {} faces {} tip {}",
+                "icon {}{} size {} faces {} tip {}",
                 dot.name(),
+                if art_at >= 3 { " asleep" } else { "" },
                 s.size,
                 s.theme.name(),
                 tip
@@ -1069,27 +1070,100 @@ fn refresh(force: bool) {
     });
 }
 
-pub fn tooltip(dot: Dot, blocking: u32, version: &str) -> String {
+/* Which art the face wears: the Dot order, the moon crescent over
+   quiet, the sky crescent over waiting; blocking keeps its dot */
+pub fn art_index(dot: Dot, asleep: u32) -> usize {
+    match dot {
+        Dot::Waiting if asleep > 0 => 4,
+        Dot::Waiting => 0,
+        Dot::Quiet if asleep > 0 => 3,
+        Dot::Quiet => 1,
+        Dot::Blocking => 2,
+    }
+}
+
+/* The face's line, then the asleep count, up to two named lines with
+   their wake words and "and n more", all within szTip: names are cut, never the count. */
+pub fn tooltip(dot: Dot, blocking: u32, asleep: u32, names: &[Asleep], version: &str) -> String {
     /* the hover names the version too */
     let name = if version.is_empty() {
         "AskerDo".to_string()
     } else {
         format!("AskerDo {version}")
     };
-    match dot {
+    let mut head = match dot {
         Dot::Blocking => format!("{name}: {blocking} blocking"),
         Dot::Waiting => format!("{name}: waiting"),
         Dot::Quiet => format!("{name}: quiet"),
+    };
+    if asleep == 0 {
+        return head;
     }
+    head.push_str(&format!(", {asleep} asleep"));
+    let names = &names[..names.len().min(asleep as usize)];
+    let tail = if names.is_empty() || asleep as usize <= names.len() {
+        String::new()
+    } else {
+        format!("\nand {} more", asleep as usize - names.len())
+    };
+    let mut left = TIP_MAX.saturating_sub(units(&head) + units(&tail));
+    let mut out = head;
+    for (i, a) in names.iter().enumerate() {
+        /* a fair share of what is left, so a long first name never starves the second */
+        let share = left / (names.len() - i);
+        let line = asleep_line(a, share.saturating_sub(1));
+        if !line.is_empty() {
+            left -= 1 + units(&line);
+            out.push('\n');
+            out.push_str(&line);
+        }
+    }
+    out.push_str(&tail);
+    cut_units(&out, TIP_MAX)
+}
+
+/* one asleep line in at most `room` UTF-16 units: the name is cut first, the wake kept whole while it fits */
+fn asleep_line(a: &Asleep, room: usize) -> String {
+    let wake = if a.wake.is_empty() { String::new() } else { format!(", {}", a.wake) };
+    let full = format!("{}{wake}", a.name);
+    if units(&full) <= room {
+        return full;
+    }
+    let for_name = room.saturating_sub(units(&wake) + 3);
+    if for_name > 0 {
+        return format!("{}...{wake}", cut_units(&a.name, for_name));
+    }
+    if room > 3 {
+        return format!("{}...", cut_units(&full, room - 3));
+    }
+    String::new()
+}
+
+fn units(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+
+/* whole characters only, so a surrogate pair is never cut in half */
+fn cut_units(s: &str, n: usize) -> String {
+    let mut used = 0;
+    let mut out = String::new();
+    for c in s.chars() {
+        used += c.len_utf16();
+        if used > n {
+            break;
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         IDM_CARD_BASE, IDM_RECENT_BASE, IDM_WAIT_BASE, LINE_MAX, Line, card_urls, cut, menu_label,
-        menu_model, pick, pick_recent, recent_urls, tooltip, with_version,
+        menu_model, pick, pick_recent, recent_urls, tooltip, with_version, art_index, TIP_MAX,
     };
-    use crate::{Card, Dot, Face, Recent};
+    use crate::{Asleep, Card, Dot, Face, Recent};
 
     const BOARD: &str = "http://127.0.0.1:4321/s/";
     const SETTINGS: &str = "http://127.0.0.1:4321/s/notifications";
@@ -1117,6 +1191,8 @@ mod tests {
             recent: Vec::new(),
             paused: String::new(),
             pause_label: label.to_string(),
+            asleep: 0,
+            asleep_cards: Vec::new(),
             told: true,
         }
     }
@@ -1196,10 +1272,47 @@ mod tests {
 
     #[test]
     fn the_three_tooltip_forms() {
-        assert_eq!(tooltip(Dot::Waiting, 0, ""), "AskerDo: waiting");
-        assert_eq!(tooltip(Dot::Quiet, 4, ""), "AskerDo: quiet");
-        assert_eq!(tooltip(Dot::Blocking, 12, ""), "AskerDo: 12 blocking");
-        assert!(tooltip(Dot::Quiet, 0, "0.8.10").contains("0.8.10"));
+        assert_eq!(tooltip(Dot::Waiting, 0, 0, &[], ""), "AskerDo: waiting");
+        assert_eq!(tooltip(Dot::Quiet, 4, 0, &[], ""), "AskerDo: quiet");
+        assert_eq!(tooltip(Dot::Blocking, 12, 0, &[], ""), "AskerDo: 12 blocking");
+        assert!(tooltip(Dot::Quiet, 0, 0, &[], "0.8.10").contains("0.8.10"));
+    }
+
+    /* the moon crescent over quiet, the sky one over waiting,
+       and blocking keeps its plain dot whatever is asleep */
+    #[test]
+    fn the_crescent_faces_and_blocking_plain() {
+        assert_eq!(art_index(Dot::Quiet, 0), 1);
+        assert_eq!(art_index(Dot::Quiet, 3), 3);
+        assert_eq!(art_index(Dot::Waiting, 0), 0);
+        assert_eq!(art_index(Dot::Waiting, 3), 4);
+        assert_eq!(art_index(Dot::Blocking, 3), 2);
+    }
+
+    /* two long names, one with a pair outside the BMP, still fit szTip
+       whole: the count and the more line stay, and no surrogate is cut in half */
+    #[test]
+    fn the_asleep_tip_fits_the_shell() {
+        let long = |id: &str, c: char| Asleep {
+            id: id.into(),
+            name: std::iter::repeat_n(c, 120).collect(),
+            wake: "until T-398 is completed".into(),
+        };
+        let names = [long("Q1", 'a'), long("Q2", '\u{1F319}')];
+        for dot in [Dot::Quiet, Dot::Waiting, Dot::Blocking] {
+            let tip = tooltip(dot, 12, 5, &names, "0.8.16");
+            assert!(tip.encode_utf16().count() <= TIP_MAX, "{tip}");
+            let lines: Vec<&str> = tip.lines().collect();
+            assert!(lines[0].contains('5'), "the count stays: {tip}");
+            assert_eq!(lines.len(), 4, "two named lines and the more line: {tip}");
+            assert!(lines[1].starts_with('a') && lines[2].starts_with('\u{1F319}'), "{tip}");
+            assert!(lines[3].contains('3'), "{tip}");
+        }
+        /* the short ones whole, and no more line when both are named */
+        let short = [Asleep { id: "Q1".into(), name: "whole-app take".into(), wake: "until Nov 20".into() }];
+        let tip = tooltip(Dot::Quiet, 0, 1, &short, "0.8.16");
+        assert!(tip.contains("whole-app take") && tip.contains("until Nov 20"));
+        assert_eq!(tip.lines().count(), 2);
     }
 
     /* the version opens the menu greyed, and no clickable line moves its id */
@@ -1345,7 +1458,7 @@ mod tests {
     /* THE TWO LINKS, each present only when the server handed its URL over, and
        omitted with no gap and no greyed placeholder when it did not. */
     /* THE PAUSE LINE RIDES `--notify`, the route the verb is posted to, and not
-       `--settings`, the page the link opens: measured 2026-09-09 against a live
+       `--settings`, the page the link opens: measured against a live
        board, a POST to the settings PAGE is a 404, since the route table gates
        the method. A server that named no route to post to shows no pause line,
        the same rule each link line keeps. */

@@ -129,6 +129,14 @@ pub struct Recent {
     pub name: String,
 }
 
+/* one snoozed question the hover names, its wake words worded by the server */
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Asleep {
+    pub id: String,
+    pub name: String,
+    pub wake: String,
+}
+
 pub struct Face {
     pub dot: Dot,
     pub blocking: u32,
@@ -156,6 +164,10 @@ pub struct Face {
     /* the WORDS after "Paused ", built by the server off the clock that wrote
        the stamp, and printed by the menu verbatim. Empty means no pause holds. */
     pub pause_label: String,
+    /* how many questions are snoozed and the first two by id; the icon
+       wears a crescent over quiet and waiting, never over blocking */
+    pub asleep: u32,
+    pub asleep_cards: Vec<Asleep>,
     /* WHETHER THE STREAM HAS SAID ANYTHING YET. False from the spawn argv until
        the first hello lands, which is what lets the counts line say `connecting`
        rather than a fabricated `0 waiting` beside the argv's blocking count. */
@@ -303,7 +315,7 @@ fn main() {
             say("       [--no-icon] [--log <path>]");
             say("       askerdo-tray --register | --unregister");
             say("       askerdo-tray --open [--log <path>]");
-            say("       askerdo-tray --serve --root <store root> [--log <path>]");
+            say("       askerdo-tray --serve --root <store root> [--node <node.exe>] [--log <path>]");
             std::process::exit(EXIT_ARGS);
         }
     };
@@ -322,6 +334,8 @@ fn main() {
             recent: Vec::new(),
             paused: String::new(),
             pause_label: String::new(),
+            asleep: 0,
+            asleep_cards: Vec::new(),
             told: false,
         }),
         journal: Journal::open(args.log.clone()),

@@ -3,7 +3,7 @@
  * scope chip, a fold that explains it (its ring ending the row's first line) and an edit-at picker
  * under the chip. Drawn from the read alone; index.ts owns the read and the writes. */
 import { cellWidth, clampWords, dotPicture, statusPicture, switchPicture } from '../../lib/mod-core.mjs'
-import { SKY, pressFace, pressOver } from './status.tsx'
+import { PRESS_RIM, SKY, pressFace, pressOver } from './status.tsx'
 import { FOLD_CELLS, OPEN, SHUT, fitWords, foldEnd, foldHead, foldRing, paneCells } from './fold.tsx'
 
 /* where a write goes: a layer and its record (none for default and this PC) */
@@ -11,7 +11,7 @@ export type SettingsPlace = { level: string; record?: string | null }
 /* the tab's own state, kept across redraws by index.ts */
 export type SettingsView = {
   sub: string; query: string; only: boolean; more: Set<string>; picker?: string; at: Record<string, SettingsPlace>
-  drafts: Record<string, string>; builtins: boolean; line: { slug: string; text: string; for: string }
+  drafts: Record<string, string>; builtins: boolean; line: { slug: string; text: string; for: string; role?: string }
   note?: { key: string; ok: boolean; text: string; dim?: string }
   /* a field's draw count: a new one keys it afresh, so a reset shows even where the drawn value did not move */
   gen: Record<string, number>
@@ -30,7 +30,7 @@ export type SettingsActions = {
   phone: () => void
 }
 
-export const newSettingsView = (): SettingsView => ({ sub: 'replies', query: '', only: false, more: new Set(), at: {}, drafts: {}, builtins: false, line: { slug: '', text: '', for: 'both' }, gen: {}, findSeed: '' })
+export const newSettingsView = (): SettingsView => ({ sub: 'replies', query: '', only: false, more: new Set(), at: {}, drafts: {}, builtins: false, line: { slug: '', text: '', for: 'both', role: '' }, gen: {}, findSeed: '' })
 /* the field's key at its draw count, and the next count */
 const fieldKey = (v: SettingsView, base: string, k: string) => base + (v.gen[k] ? '-' + v.gen[k] : '')
 export const freshField = (v: SettingsView, k: string) => { v.gen[k] = (v.gen[k] || 0) + 1 }
@@ -142,7 +142,8 @@ function searchRow(d: Draw): any {
   /* the group grows and the field does not (an Input stops at 20em), so clear sits beside the field
      and Changed only keeps the row's far end; on a narrow pane the field shrinks before clear wraps */
   if (find.length) parts.push(<Box key="set-find-row" flexDirection="row" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>{find}</Box>)
-  parts.push(<Box key="set-only-box" flexShrink={0}>{switchButton(d, 'set-only', d.v.only, 'Changed only', () => { d.v.only = !d.v.only; d.act.redraw() })}</Box>)
+  /* the press's rim hangs past its face; at the far end that room stays inside the body */
+  parts.push(<Box key="set-only-box" flexShrink={0} {...(d.desk ? { marginRight: -PRESS_RIM.marginX } : {})}>{switchButton(d, 'set-only', d.v.only, 'Changed only', () => { d.v.only = !d.v.only; d.act.redraw() })}</Box>)
   return <Box key="set-search" flexDirection="row" columnGap={1} rowGap={0.5} alignItems="center" flexWrap="wrap">{parts}</Box>
 }
 
@@ -616,7 +617,9 @@ function rulesBody(d: Draw): any {
     const ln = d.v.line
     const go = () => {
       const slug = ln.slug.trim(), text = ln.text.trim()
-      if (slug && text) d.act.rule('add', home, slug, text, ln.for)
+      /* agents with a role named reach only that role's agents */
+      const role = String(ln.role || '').trim().toLowerCase()
+      if (slug && text) d.act.rule('add', home, slug, text, ln.for === 'agents' && role ? 'agents:' + role : ln.for)
     }
     const who = ['session', 'agents', 'both'].map((a) => (
       <Box key={'set-forbox-' + a} flexShrink={0}>
@@ -630,6 +633,7 @@ function rulesBody(d: Draw): any {
       </Box>)
     const keepSlug = (t: string) => { ln.slug = String(t || '') }
     const keepText = (t: string) => { ln.text = String(t || '') }
+    const keepRole = (t: string) => { ln.role = String(t || '') }
     parts.push(
       <Box key="set-addline" flexDirection="column" rowGap={0.6} borderStyle="round" borderDimColor paddingX={1} paddingY={0.5}>
         <Text weight="semibold">Add a rule line</Text>
@@ -640,6 +644,7 @@ function rulesBody(d: Draw): any {
         <Box key="set-addf2" flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={0.5} alignItems="center">
           <Text key="set-forlab" dimColor>For</Text>
           {who}
+          {ln.for === 'agents' ? <Box key="set-rolebox" width={16} flexShrink={1} minWidth={0}>{field('set-line-role', 'Role (optional)', 'review', ln.role || '', keepRole, go)}</Box> : null}
           <Box key="set-addon" flexGrow={1} flexShrink={1} minWidth={0}><Text dimColor wrap="truncate-end">{'on ' + home + ', everywhere'}</Text></Box>
           {actButton(d, 'set-line-add', 'Add', go)}
         </Box>
@@ -703,7 +708,7 @@ function lineRow(d: Draw, l: any, mine: boolean, onDrop: () => void, gone?: Line
   const name = (
     <Box key={r + 'lc-' + k} flexDirection="column" flexShrink={1} minWidth={0}>
       <Text weight="semibold" wrap="wrap">{l.slug}</Text>
-      <Text key={r + 'who-' + k} dimColor wrap="wrap">{s.who || AUDIENCE[l.audience] || AUDIENCE.both}</Text>
+      <Text key={r + 'who-' + k} dimColor wrap="wrap">{s.who || (l.role ? 'for ' + l.role + ' agents' : AUDIENCE[l.audience] || AUDIENCE.both)}</Text>
     </Box>)
   const words = <Box key={r + 'w-' + k} flexShrink={1} minWidth={0}><Text wrap="wrap" dimColor={!!s.dim}>{l.words}</Text></Box>
   /* the desktop's faint tile per row; a terminal's border would draw, so there the rows stand bare */

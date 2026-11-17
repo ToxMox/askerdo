@@ -1,4 +1,4 @@
-/* show on a board: the brief form by default, an id from the old knowledge store read
+/* show on a board: a task's block or the brief form by default, an id from the old knowledge store read
  * through the legacy map, and a search. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,7 +11,7 @@ const NOTES = ['picked this up', 'the formatter landed', 'measured on the live s
 
 /* On a board a read is below full by default, and its last line says what it cut and
    how to get it back. */
-test('on a board show is brief by default and names its cut, search finds a note, and an old knowledge-store id reads through the legacy map', async () => {
+test('on a board show prints a task block or the brief form by default and names its cut, search finds a note, and an old knowledge-store id reads through the legacy map', async () => {
   const { runCommand } = await import('../lib/cli-commands.mjs');
   const { boardCall } = await import('../lib/board-call.mjs');
   const { openDb } = await import('../server/db.mjs');
@@ -31,8 +31,12 @@ test('on a board show is brief by default and names its cut, search finds a note
     return { out: r.stdout, last: r.stdout.trimEnd().split('\n').pop() };
   };
 
-  const brief = await show();
-  assert.ok(brief.out.includes(INTENT) && !NOTES.some((n) => brief.out.includes(n)), 'the default is the brief form, journal left out');
+  /* a task's default is its block: every typed note since its last rewrite, and the cut named */
+  const block = await show();
+  assert.ok(block.out.includes(INTENT) && NOTES.every((n) => block.out.includes(n)) && block.out.includes('cut the journal') && !block.out.includes('draft the levels'), block.out);
+  assert.ok(block.last.includes('--journal') && block.last.includes('--full'), block.last);
+  const brief = await show('--brief');
+  assert.ok(brief.out.includes(INTENT) && !NOTES.some((n) => brief.out.includes(n)), 'the brief form leaves the journal out');
   assert.ok(/journal/.test(brief.last) && brief.last.includes('3') && brief.last.includes('--full'), brief.last);
   const tail = await show('--journal-tail', '1');
   assert.ok(tail.out.includes(NOTES[2]) && !tail.out.includes(NOTES[0]));
@@ -46,19 +50,51 @@ test('on a board show is brief by default and names its cut, search finds a note
   for (const out of [brief.out, full.out, (await show('--section', 'checklist')).out]) {
     assert.ok(/1 \[x\] draft the levels/.test(out) && /2 \[ \] cut the journal/.test(out), out);
   }
-  /* a plain show logs its read under the session Claude Code names in the shell */
-  const named = await runCommand({ argv: ['show', t.id], cwd: home, env: { ...env, CLAUDE_CODE_SESSION_ID: 'reader-1' } });
+  /* task block reads several tasks in one call, a block each */
+  const t2 = await boardCall('createRecord', { kind: 'task', name: 'Second read', workstream: ws.id, description: 'Two.', wake: '2099-01-01' }, { env });
+  const two = await cli('task', 'block', t.id, t2.id, '--json');
+  assert.deepEqual(JSON.parse(two.stdout).map((b) => b.id), [t.id, t2.id], two.stderr);
+  /* a task with an open run reads its word, as track show does, never the stored open */
+  await boardCall('taskUpdate', { id: t2.id, inHand: true }, { env, session: 'w1' });
+  const heads = [(await cli('show', t2.id)).stdout.split('\n')[1], (await cli('task', 'block', t2.id)).stdout.split('\n')[0], (await cli('show', t2.id, '--brief')).stdout.split('\n')[0]];
+  assert.ok(heads.every((l) => /running/.test(l) && !/\bopen\b/.test(l)), heads.join('\n'));
+  /* the session reading its own run: show takes it from the shell, task block only from --session,
+     since a dispatched agent reads the block through the session's shell */
+  const own = { ...env, CLAUDE_CODE_SESSION_ID: 'w1' };
+  const mine = [(await runCommand({ argv: ['show', t2.id], cwd: home, env: own })).stdout.split('\n')[1],
+    (await runCommand({ argv: ['show', t2.id, '--brief'], cwd: home, env: own })).stdout.split('\n')[0],
+    (await cli('task', 'block', t2.id, '--session', 'w1')).stdout.split('\n')[0]];
+  assert.ok(mine.every((l) => l.includes('this session')), mine.join('\n'));
+  const agent = (await runCommand({ argv: ['task', 'block', t2.id], cwd: home, env: own })).stdout.split('\n')[0];
+  assert.ok(!agent.includes('this session') && heads.every((l) => !l.includes('this session')), agent);
+  /* a plain show logs its read under the session Claude Code names in the shell; an id copied
+     from the desktop pane carries a word joiner after its hyphen, which the CLI reads past */
+  const named = await runCommand({ argv: ['show', t.id.replace('-', '-' + String.fromCharCode(0x2060))], cwd: home, env: { ...env, CLAUDE_CODE_SESSION_ID: 'reader-1' } });
   assert.equal(named.code, 0, named.stderr);
 
   /* a question's head names its track and its pick, as --full does */
   const tr = await boardCall('newTrack', { name: 'Line', workstream: ws.id }, { env });
   const q = await boardCall('register', { name: 'sample levels length', gist: 'One length.', blocking: false, ask: 'Short (a, my pick) or long (b)?',
     pick: 'a', options: ['a', 'b'].map((type) => ({ type, option: type, getsYou: 'x', costsYou: '' })), workstream: ws.id, track: tr.id,
-    session: 's1', projectDir: home }, { env });
+    session: 's1', projectDir: home, gates: [t.id] }, { env });
   const head = await cli('show', q.id, '--head');
   assert.equal(head.code, 0, head.stderr);
   const line = head.stdout.split('\n')[0];
   assert.ok(line.includes(ws.id) && line.includes(tr.id) && line.includes('pick ' + q.id.slice(1) + 'a'), line);
+  /* the gated task's waiting word names the question once, in the head line and the brief head */
+  for (const more of [['--head'], ['--brief']]) {
+    const gated = (await cli('show', t.id, ...more)).stdout.split('\n')[0];
+    assert.equal(gated.split(q.id).length, 2, gated);
+  }
+  /* answered against the recommendation, the head names the answer, never the pick */
+  await boardCall('answer', { id: q.id, pick: 'b' }, { env });
+  for (const more of [['--head'], ['--brief']]) {
+    const answered = (await cli('show', q.id, ...more)).stdout.split('\n')[0];
+    assert.ok(answered.includes(q.id.slice(1) + 'b') && !answered.includes(q.id.slice(1) + 'a'), answered);
+  }
+  /* the whole record form carries the answer as chosen beside the stored pick */
+  const wholeQ = JSON.parse((await cli('show', q.id, '--json')).stdout);
+  assert.deepEqual([wholeQ.chosen, wholeQ.pick], ['b', 'a']);
 
   /* the board has no other search case: a note's word finds the task and prints the line */
   const found = await cli('search', 'formatter');

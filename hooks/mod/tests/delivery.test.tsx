@@ -3,13 +3,13 @@
  * band and rides the submit chip or the next prompt the user types; running, a note
  * the model reads; each once per session, /clear included. */
 import { describe, expect, test } from 'claude-code/testing'
-import { pressAgain, start, world } from './world.ts'
+import { COLD_START, HEAVY, pressAgain, start, world } from './world.ts'
 
 /* the user's lines in their own voice, the rest under the relay header */
 const RELAY = 'AskerDo relays these updates'
 const OURS = /^(I (answered|changed my answer|dropped|snoozed) |AskerDo relays )/
 const delivered = (w: any) => w.prompts.filter((p: string) => OURS.test(p))
-const noted = (w: any) => w.appends.filter((m: any) => !m.agentId && OURS.test(String(m.content[0].text))).map((m: any) => m.content[0].text)
+const noted = (w: any) => w.told.filter((m: any) => !m.agentId && OURS.test(String(m.content[0].text))).map((m: any) => m.content[0].text)
 /* the transcript row the moment answers reach the model */
 const receipts = (w: any) => w.logs.filter((l: string) => /reached the model/.test(l))
 
@@ -26,7 +26,7 @@ const BAND = { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 100
 const mount = ($: any) => $.ui.mount({ plugin: 'askerdo', surface: 'desktop', component: 'AbovePrompt', props: BAND })
 
 describe('answer delivery', () => {
-  test('idle: nothing starts a turn; the band counts what waits, and its submit chip sends it all in one prompt, once', async ($: any, on: any) => {
+  test('idle: nothing starts a turn; the band counts what waits, and its submit chip sends it all in one prompt, once', COLD_START, async ($: any, on: any) => {
     const w = world(on)
     w.inbox['sess-1'] = [w.event('Q106', 'b'), edit('Q107')]
     await start($, w)
@@ -70,12 +70,16 @@ describe('answer delivery', () => {
 
   test('a prompt the user types carries what waits at its top, and the turn it starts does not tell it again', async ($: any, on: any) => {
     const w = world(on)
-    w.inbox['sess-1'] = [w.event('Q106', 'b')]
+    /* a placement question's press names the task its answer created, in the plugin's words */
+    const placed = w.event('Q106', 'b')
+    placed.raw.created = { id: 'T-91', track: 'TR-3', before: ['T-50'], after: ['T-49'] }
+    w.inbox['sess-1'] = [placed]
     await start($, w)
     await $.prompt.submit({ text: 'carry on' })
     await w.clock.settle()
     expect(noted(w).length).toBe(1)
     expect(noted(w)[0]).toContain('I answered Q106 (store shape): 106b')
+    expect(noted(w)[0].split(RELAY)[1]).toMatch(/created T-91 on TR-3, before T-50, after T-49/)
     expect(w.prompts.at(-1)).toBe('carry on')
     /* the turn the prompt starts makes no second inbox call */
     const takes = () => w.runs.filter((r: any) => r.script.endsWith('mod-inbox.mjs') && r.args[0] === 'take').length
@@ -87,13 +91,18 @@ describe('answer delivery', () => {
     expect(delivered(w)).toEqual([])
   })
 
-  test('running: an answer arriving mid-turn is a note the model reads at its next step', async ($: any, on: any) => {
+  test('running: an answer arriving mid-turn is a note the model reads at its next step', HEAVY, async ($: any, on: any) => {
     const w = world(on)
     w.contract = { section: 'The mod section.', checks: {} }
     await start($, w)
     await $.turn.start({ text: 'work', turnId: 't1' })
     w.inbox['sess-1'] = [w.event('Q107', 'a'), w.event('Q108', 'c')]
     await storeMoves(w)
+    /* it rides the loop's next call */
+    expect(noted(w)).toEqual([])
+    await w.step($)
+    await w.clock.settle()
+    expect(w.told.at(-1).via).toBe('call')
     /* each answer arriving raises a toast, and starts nothing */
     expect(w.toasts.filter((t: string) => /Q10[78]/.test(t)).length).toBe(2)
     expect(delivered(w)).toEqual([])
@@ -117,10 +126,28 @@ describe('answer delivery', () => {
     await $.turn.start({ text: 'more', turnId: 't2' })
     await $.turn.complete({ answer: 'more', durationMs: 5, isAborted: false, turnId: 't2', reason: 'answer' })
     expect(flagged().length).toBe(1)
+    /* an answer landing after the turn's first text owes its receipt in the text after it */
+    const lateTurn = async (id: string, said: string, turnId: string) => {
+      await $.turn.start({ text: 'go', turnId })
+      await $.session.append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'Reading the slip.\nThen the caller.' }] },
+        door: 'response', origin: { kind: 'model', model: 'm' }, uuid: turnId + 'a' })
+      w.inbox['sess-1'] = [w.event(id, 'a')]
+      await storeMoves(w)
+      await w.step($)
+      await w.clock.settle()
+      await $.session.append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: said }] },
+        door: 'response', origin: { kind: 'model', model: 'm' }, uuid: turnId + 'b' })
+      await $.turn.complete({ answer: said, durationMs: 5, isAborted: false, turnId, reason: 'answer' })
+    }
+    await lateTurn('Q111', 'Done.\nGot 111a (store shape).', 't3')
+    expect(flagged().slice(1)).toEqual([])
+    await lateTurn('Q112', 'Done.\nAll merged.', 't4')
+    expect(flagged().slice(1).map((l: string) => l.includes('112a') ? '112a' : l)).toEqual(['112a'])
+    const toldSoFar = noted(w).length
     w.inbox['sess-1'] = [w.event('Q109', 'a')]
     await storeMoves(w)
     expect(delivered(w)).toEqual([])
-    expect(noted(w).length).toBe(1)
+    expect(noted(w).length).toBe(toldSoFar)
   })
 
   test('/clear: the first prompt re-binds and carries what waits in the old id\'s inbox', async ($: any, on: any) => {
@@ -131,7 +158,7 @@ describe('answer delivery', () => {
     w.inbox['sess-1'] = [w.event('Q110', 'a')]
     await $.prompt.submit({ text: 'carry on' })
     await w.clock.settle()
-    expect(w.last('resume').args).toEqual(['resume', 'TR-3', '--take-over', '--session', 'sess-2', '--json'])
+    expect(w.last('resume').args).toEqual(['resume', 'TR-3', '--take-over', '--continues', 'sess-1', '--session', 'sess-2', '--json'])
     expect(noted(w).length).toBe(1)
     expect(noted(w)[0]).toContain('Q110')
   })
@@ -139,6 +166,14 @@ describe('answer delivery', () => {
   test('a handed-off session\'s band stays as last drawn and says why; what waits rides a prompt typed there', async ($: any, on: any) => {
     const w = world(on)
     w.hand = [{ id: 'T-41', name: 'wire it' }]
+    /* the session runs on a seam root, whose own launcher a shell call names */
+    const ROOT = 'C:/sandbox/walk/store'
+    w.files[w.cwd + '/.claude/settings.local.json'] = JSON.stringify({ env: { ASKERDO_ROOT: ROOT } })
+    on('tool.call', { tool: 'Bash' }, ($: any, e: any) => {
+      const m = /cli\.mjs\s+(.*)$/.exec(String(e.command))
+      if (m) w.cli(m[1].split(/\s+/))
+      return { result: { stdout: '', stderr: '', interrupted: false } }
+    })
     /* Q106 blocks in the held track's workstream: the board scopes it through the lease, which
        goes with the handoff, so a reload would drop it from the band */
     await start($, w)
@@ -148,7 +183,7 @@ describe('answer delivery', () => {
     expect(await seg(live, 'task')).toBeDefined()
     await live.unmount()
     await $.turn.start({ text: 'go on', turnId: 't1' })
-    await $.tool.call({ tool: 'mcp__askerdo__handoff_write', focus: 'f', state: 's', verifyFirst: [{ path: 'C:/src/proj' }] })
+    await $.tool.call({ tool: 'mcp__askerdo__handoff_write', goal: 'g', focus: 'f', state: 's', verifyFirst: [{ path: 'C:/src/proj' }] })
     await $.turn.complete({ answer: 'Handed off.', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
     await w.clock.settle()
     w.questions[0].name = 'renamed later'
@@ -166,6 +201,25 @@ describe('answer delivery', () => {
     expect(await seg(frozen, 'task')).toBeUndefined()
     expect(await seg(frozen, 'shelf')).toMatch(/\b1\b/)
     await frozen.unmount()
+    /* a shell resume through the seam root's launcher takes the track again, so an idle press starts a turn */
+    await w.call($, { tool: 'Bash', command: 'node ' + ROOT + '/cli.mjs resume TR-3 --session sess-1' })
+    await w.clock.settle()
+    expect(w.stored.closedSessions).toEqual({})
+    await storeMoves(w)
+    const back = await mount($)
+    await back.press({ key: 'inbox-submit' })
+    await w.clock.settle()
+    expect([delivered(w).length, String(delivered(w).at(-1)).includes('Q106'), w.origins.at(-1)?.asUser]).toEqual([1, true, true])
+    await back.unmount()
+    /* handed off again, what waits rides a prompt typed there */
+    await $.turn.start({ text: 'go on', turnId: 't2' })
+    await $.tool.call({ tool: 'mcp__askerdo__handoff_write', goal: 'g', focus: 'f', state: 's', verifyFirst: [{ path: 'C:/src/proj' }] })
+    await $.turn.complete({ answer: 'Handed off.', durationMs: 5, isAborted: false, turnId: 't2', reason: 'answer' })
+    await w.clock.settle()
+    expect(w.stored.closedSessions).toEqual({ 'sess-1': 'handed off' })
+    w.inbox['sess-1'] = [w.event('Q106', 'b')]
+    await storeMoves(w)
+    expect(delivered(w).length).toBe(1)
     await $.prompt.submit({ text: 'one more thing' })
     await w.clock.settle()
     expect(noted(w).at(-1)).toContain('Q106')

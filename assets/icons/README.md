@@ -4,6 +4,8 @@ Re-cut again 2026-09-09, carrying the line above to the whole set: no background
 Re-cut in the same round, 2026-09-09: the five app rasters (app-48.png, app-64.png, app-96.png, app-128.png, app-256.png) are the same tile-less drawing as everything else. app-48.png, app-64.png, app-96.png and app-128.png were rendered from app-mark-dark.svg at their own size by the same script; app-256.png IS app.ico's own 256 frame, an 8 bit RGBA PNG of that same drawing at that same size, lifted byte for byte, and a fresh 256 render was made to check and decoded to that frame's pixels channel for channel. The manifest's export rows for the five are unchanged and still describe them exactly, file, type and size; their source fields still name mark.svg, which this line qualifies as the two above qualify theirs. Opaque pixels, delivered then re-cut: 2236 of 2304 to 1089 at 48, 3960 of 4096 to 1879 at 64, 8888 of 9216 to 3926 at 96, 15752 of 16384 to 6904 at 128, 62858 of 65536 to 26627 at 256. test/icons.test.mjs pins those counts, the top and bottom edges, the first and last painted column the package's own fit puts them at, and the app-256.png identity, so a re-render that drifts fails the suite.
 Renamed: the product is AskerDo, and every string this package carries of its own is left exactly as delivered, manifest.json's slug, package.json's name and app-mark-dark.svg's label included, because the provenance line above says these are the delivered bytes and nothing at runtime reads any of the three; test/icons.test.mjs pins app-mark-dark.svg's label as delivered.
 The tray's own popup is the one alert surface and no Windows toast is raised, so the five app rasters have no reader: they stay committed as the package's exports, wired to nothing, and app.ico remains the exe's icon and the Start Menu shortcut's.
+Added 2026-11-14, the asleep face (nothing waits, something is snoozed): favicon-asleep.svg, favicon-asleep-32.png, tray-asleep.ico and tray-light-asleep.ico are favicon-quiet.svg with only its top right ring replaced by a moon crescent in the dots' footprint (r 9.35 at 50.6, 14.5, bitten at the upper right so the horns point up and right); the bubble, the check and the tail are untouched. The crescent is moon yellow #FFE08A on the dark set and dark gold #9E7C00 on the light set, whose other inks are the package's light tokens. These four were cut by scripts/cut-asleep-icons.mjs, which renders with headless Edge and writes the PNG and ICO bytes itself (same frame sizes and DIB form as the other tray faces, and the same bytes on every run), not by export.mjs with Sharp, so their antialiased edge pixels can differ slightly from the rest of the set's. favicon-asleep.svg is not served by the board; the tray and the mod draw it.
+Added the same day, the waiting face with something asleep (a question waits and another is snoozed; blocking keeps its plain amber dot): favicon-waiting-asleep.svg, favicon-waiting-asleep-32.png, tray-waiting-asleep.ico and tray-light-waiting-asleep.ico are the asleep face with only the crescent's ink changed to the waiting dot's own, sky #39C9FF on the dark set and #008AC7 (the light waiting icon's) on the light set; the crescent's shape, bite and turn are the asleep face's. The same script cuts them the same way, and the board does not serve them either.
 
 # t.ask&ding icon package
 
@@ -59,6 +61,10 @@ Format references: [Microsoft alpha icon and mask notes](https://devblogs.micros
 |tray-light-waiting.ico|waiting tray face for a light taskbar; orange check|16, 20, 24, 32, 48 px; classic BI_RGB DIB; straight BGRA; 8-bit alpha; AND mask|
 |tray-light-quiet.ico|quiet tray face for a light taskbar; orange check|16, 20, 24, 32, 48 px; classic BI_RGB DIB; straight BGRA; 8-bit alpha; AND mask|
 |tray-light-blocking.ico|blocking tray face for a light taskbar; orange check|16, 20, 24, 32, 48 px; classic BI_RGB DIB; straight BGRA; 8-bit alpha; AND mask|
+|tray-asleep.ico|asleep tray face for a dark taskbar; cream check, moon yellow crescent|16, 20, 24, 32, 48 px; classic BI_RGB DIB; straight BGRA; 8-bit alpha; AND mask; cut by scripts/cut-asleep-icons.mjs|
+|tray-light-asleep.ico|asleep tray face for a light taskbar; orange check, dark gold crescent|16, 20, 24, 32, 48 px; classic BI_RGB DIB; straight BGRA; 8-bit alpha; AND mask; cut by scripts/cut-asleep-icons.mjs|
+|tray-waiting-asleep.ico|waiting with something asleep, for a dark taskbar; cream check, sky crescent|16, 20, 24, 32, 48 px; classic BI_RGB DIB; straight BGRA; 8-bit alpha; AND mask; cut by scripts/cut-asleep-icons.mjs|
+|tray-light-waiting-asleep.ico|waiting with something asleep, for a light taskbar; orange check, light waiting crescent|16, 20, 24, 32, 48 px; classic BI_RGB DIB; straight BGRA; 8-bit alpha; AND mask; cut by scripts/cut-asleep-icons.mjs|
 |app.ico|Exe, Explorer, taskbar and Windows Settings|16, 24, 32, 48, 64, 128 px classic 32-bit DIB; 256 px RGBA PNG; from mark.svg|
 |app-48.png|Toast header and app identity|48 x 48 px; sRGB RGBA; 8-bit channels; true alpha; from mark.svg|
 |app-64.png|Toast header and app identity|64 x 64 px; sRGB RGBA; 8-bit channels; true alpha; from mark.svg|
@@ -68,6 +74,8 @@ Format references: [Microsoft alpha icon and mask notes](https://devblogs.micros
 |favicon-32.png|waiting board favicon|32 x 32 px; sRGB RGBA; true alpha; from favicon.svg|
 |favicon-quiet-32.png|quiet board favicon|32 x 32 px; sRGB RGBA; true alpha; from favicon-quiet.svg|
 |favicon-blocking-32.png|blocking board favicon|32 x 32 px; sRGB RGBA; true alpha; from favicon-blocking.svg|
+|favicon-asleep-32.png|asleep face raster|32 x 32 px; sRGB RGBA; true alpha; from favicon-asleep.svg; cut by scripts/cut-asleep-icons.mjs|
+|favicon-waiting-asleep-32.png|waiting with something asleep, face raster|32 x 32 px; sRGB RGBA; true alpha; from favicon-waiting-asleep.svg; cut by scripts/cut-asleep-icons.mjs|
 |manifest.json|Portable source-to-export mapping and exact colors|JSON; relative filenames only|
 |export.mjs|Re-export rasters from the included SVG sources|Node.js; Sharp 0.35.4; no host-specific paths|
 |package.json|Portable exporter dependency and command|npm run export after installing the pinned dependency|
@@ -94,6 +102,8 @@ Format references: [Microsoft alpha icon and mask notes](https://devblogs.micros
 |Waiting marker, light tray|#008AC7|
 |Blocking marker, dark app and dark tray|#FFB300|
 |Blocking marker, light tray|#E68A00|
+|Asleep crescent, dark|#FFE08A|
+|Asleep crescent, light tray|#9E7C00|
 |Transparent pixels|Alpha 0, no matte|
 |Preview-only taskbar backgrounds|#202020, #F3F3F3|
 |Preview-only badge and pixel digits|#FB7185, #FFFFFF|

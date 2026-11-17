@@ -44,7 +44,7 @@ async function workstream() {
 
 const kinds = {
   task: async (i) => cli(['task', 'create'], JSON.stringify({ unplaced: 'measurement', wake: wakeIn(), name: 'Task ' + i + ' ' + prose(i, 6), description: prose(i, 60),
-    workstream: await workstream(), status: i % 3 ? 'open' : 'completed', priority: ['high', 'medium', 'low'][i % 3], labels: ['bench'] })),
+    workstream: await workstream(), status: i % 3 ? 'open' : 'done', priority: ['high', 'medium', 'low'][i % 3], labels: ['bench'] })),
   knowledge: async (i) => {
     const f = join(bodiesDir, 'k-' + process.pid + '.md');
     writeFileSync(f, prose(i, 80) + '\n');

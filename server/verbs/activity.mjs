@@ -71,9 +71,13 @@ export function activity(db, input = {}) {
   if (workstream !== undefined && workstream !== null && workstream !== '') {
     const w = resolveRecord(db, String(workstream).trim(), { kinds: ['workstream'] });
     if (!w) throw new UsageError('unknown workstream id: ' + workstream);
-    where.push(`record IN (SELECT ? UNION ALL SELECT key FROM records WHERE workstream = ?
-      UNION ALL SELECT h.key FROM handoffs h JOIN records t ON t.key = h.track WHERE t.workstream = ?)`);
-    args.push(w.key, w.key, w.key);
+    const keys = `SELECT ? UNION ALL SELECT key FROM records WHERE workstream = ?
+      UNION ALL SELECT h.key FROM handoffs h JOIN records t ON t.key = h.track WHERE t.workstream = ?`;
+    /* a line written before records had keys (the file store's, imported) names its record by label alone */
+    where.push(`(record IN (${keys}) OR (record IS NULL AND label IN (SELECT label FROM records WHERE key = ? OR workstream = ?
+      UNION ALL SELECT label FROM labels WHERE key IN (${keys})
+      UNION ALL SELECT h.label FROM handoffs h JOIN records t ON t.key = h.track WHERE t.workstream = ?)))`);
+    args.push(w.key, w.key, w.key, w.key, w.key, w.key, w.key, w.key, w.key);
   }
   const needle = search === undefined || search === null || search === '' ? null : String(search).toLowerCase();
   if (needle !== null) { where.push('instr(lower(line), ?) > 0'); args.push(needle); }

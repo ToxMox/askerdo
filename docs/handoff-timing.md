@@ -9,13 +9,24 @@ actively engaged (a conversation, a sitting, a live look), never pick the
 point on your own: finish with the user, or ask where to break if it runs
 long. The percents are the profile's; 30 and 40 are the defaults.
 
-Before the handoff, stop what this session started (servers, background
-commands, agents), or name each in the handoff's state with how to stop
-it. Nothing this session started outlives it unnamed. Detach any side
-session it started (a test, display or helper session) and say so in one
-line: a side session's turn notes reach only the session that started
-it, so after the handoff they would wake this one instead of the resumed
-one.
+From the first depth note on, the depth tool answers in full.
+
+Before the handoff, let every agent and workflow this session started
+land, and check what each left. The write holds to it: while one runs,
+`handoff_write` (and `/askerdo handoff` or `/askerdo park`, which go
+through it) stores nothing and gives no resume block; its answer names
+what runs, the track stays with this session, a note comes when the last
+has landed, and the handoff is written then. Only a Stop press on an
+agent's row in the AskerDo pane ends one early, and a stopped agent
+counts as landed. A reply that hands over a resume command while this
+session's work runs is flagged.
+
+Stop the servers, background commands and monitors this session started,
+or name each in the handoff's state with how to stop it. Nothing this
+session started outlives it unnamed. Detach any side session it started
+(a test, display or helper session) and say so in one line: a side
+session's turn notes reach only the session that started it, so after the
+handoff they would wake this one instead of the resumed one.
 
 ## Where each state hands off
 
@@ -27,7 +38,13 @@ one.
   sitting's end, or where the user says when asked.
 - **Waiting on the user's go:** after the go and the step, if it is small.
 - **Background work running** (agents, workflows, driven test sessions):
-  after it lands and its result is checked.
+  after it lands and its result is checked. The write waits for agents
+  and workflows itself; a driven test session is yours to watch. A
+  `handoff write` of the held track run from the shell while they run
+  waits the same way: the command does not run, and its output is the
+  tool's answer. A write made from a script file is not seen before it
+  runs; the reply check flags a resume command handed over while work
+  runs.
 - **Mid-change in code:** at a commit with its tests passing; a half-done
   change to the live contract text backed out or set aside.
 - **Working alone through a plan:** at the next task boundary, committed
@@ -46,7 +63,9 @@ one.
   a waitingOnUser line added or dropped, a repo's verify-first snapshot
   refreshed. Once another session has resumed the track, put what changed
   in a note on the track instead (`note TR-n`); it reaches that session at
-  its next prompt. The next leg's kickoff lists what the handoff carried
+  its next prompt; a note left while nobody holds the track rides the next
+  kickoff, under the track's goal, and a note on a task reaches the session
+  holding that task and its track's holder. The next leg's kickoff lists what the handoff carried
   as waiting on the user and says to check each item against the app or
   the board before repeating it: it may be done already.
 

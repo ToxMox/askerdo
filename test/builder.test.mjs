@@ -137,7 +137,7 @@ test('the queue mode swaps footer machinery whole', () => {
   assert.ok(text.includes('|questions|❓|'));
   assert.ok(!text.includes('complete set of what is outstanding'));
   assert.ok(!text.includes('work-system.md'), 'the work system rides hub mode only');
-  assert.ok(!text.includes('the board never guesses'), 'so does the status ladder');
+  assert.ok(!text.includes('no "in progress" to flip'), 'so does the task word');
   assert.ok(!text.includes('waiting count'));
   const hub = buildOutputStyle({ ...base, queue: 'hub' });
   assert.ok(hub.includes('The question queue.'));
@@ -152,12 +152,9 @@ test('the queue mode swaps footer machinery whole', () => {
   /* one minimal pointer to the work system, read at its first touch */
   assert.ok(hub.includes('work-system.md'));
   assert.equal((hub.match(/work-system\.md/g) || []).length, 1);
-  /* the status ladder, in one clause, so a session that never opens the doc
-   * still knows when a task flips */
-  assert.ok(hub.includes('A task this session or its agents are working on '
-    + 'reads `in_progress` from the first dispatch and `completed` when the '
-    + 'work lands where its Intent says: a session flips it, the board never '
-    + 'guesses.'));
+  /* the task's word, in one clause, so a session that never opens the doc
+   * still knows the board computes it and the session only closes */
+  assert.ok(hub.includes('no "in progress" to flip') && !hub.includes('in_progress'));
   assert.ok(hub.includes('|questions|❓|'));
   assert.ok(!hub.includes('question-file.md'));
   assert.ok(!hub.includes('.claude/questions/'));
@@ -187,7 +184,7 @@ test('the queue mode swaps footer machinery whole', () => {
   const off = buildOutputStyle({ ...base, queue: 'off' });
   assert.ok(!off.includes('The question queue.'));
   assert.ok(!off.includes('work-system.md'));
-  assert.ok(!off.includes('the board never guesses'));
+  assert.ok(!off.includes('no "in progress" to flip'));
   assert.ok(!off.includes('|questions|'));
   assert.ok(off.includes('complete set of what is outstanding'));
   const plain = buildOutputStyle({ ...base, forecast: false });
@@ -352,11 +349,16 @@ test('the mod section carries the ask tool in hub mode only, and names its check
   /* the app hides the band whenever the next-step box has height */
   assert.ok(hub.includes('next-step box carries the recap alone, never a question or a button'));
   /* the reply after a delivery opens with a receipt line, in hub mode only */
-  assert.ok(hub.includes('receipt line naming each') && !buildModSection(modCases.defaults).includes('receipt line'));
-  assert.ok(hub.includes('at 30 percent') && hub.includes('at 40 percent'));
+  assert.ok(hub.includes('in a receipt') && !buildModSection(modCases.defaults).includes('in a receipt'));
+  /* nothing a session reads before the mod's first depth note names a depth */
+  assert.ok(!hub.includes('percent') && !buildOutputStyle(base).includes('percent'));
   assert.ok(hub.includes('`/askerdo handoff`') && hub.includes('the shelf'));
   assert.ok(hub.includes('em and en dashes') && hub.includes('a footer state that disagrees with line 1'));
   assert.ok(!hub.includes('a raised hand with nothing owed') && !hub.includes('bare IDs'));
+  /* only a real place on the held track is free; last or off it asks with four presses */
+  assert.ok(hub.includes('at a real place') && hub.includes('let\'s talk where it fits') && !hub.includes('last resort'));
+  /* the confirmed statement is carried, the words stay in the record */
+  assert.ok(hub.includes('`confirmed`') && hub.includes('words stay in the record'));
   assert.ok(!buildModSection(modCases.defaults).includes('`ask` tool'));
   const off = buildModSection(modCases['ids-off']);
   assert.ok(!off.includes('em and en dashes'));

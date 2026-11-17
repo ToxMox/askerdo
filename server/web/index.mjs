@@ -16,6 +16,7 @@ import {
   needsYouPage, notFoundPage, overridePage, overviewPage, pageKit, pictureData, recordPage, searchPage, shell, signInPage, trackPage, workstreamPage,
 } from './pages.mjs';
 import { overrideView } from '../verbs/override.mjs';
+import { PORTAL_ICON } from './draw.mjs';
 import { boardVersion } from '../version.mjs';
 import { settingsModel, settingsWrite } from './settings.mjs';
 import { SIGNED_OUT_LINE, settingsPage } from './settings-page.mjs';
@@ -60,7 +61,7 @@ function loadAssets() {
   /* the real marks, byte for byte, as data URLs */
   const svg = (f) => 'data:image/svg+xml;base64,' + readFileSync(join(HERE, 'assets', f)).toString('base64');
   const marks = { app: svg('app-mark-dark.svg'), waiting: svg('favicon.svg'), quiet: svg('favicon-quiet.svg'), blocking: svg('favicon-blocking.svg') };
-  const icons = { fav: readFileSync(join(HERE, 'assets', 'favicon.svg'), 'utf8') };
+  const icons = { fav: readFileSync(join(HERE, 'assets', 'favicon.svg'), 'utf8'), portal: PORTAL_ICON };
   return { files, kit: pageKit({ marks, icons, assets: { css: '/web/board.css?v=' + css.v, client: '/web/client.mjs?v=' + client.v }, version: boardVersion() }) };
 }
 

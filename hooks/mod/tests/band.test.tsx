@@ -1,8 +1,9 @@
 /* The Needs-you band and the toasts (the rows) under `claude
  * plugin test`, every drawing on both surfaces the band is raised on. */
 import { describe, expect, test } from 'claude-code/testing'
-import { pressAgain, start, world } from './world.ts'
-import { bandModel } from '../../../lib/mod-core.mjs'
+import { COLD_START, HEAVY, plain, pressAgain, pressRow, start, twiceAtMost, world } from './world.ts'
+import { bandModel, deskCells, PAGE_BOUNDS, pageCounts, rowNeed } from '../../../lib/mod-core.mjs'
+import { runsInCaller } from '../../../lib/caller-runs.mjs'
 
 const PLUGIN = 'askerdo'
 const STAR = '\u2605'
@@ -18,12 +19,32 @@ const BAND = {
 }
 const PANE = { title: 'Questions', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} }
 const BOARD = 'http://askerdo.localhost:53265/0123456789abcdef0123456789abcdef/#p=proj'
+/* a board change from elsewhere draws once the redraw cooldown has passed */
+const cooled = async (w: any) => { await w.clock.settle(); await w.clock.advance(1000); await w.clock.settle() }
 const mount = ($: any, surface: string) => $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: BAND })
 const rowKeys = async (ui: any) => ((await ui.find({ key: 'needs-you' }))?.children || []).map((r: any) => r.props.key)
-/* a chip's words: T-92, the desktop's face beside its badge, the terminal's Button */
+/* a chip's words: the desktop's face beside its badge, the terminal's Button */
 const labels = async (ui: any) => {
   const keys = (await ui.findAll({ type: 'Button' })).map((b: any) => String(b.key)).filter((k: string) => k.startsWith('answer-'))
   return Promise.all(keys.map(async (k: string) => String(((await ui.find({ key: 'chipface-' + k.slice(7) })) || (await ui.find({ key: k })))!.text).trim()))
+}
+
+/* a desktop row's one-line width in cells as laid out: Texts by deskCells, Svgs by px, Boxes side by side
+   with their gaps, padding, border and margins; hover cards and laid-over presses take none; firm: cut words take none */
+const PX = 8.453
+const num = (v: any) => (typeof v === 'number' ? v : 0)
+function drawnCells(n: any, firm = false): number {
+  const p = (n && n.props) || {}
+  if (!n || typeof n !== 'object' || p.position === 'absolute' || p.display === 'none') return 0
+  const all: any[] = [].concat(n.children || []).flat(Infinity)
+  const kids = all.filter((c: any) => c && typeof c === 'object')
+  const said = (t: any): string => (typeof t === 'string' || typeof t === 'number' ? String(t) : t && t.type === 'Text' ? [].concat(t.children || []).flat(Infinity).map(said).join('') : '')
+  if (n.type === 'Text') return firm && /^truncate/.test(String(p.wrap)) ? 0 : deskCells(said(n), p.bold ? 600 : 400)
+  if (n.type === 'Svg') return num(p.width) / PX
+  const side = (k: string) => num(p[k + 'Left'] ?? p[k + 'X'] ?? p[k]) + num(p[k + 'Right'] ?? p[k + 'X'] ?? p[k])
+  const shown = kids.filter((c: any) => !(c.props && (c.props.position === 'absolute' || c.props.display === 'none'))).map((c: any) => drawnCells(c, firm))
+  const inner = p.flexDirection === 'column' ? Math.max(0, ...shown) : shown.reduce((a, b) => a + b, 0) + num(p.columnGap ?? p.gap) * Math.max(0, shown.length - 1)
+  return (typeof p.width === 'number' ? p.width : inner + side('padding') + (p.borderStyle ? 2 / PX : 0)) + side('margin')
 }
 
 /* on TR-3, the track this session holds, so the band shows it */
@@ -45,7 +66,7 @@ function threeQuestions(w: any) {
 
 describe('the band', () => {
   /* on the desktop the status row always draws */
-  test('nothing open and nothing waiting draws no band and the app\'s content still draws; the shelf alone draws none; the desktop keeps its status row', async ($: any, on: any) => {
+  test('nothing open and nothing waiting draws no band and the app\'s content still draws; the shelf alone draws none; the desktop keeps its status row', COLD_START, async ($: any, on: any) => {
     const w = world(on)
     w.questions = []
     delete w.tracks[0].session
@@ -59,13 +80,32 @@ describe('the band', () => {
       /* no half line before the app's content, whose empty slot would draw an empty row under the status row */
       if (surface === 'desktop') {
         const col = (await ui.find({ key: 'band-and-box' }))!
-        expect([col.props.rowGap, col.children.map((c: any) => c.props.key)]).toEqual([undefined, ['askerdo-status', 'engine-band']])
+        /* engine 2.1.325's kit leaves core's drawing as its { type: 'engine', ref } node among the children; it is the engine's band */
+        const keyOf = (c: any) => (c.type === 'engine' ? 'engine-band' : c.props.key)
+        expect([col.props.rowGap, col.children.map(keyOf)]).toEqual([undefined, ['askerdo-status', 'engine-band']])
       }
       await ui.unmount()
     }
   })
 
-  test('one open question is one row: its name, letter-and-name chips with the pick primary and starred, no token, ending at its age; a bubble on the desktop', async ($: any, on: any) => {
+  /* on 2.1.325 the page bounds the band as every plugin's rows stacked; a row above, read at
+     AbovePromptList, comes off the band's ceiling (the inline plugin's register is sent as source) */
+  test('another plugin\'s large row above leaves the whole band under the page\'s bounds, the band still drawn', { timeoutMs: 30000, plugins: [{ name: 'other', tier: 'prepend', register: (on: any) => {
+    on('ui.render', { component: 'AbovePrompt' }, ($: any, e: any) => { const els = $.ui.resolve(e); return els.Box({ key: 'other-row', flexDirection: 'column', children: Array.from({ length: 850 }, (_, i) => els.Text({ key: 'o' + i, children: 'xxxx' })) }) })
+  } }] }, async ($: any, on: any) => {
+    const w = world(on)
+    oneQuestion(w)
+    for (let i = 0; i < 6; i++) w.questions.push({ ...w.questions[0], id: 'Q20' + i, name: 'question ' + i })
+    await start($, w)
+    const ui = await mount($, 'desktop')
+    for (let i = 0; i < 2; i++) await cooled(w)
+    const drawn = await ui.drawn()
+    expect([!!(await ui.find({ key: 'other-row' })), !!(await ui.find({ key: 'band-and-box' }))]).toEqual([true, true])
+    expect(pageCounts(drawn).nodes).toBeLessThan(PAGE_BOUNDS.nodes)
+    await ui.unmount()
+  })
+
+  test('one open question is one row: its name, letter-and-name chips with the pick primary and starred, no token, ending at its age; a bubble on the desktop', HEAVY, async ($: any, on: any) => {
     const w = world(on)
     oneQuestion(w)
     w.boardUrl = BOARD
@@ -126,14 +166,29 @@ describe('the band', () => {
          Queue answer puts it in the card's queue, which the band's row counts; Unqueue takes the band back to its one row */
       const answered = () => w.cliRuns().filter((r: any) => r.args[0] === 'answer').length
       await ui.press({ key: 'answer-106a' })
-      expect([await rowKeys(ui), !!(await ui.find({ key: 'qnow-Q106' })), answered(), w.prompts.length]).toEqual([['q-Q106', 'qbandstrip-Q106'], true, 0, 0])
-      if (surface === 'desktop') expect((await ui.find({ key: 'chipface-106a' }))!.props.borderColor).toBe(SKY)
+      /* on the desktop the strip leads the band's one line in the question's place */
+      const desk = surface === 'desktop'
+      expect([await rowKeys(ui), !!(await ui.find({ key: 'qnow-Q106' })), answered(), w.prompts.length]).toEqual([desk ? ['qbandstrip-Q106'] : ['q-Q106', 'qbandstrip-Q106'], true, 0, 0])
+      if (desk) expect((await ui.find({ key: 'qsbadge-Q106' }))!.props.borderColor).toBe(SKY)
       else expect((await ui.find({ key: 'answer-106a' }))?.props.variant).toBe('primary')
       await ui.press({ key: 'qqueue-Q106' })
-      expect([await rowKeys(ui), !!(await ui.find({ key: 'queued-send' })), answered()]).toEqual([['q-Q106', 'band-foot'], true, 0])
+      expect([await rowKeys(ui), !!(await ui.find({ key: 'queued-send' })), answered()]).toEqual([desk ? ['needs-line'] : ['q-Q106', 'band-foot'], true, 0])
+      /* the queued card names the answer from the queue itself */
+      if (desk) expect(JSON.stringify(await ui.find({ key: 'queued' }))).toContain('store shape')
       await pressAgain(ui, 'answer-106a')
       await ui.press({ key: 'qunqueue-Q106' })
       expect([await rowKeys(ui), answered()]).toEqual([['q-Q106'], 0])
+      /* a strip behind the count line closes, so the row comes back bare when the second question goes */
+      if (surface === 'terminal') {
+        const reload = async () => { w.marker += '+'; await w.clock.advance(15000); await w.clock.settle() }
+        await pressAgain(ui, 'answer-106a')
+        w.questions.push({ id: 'Q110', name: 'second', blocking: false, subscribers: ['sess-1'], options: [{ type: 'a', option: 'yes' }] })
+        await reload()
+        expect(await rowKeys(ui)).toEqual(['count'])
+        w.questions.pop()
+        await reload()
+        expect(await rowKeys(ui)).toEqual(['q-Q106'])
+      }
       await ui.unmount()
     }
     /* Home's copy keeps the words it has room for; narrower, the pick keeps its star
@@ -141,7 +196,7 @@ describe('the band', () => {
        narrower still, the mark, the chips and the age stay the row and the name draws
        whole under them, across at most two lines; a name that fits keeps one row */
     const gaps: number[] = []
-    for (const [cols, words, own, name] of [[62, true, false, 'store shape'], [40, false, false, 'store shape'], [24, false, true, 'store shape for every board']] as const) {
+    for (const [cols, words, own, name] of [[62, true, false, 'store shape'], [40, false, false, 'store shape'], [28, false, true, 'store shape for every board']] as const) {
       w.questions[0].name = name
       w.marker = 'name#' + cols
       await w.clock.advance(15000)
@@ -155,6 +210,14 @@ describe('the band', () => {
       /* the fold ring ends the first line, the name under it keeping the whole row */
       expect(JSON.stringify((top || (await pane.find({ key: 'q-Q106' })))!.children.at(-1)).includes('"unfold-Q106"')).toBe(true)
       gaps.push((top || (await pane.find({ key: 'q-Q106' })))!.props.columnGap)
+      /* the row's counted width is what it draws, words or the letters with the pick's bare star, never short of it */
+      if (!own) {
+        const row = (await pane.find({ key: 'q-Q106' }))!
+        const age = (await pane.find({ key: 'qage-Q106' }))!.text
+        const said = { name: 'Q106  ' + name, pick: 'b', answers: [{ letter: 'a', option: 'one file' }, { letter: 'b', option: 'many files' }] }
+        const over = rowNeed(said, { surface: 'desktop', age, unfold: true }, words, Infinity, row.props.columnGap) - drawnCells(row)
+        expect([cols, over >= 0 && over < 0.5]).toEqual([cols, true])
+      }
       if (own) {
         const said = (n: any): string => (typeof n === 'string' ? n : (n.children || []).map(said).join(''))
         const lines = (await pane.find({ key: 'qlines-Q106' }))!.children.map((l: any) => said(l).trim())
@@ -163,6 +226,98 @@ describe('the band', () => {
       await pane.unmount()
     }
     expect(gaps[1]).toBeLessThan(gaps[0])
+    /* a name far past any real one is cut where the band's model is built, so its card never makes the app refuse the band */
+    const kept = w.questions[0].name
+    w.questions[0].name = 'word '.repeat(15000)
+    w.marker = 'name#long'
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    const long = await mount($, 'desktop')
+    const longHead = await long.find({ key: 'qc-head-Q106' })
+    expect([!!longHead, (longHead?.text || '').length < 1000, (longHead?.text || '').endsWith('...')]).toEqual([true, true, true])
+    await long.unmount()
+    w.questions[0].name = kept
+    /* the worst band, a strip open with a queued answer, one waiting update and the board
+       offline, is one needs line over the status row at 238, 438, 900 and 1400 px, nothing on it wrapping */
+    w.inbox['sess-1'] = [{ key: 'k1', line: 'T-1 got a note', raw: { at: '2026-11-11T10:00:00+00:00', kind: 'task-note', id: 'T-1', name: 'a task', by: 'session:abc', pc: 'PC-2', note: 'n' } }]
+    const near = w.near
+    w.near = (...a: any[]) => ({ ...near(...a), online: false, offline: true, stale: true, board: 'board offline: the board does not know this token' })
+    w.marker += '+'
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    const wide = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 160 } })
+    await pressAgain(wide, 'answer-106a')
+    await pressAgain(wide, 'qqueue-Q106')
+    await pressAgain(wide, 'answer-106a')
+    await wide.unmount()
+    const shown = (n: any): any[] => (!n || typeof n !== 'object' || (n.props && (n.props.position === 'absolute' || n.props.display === 'none')) ? []
+      : [n, ...[].concat(n.children || []).flatMap(shown)])
+    for (const cols of [28, 51, 101, 160]) {
+      const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: { ...BAND, bodyColumns: cols } })
+      const col = (await ui.find({ key: 'band-and-box' }))!
+      const needs = (await ui.find({ key: 'needs-you' }))!
+      /* the app's engine gives a Text nested in a cut Text its own pre-wrap, so it counts as wrapping */
+      const nested = (n: any) => n.type === 'Text' && /^truncate/.test(String(n.props && n.props.wrap)) && [].concat(n.children || []).some((c: any) => c && c.type === 'Text')
+      const wraps = shown(needs).filter((n: any) => n.props && (n.props.wrap === 'wrap' || n.props.flexWrap === 'wrap' || nested(n))).length
+      expect([cols, col.children.map((c: any) => c.props.key), needs.children.length, wraps, !!(await ui.find({ key: 'qnow-Q106' }))]).toEqual([cols, ['needs-you', 'askerdo-status'], 1, 0, true])
+      /* with the note field open Now, Note and the cancel press stay at every width; the field takes no set
+         width, so in px it gives way before any press, the line fitting with it at its floor; open or shut, the field or
+         the word grows and the presses end the strip, Note last, so Note stays under the pointer */
+      const ends = async () => {
+        const strip = (await ui.find({ key: 'qbandstrip-Q106' }))!
+        const mid = strip.children.find((c: any) => /^qs(field|words)-/.test(String(c.props.key)))
+        const presses = strip.children.at(-1)
+        return [mid.props.flexGrow > 0, presses.props.key, String(presses.children.at(-1).props.key).startsWith('qbandnote-Q106')]
+      }
+      const shut = await ends()
+      await ui.press({ key: 'qbandnote-Q106' })
+      const field = (await ui.find({ key: 'qsfield-Q106' }))!
+      const keys = (await ui.findAll({ type: 'Button' })).map((b: any) => String(b.key))
+      const line = (await ui.find({ key: 'needs-line' }))!
+      expect([cols, field.props.width, field.props.flexShrink > 0, ['qnow', 'qbandnote', 'qcancel'].every((k) => keys.some((x: string) => x.startsWith(k + '-Q106'))),
+        drawnCells(line, true) + 5 <= cols, shut, await ends()]).toEqual([cols, undefined, true, true, true, [true, 'qspresses-Q106', true], [true, 'qspresses-Q106', true]])
+      await pressAgain(ui, 'qbandnote-Q106')
+      if (cols === 28) {
+        /* shut and cancelled, the queued badge with Send stays beside the question */
+        await pressAgain(ui, 'qcancel-Q106')
+        expect([!!(await ui.find({ key: 'answer-106a' })), !!(await ui.find({ key: 'queued-send' }))]).toEqual([true, true])
+        await pressAgain(ui, 'answer-106a')
+      }
+      await ui.unmount()
+    }
+    /* five options with an answer queued: the letters, the +N chip and the queued badge share the line, none over another */
+    w.questions[0].options.push({ type: 'c', option: 'three files' }, { type: 'd', option: 'four files' }, { type: 'e', option: 'five files' })
+    w.marker += '+5'
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    for (const cols of [28, 51, 101, 160]) {
+      const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: { ...BAND, bodyColumns: cols } })
+      if ((await ui.findAll({ type: 'Button' })).some((b: any) => String(b.key).startsWith('qcancel-Q106'))) await pressAgain(ui, 'qcancel-Q106')
+      const line = (await ui.find({ key: 'needs-line' }))!
+      /* a chip's outline and focus ring draw whole: no clipping Box holds a letter */
+      const clipped = (n: any, inClip = false): boolean => !!n && typeof n === 'object' && ((inClip && /^chipface-/.test(String(n.props && n.props.key)))
+        || [].concat(n.children || []).some((c: any) => clipped(c, inClip || (n.props && n.props.overflow === 'hidden'))))
+      expect([cols, !!(await ui.find({ key: 'q-Q106' })), !!(await ui.find({ key: 'queued-send' })), drawnCells(line, true) <= cols, clipped(line)]).toEqual([cols, true, true, true, false])
+      /* where the drawn row leaves the room, the queued chip says its count beside a Send button, not the bare badge */
+      if (cols >= 101) expect([cols, !!(await ui.find({ key: 'queued-label' })), (await ui.findAll({ type: 'Button' })).some((b: any) => b.key === 'queued-send')]).toEqual([cols, true, true])
+      await ui.unmount()
+    }
+    /* the offline line leading beside the chips holds its words only where they fit beside them, never under a chip */
+    w.questions = []
+    w.marker += '+0'
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    let led = 0
+    for (let cols = 30; cols <= 70; cols++) {
+      const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: { ...BAND, bodyColumns: cols } })
+      const line = await ui.find({ key: 'needs-line' })
+      const box = await ui.find({ key: 'offline-line' })
+      if (line && box) led++
+      const firm = box && box.props.flexShrink === 0 ? deskCells(plain(box.text)) : 0
+      expect([cols, !line || drawnCells(line, true) + firm <= cols]).toEqual([cols, true])
+      await ui.unmount()
+    }
+    expect(led).toBeGreaterThan(0)
   })
 
   test('several open collapse to the count line, its card naming them, "N open" opening the pane on Questions; frozen it says so and stays as drawn', async ($: any, on: any) => {
@@ -184,7 +339,7 @@ describe('the band', () => {
       expect([w.panes.at(-1).id, w.panes.at(-1).focus]).toEqual([PANE_ID, true])
       await ui.unmount()
     }
-    await $.tool.call({ tool: 'mcp__askerdo__handoff_write', focus: 'f', state: 's', verifyFirst: [{ path: 'C:/src/proj' }] })
+    await $.tool.call({ tool: 'mcp__askerdo__handoff_write', goal: 'g', focus: 'f', state: 's', verifyFirst: [{ path: 'C:/src/proj' }] })
     await w.clock.settle()
     w.questions.push({ id: 'Q109', name: 'later', blocking: true, subscribers: ['sess-1'], options: [] })
     w.marker += '+'
@@ -196,14 +351,38 @@ describe('the band', () => {
     expect(face).toContain('2 open')
     expect(face).not.toContain('blocking')
     await ui.unmount()
-    /* a resume takes a track again, so the band is live and draws what came in */
-    await $.command.run({ command: 'askerdo', args: 'resume TR-4' })
+    /* a resume takes a track again, so the band is live and draws what came in; its id
+       pasted from the desktop pane, the word joiner after its hyphen */
+    await $.command.run({ command: 'askerdo', args: 'resume TR-' + String.fromCharCode(0x2060) + '4' })
     await w.clock.settle()
     const live = await mount($, 'terminal')
     expect(await live.find({ key: 'closed' })).toBeUndefined()
     /* Q106 stays with TR-3, which this session no longer holds */
     expect((await live.find({ key: 'count-mark' }))?.text).toContain('2 open')
     await live.unmount()
+  })
+
+  /* a hooks worker respawn starts a fresh copy over the session's state: its first band
+     read tells the local server the start count, for the timings, and later reads do not */
+  test('a fresh copy of the mod sends its start count with its first band read, once', async ($: any, on: any) => {
+    const w = world(on)
+    oneQuestion(w)
+    const wrote: number[] = []
+    on('state.set', ($: any, e: any, next: any) => { if (e.key === 'snapshot' && wrote.at(-1) !== e.value.starts) wrote.push(e.value.starts); return next(e) })
+    await start($, w)
+    /* the respawned worker raises session.start again in the same session */
+    const before = w.reads.length
+    await start($, w)
+    const ui = await mount($, 'terminal')
+    w.marker += '+'
+    w.change()
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    const reads = w.reads.slice(before).map((r: any) => String(r.url)).filter((u: string) => u.includes('/local/band?'))
+    expect(reads.length).toBeGreaterThan(1)
+    expect(reads.filter((u: string) => u.includes('&start=2')).length).toBe(1)
+    expect(wrote).toEqual([1, 2])
+    await ui.unmount()
   })
 
   /* the band has no track row; the status row's track card carries the counts and
@@ -259,7 +438,7 @@ describe('the band', () => {
   })
 
   for (const surface of SURFACES) {
-    test('pressing the starred chip accepts the pick through the CLI answer, toasts, and redraws (' + surface + ')', async ($: any, on: any) => {
+    test('pressing the starred chip accepts the pick through the CLI answer, toasts, and redraws (' + surface + ')', { timeoutMs: 15000 }, async ($: any, on: any) => {
       const w = world(on)
       oneQuestion(w)
       /* Answer presses at once: the chip records with no strip */
@@ -273,6 +452,9 @@ describe('the band', () => {
       await w.clock.settle()
       expect(w.prompts.at(-1)).toContain('106b')
       expect(await ui.find({ key: 'q-Q106' })).toBeUndefined()
+      /* the band first, then each surface once more with the write, its reload and the turn */
+      const bandRow = await pressRow(w, 'answer', '106b')
+      expect([bandRow && bandRow.f, twiceAtMost(bandRow)]).toEqual(['band', true])
       /* no settings file names a root, so no spawn carries one */
       expect(w.runs.some((r: any) => r.env && r.env.ASKERDO_ROOT)).toBe(false)
       /* a press on a question another session owns goes to that owner only:
@@ -304,7 +486,7 @@ describe('the band', () => {
       w.marker += '+'
       await w.clock.advance(15000)
       await w.clock.settle()
-      await $.tool.call({ tool: 'mcp__askerdo__handoff_write', focus: 'f', state: 's', verifyFirst: [{ path: 'C:/src/proj' }] })
+      await $.tool.call({ tool: 'mcp__askerdo__handoff_write', goal: 'g', focus: 'f', state: 's', verifyFirst: [{ path: 'C:/src/proj' }] })
       await w.clock.settle()
       /* edited on the board after the row was drawn, the press carries the version it showed,
          so the board refuses it once reworded */
@@ -319,6 +501,35 @@ describe('the band', () => {
       await ui.unmount()
     })
   }
+
+  /* on a board slower than the 400 ms bound the done state draws alone at the bound, and the
+     reload and the turn's take that land later wait for the gate like any passive update */
+  test('a slow board draws an answer\'s done state at the bound and its late reload and take through the gate', async ($: any, on: any) => {
+    const w = world(on)
+    oneQuestion(w)
+    w.alias = { alias: '', presses: 'once' }
+    const slowAsks: string[] = []
+    on('state.set', ($: any, e: any, next: any) => { if (e.key === 'drawn') slowAsks.push(e.id); return next(e) })
+    await start($, w)
+    const ui = await mount($, 'terminal')
+    await cooled(w)
+    await cooled(w)
+    /* the reload's read lands at 600 ms, the turn's take told at 800 ms */
+    w.fetchBy['/local/band?'] = async (e: any) => { await w.clock.sleep(600); return w.serverBy['/local/band?'](e) }
+    w.fetchBy['/local/wait?'] = async (e: any) => { if (String(e.url).includes('ms=3000')) await w.clock.sleep(800); return w.serverBy['/local/wait?'](e) }
+    const slowStep = async (ms: number) => { const at = slowAsks.length; await w.clock.advance(ms); await w.clock.settle(); return slowAsks.slice(at).sort() }
+    await ui.press({ key: 'answer-106b' })
+    await w.clock.settle()
+    const atBound = await slowStep(450)
+    const atReload = await slowStep(200)
+    const atTake = await slowStep(200)
+    const gated = await slowStep(2000)
+    const once = (ids: string[]) => ids.every((id, i) => id !== ids[i + 1])
+    /* the turn's take landed: its prompt went */
+    expect([atBound, atReload, atTake, w.prompts.length]).toEqual([['band', 'pane', 'q Q106'], [], [], 1])
+    expect([gated.includes('band'), once(gated)]).toEqual([true, true])
+    await ui.unmount()
+  })
 
   test('a burst of presses answers one at a time and every one lands; a failed chip says so and a press retries', async ($: any, on: any) => {
     const w = world(on)
@@ -453,16 +664,32 @@ describe('the band', () => {
     const theirs = q('Q105', 'their port', null)
     let qs = [theirs, q('Q106', 'store shape')]
     w.near = () => ({ questions: qs, model: bandModel({ questions: qs, shelfRows: [], sid: 'sess-1' }), shelf: [], profilesAt: 1, links: {} })
+    /* the band's count writes, each one draw of it */
+    let bands = 0
+    on('state.set', ($: any, e: any, next: any) => { if (e.key === 'drawn' && e.id === 'band') bands++; return next(e) })
+    on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'ag-1' }))
+    const copies: any[] = []
+    on('ui.copy', (_: any, e: any) => { copies.push(e); return { value: { isCopied: true } } })
     await start($, w)
     const ui = await mount($, 'terminal')
+    await cooled(w)
     expect([!!(await ui.find({ key: 'name-Q106' })), !!(await ui.find({ key: 'name-Q105' }))]).toEqual([true, false])
     /* none of the store's four reads ran, through the route or as a process */
     expect(w.routed.filter((c: any) => ['activity', 'list', 'shelf'].includes(c.argv[0]))).toEqual([])
-    expect(w.cliRuns().filter((r: any) => r.via === 'process')).toEqual([])
+    expect(w.cliRuns().filter((r: any) => r.via === 'process' && !runsInCaller(r.args))).toEqual([])
+    /* an agent's start and end move the flights, which the terminal's band never reads: no draw */
+    const was = bands
+    await $.agent.spawn({ description: 'Band lane', prompt: 'Go.', tool_use_id: 'tu-1' })
+    await cooled(w)
+    await $.turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 't-ag-1', reason: 'answer', agentId: 'ag-1' })
+    await cooled(w)
+    expect(bands - was).toBe(0)
     qs = [theirs, q('Q106', 'store shape'), q('Q107', 'a second')]
     w.change()
-    await w.clock.settle()
-    expect((await ui.find({ key: 'count-mark' }))?.text).toContain('2 open')
+    await cooled(w)
+    await cooled(w)
+    /* one board change draws the band once */
+    expect([(await ui.find({ key: 'count-mark' }))?.text, bands - was]).toEqual([expect.stringContaining('2 open'), 1])
     /* a reply closed finished freezes the band and stops the chain; a reply that is not
        lifts it, the next tick arms the long poll again and draws what came in meanwhile */
     const reply = async (turnId: string, answer: string) => {
@@ -472,7 +699,7 @@ describe('the band', () => {
     await reply('t1', FLAG + ' Done.')
     qs = [...qs, q('Q108', 'a third')]
     w.change()
-    await w.clock.settle()
+    await cooled(w)
     expect((await ui.find({ key: 'count-mark' }))?.text).toContain('2 open')
     await reply('t2', 'More to do.')
     await w.clock.advance(15000)
@@ -480,38 +707,111 @@ describe('the band', () => {
     expect((await ui.find({ key: 'count-mark' }))?.text).toContain('3 open')
     qs = [...qs, q('Q109', 'a fourth')]
     w.change()
-    await w.clock.settle()
+    await cooled(w)
     expect((await ui.find({ key: 'count-mark' }))?.text).toContain('4 open')
     /* the band says when the local board lost the board, and stops saying it */
     const live = w.near
+    /* an offline spell's first draw looks once, however often it draws; the stopped board's
+       problem has no fix to press, so the row reads as it did with no check */
+    const statusRuns = () => w.runs.filter((r: any) => r.args[0] === 'status').length
+    const looked = statusRuns()
+    w.health = { problems: [{ key: 'board', says: 'the board at x does not answer', fix: 'check the PC the board runs on' }] }
     w.near = () => ({ ...live(), online: false, offline: true, stale: true, board: 'board offline' })
+    for (let i = 0; i < 3; i++) { w.change(); await cooled(w) }
+    expect([(await ui.find({ key: 'band-offline' }))?.text, statusRuns() - looked]).toEqual([expect.stringContaining('board offline'), 1])
+    expect((await ui.find({ key: 'band-offline' }))!.text).not.toContain('check the PC')
+    w.health = { problems: [] }
+    /* alone on the desktop band at 238 px the offline line is one cut line: no Text nested in its cut Text */
+    const kept = qs
+    qs = []
     w.change()
-    await w.clock.settle()
-    expect((await ui.find({ key: 'band-offline' }))?.text).toContain('board offline')
-    /* a board that refuses this PC's protocol draws one row naming the update in place of
-       the offline line, and /askerdo leads with it */
+    await cooled(w)
+    const desk = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 28 } })
+    const row = (await desk.find({ key: 'band-offline' }))!
+    const cut = (await desk.findAll({ type: 'Text' })).filter((t: any) => /^truncate/.test(String(t.props.wrap)) && plain(t.text).includes('last copy'))
+    expect([!!row, cut.length, cut.every((t: any) => [].concat(t.children || []).every((c: any) => !c || c.type !== 'Text'))]).toEqual([true, 1, true])
+    await desk.unmount()
+    qs = kept
+    w.change()
+    await cooled(w)
+    /* a board that refuses this PC's protocol draws no offline line and no band row:
+       the status row's chip and Home name the update, and /askerdo leads with it */
     const one = [q('Q106', 'store shape')]
     w.near = () => ({ ...live(), questions: one, model: bandModel({ questions: one, shelfRows: [], sid: 'sess-1' }), online: false, offline: true, stale: true, board: 'board offline: refused',
       protocol: { key: 'board', says: 'update the board server: it speaks protocol 1 and this PC 2, so it refuses this PC', fix: 'back it up, then rebuild it', pc: 2, board: 1 } })
     w.change()
-    await w.clock.settle()
-    const health = async () => (await rowKeys(ui)).find((k: string) => k.startsWith('call-health'))
-    expect(await ui.find({ key: 'band-offline' })).toBeUndefined()
-    expect((await ui.find({ key: (await health())! }))!.text).toMatch(/board server[^]*rebuild/)
+    await cooled(w)
+    expect([await ui.find({ key: 'band-offline' }), (await rowKeys(ui)).filter((k: string) => k.startsWith('call'))]).toEqual([undefined, []])
     /* its cached chips draw with no press, since none could land */
     expect([await ui.find({ key: 'answer-106a' }), !!(await ui.find({ key: 'answerstill-106a' }))]).toEqual([undefined, true])
     expect((await $.command.run({ command: 'askerdo', args: '' })).text).toMatch(/needs a fix: Update the board server/)
     w.near = live
     w.change()
+    await cooled(w)
+    expect(await ui.find({ key: 'band-offline' })).toBeUndefined()
+    /* a new spell looks again, and the join code a refused token needs reaches the offline row's card */
+    w.health = { problems: [{ key: 'board', says: 'the board does not know this PC\'s token', fix: 'run askerdo join-code --device this-pc and then git cherry-pick fix/card-wrap. A follow-up: node scripts/run-tests.mjs, then join again', copy: 'askerdo join-code --device this-pc' }] }
+    w.near = () => ({ ...live(), online: false, offline: true, stale: true, board: 'board offline: the board does not know this token' })
+    const spell = statusRuns()
+    for (let i = 0; i < 3; i++) { w.change(); await cooled(w) }
+    const joined = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 28 } })
+    expect([plain((await joined.find({ key: 'offline-chip' }))!.text).includes('askerdo join-code'), statusRuns() - spell]).toEqual([true, 1])
+    /* each word of the askerdo command on the card's lines holds whole at its hyphens; the sentence
+       after it and another program's command (whose CLI would read the joiner) keep plain hyphens */
+    const said = (await joined.findAll({ type: 'Text' })).map((t: any) => String(t.text)).filter((t: string) => plain(t).includes('join-code'))
+    const loose = (t: string, w: string) => new RegExp('(' + w + ')-(?!' + String.fromCharCode(0x2060) + ')').test(t)
+    expect([said.some((t) => plain(t).includes('run-tests') && plain(t).includes('cherry')), said.filter((t) => loose(t, 'join|this|-')),
+      said.filter((t) => plain(t).includes('run-tests') && !(loose(t, 'follow') && loose(t, 'run') && loose(t, 'cherry') && loose(t, 'card')))])
+      .toEqual([true, [], []])
+    await joined.unmount()
+    w.near = live
+    w.change()
+    await cooled(w)
+    /* the board's no-press problem listed first hides no fix listed after it */
+    w.health = { problems: [{ key: 'board', says: 'the board at x does not answer', fix: 'check the PC the board runs on' },
+      { key: 'tray', says: 'the tray is not running', fix: 'run askerdo board', command: 'board' }] }
+    w.near = () => ({ ...live(), online: false, offline: true, stale: true, board: 'board offline' })
+    for (let i = 0; i < 2; i++) { w.change(); await cooled(w) }
+    const tray = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 28 } })
+    const chip = plain((await tray.find({ key: 'offline-chip' }))!.text)
+    expect([chip.includes('run askerdo board'), chip.includes('check the PC')]).toEqual([true, false])
+    await tray.unmount()
+    w.health = { problems: [] }
+    w.near = live
+    w.change()
+    await cooled(w)
+    /* a replaced local server answers offline until it reaches the board, then online with no
+       write, so the board's seq never moves; the row clears within two beats all the same */
+    w.near = () => ({ ...live(), online: false, offline: true, stale: true, board: 'board offline' })
+    w.change()
+    await cooled(w)
+    await w.clock.advance(15000)
     await w.clock.settle()
-    expect([await ui.find({ key: 'band-offline' }), await health()]).toEqual([undefined, undefined])
+    expect(!!(await ui.find({ key: 'band-offline' }))).toBe(true)
+    w.near = live
+    for (let i = 0; i < 2; i++) { await w.clock.advance(15000); await w.clock.settle() }
+    expect(await ui.find({ key: 'band-offline' })).toBeUndefined()
     /* the local server gone and its start refused, the band says why; no store read stands in */
     const ran = w.cliRuns().length
+    w.health = { problems: [{ key: 'server', says: 'the local server could not start', fix: 'free the port', copy: 'askerdo board --restart' }] }
     w.serverDown = true
-    w.fail.board = 'the port is taken'
+    w.fail.board = 'the port is taken: free it or run askerdo board --restart'
     w.change()
-    await w.clock.settle()
+    await cooled(w)
     expect((await ui.find({ key: 'band-offline' }))?.text).toContain('the port is taken')
+    /* at the pane's narrowest width, the questions leading the band's one line, the
+       board offline is its amber chip; its card holds every word and the fix's command, and its press copies
+       the command as the health chip's does */
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    const narrow = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 28 } })
+    const off = (await narrow.find({ key: 'offline-chip' }))!
+    expect(['the port is taken', 'free the port', 'copy askerdo board --restart'].map((s) => plain(off.text).includes(s))).toEqual([true, true, true])
+    await narrow.press({ key: 'offline-fix' })
+    await w.clock.settle()
+    expect(copies.map((e: any) => e.text)).toEqual(['askerdo board --restart'])
+    await narrow.unmount()
+    w.health = { problems: [] }
     expect(w.cliRuns().slice(ran).filter((r: any) => ['activity', 'list', 'shelf'].includes(r.args[0]))).toEqual([])
     await ui.unmount()
   })
@@ -529,35 +829,48 @@ describe('the band', () => {
     await ui.unmount()
   })
 
-  test('the board\'s calls draw as rows with their presses; a press runs its verb as the user and in the asking session starts its turn; several overrides fold to a count; a problem askerdo status lists leads them with its fix, is looked at again when local.json moves, its press runs the fix, and a clean readout draws none', async ($: any, on: any) => {
+  test('the board\'s calls draw on Home, never on the band: a press runs its verb as the user and in the asking session starts its turn; several overrides fold to a count; the PC\'s problem is the status row\'s chip, looked at again when local.json moves, and its press runs the fix', HEAVY, async ($: any, on: any) => {
     const w = world(on)
     w.questions = []
     w.health = { problems: [{ key: 'server', says: 'this PC\'s local server runs AskerDo 0.8.9 and this plugin is 0.8.13', fix: 'run askerdo board --restart', command: 'board --restart' }] }
     const since = '2026-10-27T10:00:00.000Z'
     const look = { kind: 'look', record: 'k5', id: 'T-5', text: 'T-5 band rows: its work landed, and it closes at your look', since,
-      presses: [{ label: 'Close', verb: 'editRecord', input: { id: 'k5', kind: 'task', status: 'completed' } }, { label: 'Not yet', verb: 'lookNotYet', input: { task: 'k5' } }] }
+      presses: [{ label: 'Close', verb: 'editRecord', input: { id: 'k5', kind: 'task', status: 'done' } }, { label: 'Not yet', verb: 'lookNotYet', input: { task: 'k5' } }] }
     const override = (n: number, mine: boolean) => ({ kind: 'override', record: 'kk' + n, id: 'K-' + n, request: n, text: 'Reword K-' + n + ' (one record)', since, mine,
-      presses: [{ label: 'Allow', verb: 'overrideDecide', input: { request: n, decision: 'allow' } }, { label: 'Keep', verb: 'overrideDecide', input: { request: n, decision: 'keep' } }] })
+      presses: [{ label: 'Fix', verb: 'overrideDecide', input: { request: n, decision: 'allow' } }, { label: 'Keep', verb: 'overrideDecide', input: { request: n, decision: 'keep' } }] })
     w.calls = [look, { ...override(3, true), result: { request: 3, decision: 'allow', records: ['K-3'], asker: 'sess-1' },
       told: { session: 'sess-1', event: { key: 'seq:93', line: 'Override #3 (K-3) was allowed by the user: the change is applied.',
         raw: { kind: 'override', id: 'K-3', name: '', request: '#3', decided: 'allow', records: ['K-3'], by: 'user:sess-1', seq: 93 } } } }]
     await start($, w)
     const pressKeys = async (ui: any) => (await ui.findAll({ type: 'Button' })).map((b: any) => String(b.key)).filter((k: string) => k.startsWith('callpress-'))
-    for (const surface of SURFACES) {
-      const ui = await mount($, surface)
-      expect((await rowKeys(ui)).filter((k: string) => k.startsWith('call-')).length).toBe(3)
-      expect((await pressKeys(ui)).length).toBe(5)
-      expect((await ui.find({ key: (await rowKeys(ui))[0] }))!.text).toMatch(/0\.8\.9[^]*Restart/)
-      if (surface === 'desktop') expect((await ui.find({ key: 'askerdo-status' }))!.text).toContain('local server')
-      /* a desktop row spans the band, its words cut before its presses;
-         its tooltip is the fact card, the terminal's one line */
-      const key = (await rowKeys(ui)).find((k: string) => k.startsWith('call-look'))!.slice(5)
-      expect([(await ui.find({ key: 'call-' + key }))!.props.alignSelf, (await ui.find({ key: 'ctext-' + key }))!.props.minWidth])
-        .toEqual([surface === 'terminal' ? 'flex-start' : undefined, 0])
-      expect(!!(await ui.find({ key: 'card-call-' + key + '-head' }))).toBe(surface === 'desktop')
-      await ui.unmount()
+    const callKeys = async (ui: any) => (await ui.findAll({ type: 'Box' })).map((b: any) => String(b.key)).filter((k: string) => /^calls?-/.test(k))
+    const home = async (surface: string) => {
+      const pane = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PANE_ID, props: PANE })
+      await pane.press({ key: 'tab-home' })
+      return pane
     }
-    const ui = await mount($, 'desktop')
+    for (const surface of SURFACES) {
+      const band = await mount($, surface)
+      /* the health check's problem lands at the once a second gate */
+      await w.clock.advance(1000)
+      await w.clock.settle()
+      expect([await callKeys(band), await pressKeys(band)]).toEqual([[], []])
+      if (surface === 'desktop') expect((await band.find({ key: 'askerdo-status' }))!.text).toContain('local server')
+      await band.unmount()
+      const pane = await home(surface)
+      expect((await rowKeys(pane)).filter((k: string) => k.startsWith('call-')).length).toBe(3)
+      expect((await pressKeys(pane)).length).toBe(5)
+      expect((await pane.find({ key: (await rowKeys(pane))[0] }))!.text).toMatch(/0\.8\.9[^]*Restart/)
+      await pane.unmount()
+      /* on a narrow Home a call's words wrap whole over its presses, never cut */
+      const narrow = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: PANE_ID, props: { ...PANE, bodyColumns: 24 } })
+      await narrow.press({ key: 'tab-home' })
+      const words = (await narrow.findAll({ type: 'Text' })).filter((t: any) => plain(t.text) === look.text)
+      expect([words.length, words[0] && words[0].props.wrap, (await pressKeys(narrow)).length]).toEqual([1, 'wrap', 5])
+      await narrow.unmount()
+    }
+    const band = await mount($, 'desktop')
+    const ui = await home('desktop')
     /* a poll tick with board/local.json unmoved looks no sooner than the minute; once the
        sync's new server rewrites it, the next tick looks again */
     const healthText = async () => (await ui.find({ key: (await rowKeys(ui)).find((k: string) => k.startsWith('call-health'))! }))!.text
@@ -575,39 +888,44 @@ describe('the band', () => {
     await w.clock.advance(15000)
     await w.clock.settle()
     expect(await healthText()).toMatch(/0\.8\.12/)
-    /* the fix runs here as a process, and once the readout is clean the row goes */
+    /* the status row's chip runs the fix here as a process, and once the readout is clean chip and row go */
     w.health = { problems: [] }
-    await ui.press({ key: (await pressKeys(ui)).find((k: string) => k.startsWith('callpress-0-health'))! })
+    await band.press({ key: 'status-health-fix' })
     await w.clock.settle()
     expect(w.spawns().some((r: any) => r.args.join(' ') === 'board --restart --json')).toBe(true)
+    await w.clock.advance(1000)
+    await w.clock.settle()
     expect((await rowKeys(ui)).some((k: string) => k.startsWith('call-health'))).toBe(false)
+    expect((await band.find({ key: 'askerdo-status' }))!.text).not.toContain('local server')
     const turns = w.prompts.length
     await ui.press({ key: (await pressKeys(ui)).find((k: string) => k.startsWith('callpress-0-look'))! })
     await w.clock.settle()
     /* a look task nobody here holds: recorded as the user's act, and no turn starts */
-    expect(w.verbs[0]).toEqual({ name: 'editRecord', body: { input: look.presses[0].input, user: 'sess-1' } })
+    expect(w.verbs.filter((v: any) => v.name !== 'renewLease')[0]).toEqual({ name: 'editRecord', body: { input: look.presses[0].input, user: 'sess-1' } })
     expect(w.prompts.length).toBe(turns)
-    /* a track the Allow's reload finds waiting shows after the Allow's toast, not over it */
+    /* a track the press's reload finds waiting shows after the press's toast, not over it */
     w.shelf.push({ track: 'TR-6', handoff: 'TR-6.1', name: 'next line', state: 'waiting', age: '1m', focus: 'write the tests' })
     await ui.press({ key: (await pressKeys(ui)).find((k: string) => k.startsWith('callpress-0-override'))! })
     await w.clock.settle()
-    const said = () => w.toasts.map((t: string) => (/Allowed override #3/.test(t) ? 'allow' : /^TR-6 /.test(t) ? 'shelf' : 'other'))
+    const said = () => w.toasts.map((t: string) => (/: override #3 /.test(t) ? 'allow' : /^TR-6 /.test(t) ? 'shelf' : 'other'))
     expect(said().filter((t: string) => t !== 'other')).toEqual(['allow'])
     await w.clock.advance(4000)
     await w.clock.settle()
     expect(said().filter((t: string) => t !== 'other')).toEqual(['allow', 'shelf'])
     expect(w.prompts.at(-1)).toContain('allowed override #3')
-    expect(await rowKeys(ui)).toEqual([])
-    /* several override requests fold to one count line; its press unfolds their rows */
+    expect((await rowKeys(ui)).filter((k: string) => k.startsWith('call'))).toEqual([])
+    /* several override requests fold to one count line on Home; its press unfolds their rows */
     w.calls = [override(4, false), override(5, false)]
     w.marker += '+'
     await w.clock.advance(15000)
     await w.clock.settle()
-    expect(await rowKeys(ui)).toEqual(['calls-overrides'])
+    expect((await rowKeys(ui)).filter((k: string) => k.startsWith('call'))).toEqual(['calls-overrides'])
+    expect(await callKeys(band)).toEqual([])
     await ui.press({ key: 'calls-fold' })
     await w.clock.settle()
     expect((await pressKeys(ui)).length).toBe(4)
     await ui.unmount()
+    await band.unmount()
   })
 })
 
@@ -664,7 +982,7 @@ describe('toasts and the alert', () => {
     const w = world(on)
     w.boardUrl = BOARD
     await start($, w)
-    const r = await $.tool.call({ tool: 'mcp__askerdo__handoff_write', focus: 'write the tests', state: 'Done: core.',
+    const r = await $.tool.call({ tool: 'mcp__askerdo__handoff_write', goal: 'g', focus: 'write the tests', state: 'Done: core.',
       verifyFirst: [{ path: 'C:/src/proj' }] })
     expect(r.result).toContain('Wrote TR-3.5 (waiting)')
     expect(w.toasts).toEqual(['Handoff TR-3.5 written (waiting) on TR-3.'])

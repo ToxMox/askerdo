@@ -14,7 +14,7 @@ announces (the `...\<session-id>\scratchpad` tail). Session-scoped on
 purpose: each session owns its directory and parallel sessions never
 share one.
 
-Project-local was chosen deliberately (2026-08-14) over both the Temp
+Project-local was chosen deliberately over both the Temp
 scratchpad and the plugin data dir: links become short repo-relative
 paths that work on any drive layout, a live queue survives temp
 cleaners, a resumed session finds its queue weeks later, and the queue
@@ -103,7 +103,7 @@ names its question wherever it is read or typed; `pick` is the
 recommended token when there is one, marked "(my pick)" beside its
 option wherever the options render.
 
-Rulings (T-6): an answered question is a ruling.
+Rulings: an answered question is a ruling.
 
 - `revisits: [Q512]`: the answered questions this one reopens. Each must be
   answered, else the registration is refused.

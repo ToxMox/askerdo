@@ -1,7 +1,6 @@
 /* The drawn graph's inputs from the track views, pure: the web reads its
    look from the database (data.mjs graphFrom), the mod from the views alone (mod-core
    homeGraph). One reading, so the web and the pane draw the same picture. */
-import { endedOf } from './draw.mjs';
 
 /* The finished junctions to keep drawn: each one a side line with open tasks still leaves from. */
 function keptJunctions(list) {
@@ -20,7 +19,7 @@ export function keptReviews(list) {
   const out = new Map();
   for (const tv of list) {
     if (!(tv.tasks || []).length) continue;
-    const done = (tv.finished || []).filter((f) => f && f.review && f.status === 'completed');
+    const done = (tv.finished || []).filter((f) => f && f.review && f.status === 'done');
     const last = done.reduce((m, f) => (!m || (f.position ?? 0) > (m.position ?? 0) ? f : m), null);
     if (last && !out.has(last.id)) out.set(last.id, { ...last, track: tv.id });
   }
@@ -80,7 +79,7 @@ export function graphOf(views, now, look, { keepReview = true } = {}) {
     const holder = tv.holder;
     g.tracks.push({
       id: tv.id, key: tv.key, name: tv.name, full: (front && front.goal) || tv.name,
-      parent: j.track ? j.track.id : undefined, junction: j.task ? j.task.id : undefined, origin: front && front.origin,
+      parent: j.track ? j.track.id : undefined, junction: j.task ? j.task.id : undefined,
       doneBefore: tv.done, parked: tv.parkReason || '', unpark: tv.unpark || '', last: moved.last, since: look.since ? look.since(tv) : null,
       lease: holder ? { who: holder.pc ? 'on ' + holder.pc : 'held', pc: holder.pc, since: holder.since, quiet: tv.quietSince || null } : null,
       /* the review readout and the finished code tasks and reviews, passed through for the station map */
@@ -88,7 +87,7 @@ export function graphOf(views, now, look, { keepReview = true } = {}) {
     });
     const T = {
       state: tv.state, stalled: tv.stalled, noHandoff: tv.noHandoff, days: moved.days,
-      open: tv.tasks.length, running: 0, agents: 0, landing: 0, stopped: 0, left: 0, ready: 0, toGo: tv.critical.length, path: tv.critical.path,
+      open: tv.tasks.length, running: 0, agents: 0, left: 0, ready: 0, toGo: tv.critical.length, path: tv.critical.path,
     };
     D.tracks[tv.id] = T;
     const deps = {};
@@ -98,8 +97,6 @@ export function graphOf(views, now, look, { keepReview = true } = {}) {
       const k = e.task + '>' + e.on;
       if (!seen.has(k)) { seen.add(k); g.edges.push([e.task, e.on]); }
     }
-    /* running is the view's now set (a live hand backs it); a view without one, by its lease */
-    const live = Array.isArray(tv.now) ? new Set(tv.now.map((n) => n.id)) : null;
     tv.tasks.forEach((t, i) => {
       const waits = (deps[t.id] || []).map((on) => {
         if (trackOf.has(on)) return { id: on, track: trackOf.get(on) === tv.id ? null : trackOf.get(on) };
@@ -107,22 +104,22 @@ export function graphOf(views, now, look, { keepReview = true } = {}) {
         return ws ? { id: on, track: look.trackOf(on, t, tv), ws } : { id: on, track: look.trackOf(on, t, tv) };
       });
       const gs = look.gates(t);
-      const kind = t.pointer ? 'pointer' : t.status === 'in_progress' ? ((live ? live.has(t.id) : tv.state === 'active') ? 'now' : 'left')
-        : t.ready ? 'ready' : gs.length && !waits.length ? 'gated' : 'waits';
+      /* the station's kind is the task's word: running now, unconfirmed left */
+      const w = (t.word && t.word.is) || (t.ready ? 'ready' : 'waiting');
+      const kind = w === 'running' ? 'now' : w === 'unconfirmed' ? 'left' : w === 'ready' ? 'ready'
+        : gs.length && !waits.length ? 'gated' : 'waits';
       /* what waits on it from outside the picture: drawn waits have their connector */
       const needed = look.neededBy ? look.neededBy(t).filter((n) => !trackOf.has(n.id)) : [];
       D.tasks[t.id] = { kind, waits, gates: gs, needed };
-      /* a station whose agent ended draws as now and counts apart from running */
-      if (kind === 'now') T[endedOf(t) === 'stopped' ? 'stopped' : endedOf(t) ? 'landing' : 'running'] += 1;
+      if (kind === 'now') T.running += 1;
       /* the Overview's agents running: a session's own task in hand is running but no agent */
-      if (kind === 'now' && t.agent && !endedOf(t)) T.agents += 1;
+      if (kind === 'now' && t.agent) T.agents += 1;
       if (kind === 'left') T.left += 1;
       if (kind === 'ready') T.ready += 1;
       g.tasks.push({
         id: t.id, key: t.key, track: tv.id, pos: t.position ?? i + 1, status: t.status, title: shortTitle(t.name), full: t.name,
-        promotedTo: t.pointer || undefined, agent: t.agent || null, ...(t.agent && t.agentEnd ? { agentEnd: t.agentEnd } : {}), session: t.session || null,
-        checklist: t.progress && !t.pointer ? { done: t.progress.done, total: t.progress.total } : null,
-        progress: t.pointer && t.progress ? { done: t.progress.done, total: t.progress.total } : null,
+        agent: t.agent || null, ...(t.word ? { word: t.word } : {}), session: t.session || null,
+        checklist: t.progress ? { done: t.progress.done, total: t.progress.total } : null,
         url: t.url || null, ...(t.review ? { review: true, reviewScope: t.reviewScope || 'track', ...(t.reopened ? { reopened: true } : {}) } : {}),
       });
     });
@@ -130,12 +127,12 @@ export function graphOf(views, now, look, { keepReview = true } = {}) {
   }
   /* a finished junction stays drawn, done and dimmed, where its side line leaves */
   for (const k of keptJunctions(views)) {
-    g.tasks.push({ id: k.id, key: k.key, track: k.track, pos: 0, status: 'completed', title: shortTitle(k.name), full: k.name, kept: true });
+    g.tasks.push({ id: k.id, key: k.key, track: k.track, pos: 0, status: 'done', title: shortTitle(k.name), full: k.name, kept: true });
     D.tasks[k.id] = { kind: 'done', waits: [], gates: [], needed: [] };
   }
   for (const k of reviews) {
     if (D.tasks[k.id]) continue;
-    g.tasks.push({ id: k.id, key: k.key, track: k.track, pos: k.position ?? 0, status: 'completed', title: shortTitle(k.name), full: k.name, kept: true,
+    g.tasks.push({ id: k.id, key: k.key, track: k.track, pos: k.position ?? 0, status: 'done', title: shortTitle(k.name), full: k.name, kept: true,
       review: true, reviewScope: k.reviewScope || 'track', covers: Array.isArray(k.covers) ? k.covers : [], closed: k.closed || null, url: k.url || null });
     D.tasks[k.id] = { kind: 'done', waits: [], gates: [], needed: [] };
   }

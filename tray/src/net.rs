@@ -31,7 +31,7 @@ use serde_json::Value;
 use crate::http::{self, Pull};
 use crate::sse;
 use crate::url;
-use crate::{App, Card, Dot, EXIT_GONE, EXIT_INSTANCE, Recent, alert, opener, tray};
+use crate::{App, Asleep, Card, Dot, EXIT_GONE, EXIT_INSTANCE, Recent, alert, opener, tray};
 
 /* THE MENU'S CAP, applied AGAIN on arrival: the server counts to five and a
    server that sent more is not trusted to have counted. */
@@ -45,6 +45,8 @@ pub(crate) const INDEX_MAX: u64 = 9999;
 /* the WIRE bound on a name, the server's own; the menu's display cut is forty
    and lives in tray.rs with the rest of the menu's words */
 const CARD_NAME_MAX: usize = 120;
+/* the hover names two asleep questions; the server sends no more */
+const ASLEEP_MAX: usize = 2;
 /* the pause answer is `{ ok, settings: {...} }`, a few hundred bytes; the cap is
    the same posture drain() takes everywhere, a body this client did not ask for
    must not grow a buffer without end */
@@ -118,7 +120,7 @@ pub fn run(app: Arc<App>, hwnd: isize) {
                            one of them is None and the last known values stand: a
                            long stream outage leaves the menu showing the last
                            state the stream told it, exactly as the tooltip does. */
-                        apply(&app, hwnd, Some(dot), None, None, None, None, None, None, None);
+                        apply(&app, hwnd, Some(dot), None, None, None, None, None, None, None, None);
                     }
                     Ping::Different => {
                         app.quit(EXIT_INSTANCE, hwnd, "the ping answered from another instance");
@@ -294,6 +296,11 @@ pub(crate) fn state_frame(app: &Arc<App>, hwnd: isize, data: &str) -> Option<u64
         .get("pauseLabel")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    /* absent means none, so a new exe beside an older server shows no asleep part */
+    let asleep = Some((
+        count_of(tray, "asleep").unwrap_or(0),
+        tray.get("asleepQuestions").and_then(asleeps_of).unwrap_or_default(),
+    ));
     /* THE FIRST FRAME IS ITSELF A FACT, and the menu reads it: until one lands,
        the counts line has nothing but the spawn argv's blocking count and would
        otherwise print a `0 waiting` no server ever said. It is set here rather
@@ -313,6 +320,7 @@ pub(crate) fn state_frame(app: &Arc<App>, hwnd: isize, data: &str) -> Option<u64
         recent,
         paused,
         label,
+        asleep,
     );
     tray.get("beatMs")
         .and_then(|v| v.as_u64())
@@ -440,6 +448,26 @@ fn recents_of(v: &Value) -> Option<Vec<Recent>> {
             name: cut_chars(name, CARD_NAME_MAX),
         });
         if out.len() == RECENTS_MAX {
+            break;
+        }
+    }
+    Some(out)
+}
+
+/* the asleep lines, the question lines' shape check and name bound, at most two */
+fn asleeps_of(v: &Value) -> Option<Vec<Asleep>> {
+    let list = v.as_array()?;
+    let mut out = Vec::new();
+    for entry in list.iter() {
+        let Some(id) = entry.get("id").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        if !well_formed(id) {
+            continue;
+        }
+        let text = |k: &str| cut_chars(entry.get(k).and_then(|x| x.as_str()).unwrap_or(""), CARD_NAME_MAX);
+        out.push(Asleep { id: id.to_string(), name: text("name"), wake: text("wake") });
+        if out.len() == ASLEEP_MAX {
             break;
         }
     }
@@ -593,7 +621,7 @@ pub fn pause(app: Arc<App>, hwnd: isize, token: &str) {
             "menu pause ok: {}",
             label.clone().unwrap_or_else(|| "-".into())
         ));
-        apply(&app, hwnd, None, None, None, None, None, None, paused, label);
+        apply(&app, hwnd, None, None, None, None, None, None, paused, label, None);
     });
 }
 
@@ -647,6 +675,7 @@ pub(crate) fn apply(
     recent: Option<Vec<Recent>>,
     paused: Option<String>,
     pause_label: Option<String>,
+    asleep: Option<(u32, Vec<Asleep>)>,
 ) {
     let mut moved = false;
     if let Ok(mut face) = app.face.lock() {
@@ -696,6 +725,13 @@ pub(crate) fn apply(
             && face.pause_label != v
         {
             face.pause_label = v;
+            moved = true;
+        }
+        if let Some((count, list)) = asleep
+            && (face.asleep != count || face.asleep_cards != list)
+        {
+            face.asleep = count;
+            face.asleep_cards = list;
             moved = true;
         }
     }
@@ -757,6 +793,8 @@ mod tests {
                 recent: Vec::new(),
                 paused: String::new(),
                 pause_label: String::new(),
+                asleep: 0,
+                asleep_cards: Vec::new(),
                 told: false,
             }),
             journal: Journal::open(None),
@@ -1008,6 +1046,22 @@ mod tests {
             "newest",
             "the server's own order is kept: it sorted them newest first"
         );
+
+        /* the asleep pair, capped at two and malformed ids dropped; an
+           older server's frame without it reads as none asleep */
+        read(
+            &app,
+            r#"{"tray":{"asleep":4,"asleepQuestions":[{"id":"T-3"},{"id":"Q2","name":"a","wake":"until Nov 20"},
+               {"id":"Q5","name":"b"},{"id":"Q7","name":"c"}]}}"#,
+        );
+        {
+            let f = app.face.lock().unwrap();
+            assert_eq!(f.asleep, 4);
+            assert_eq!(f.asleep_cards.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["Q2", "Q5"]);
+        }
+        read(&app, r#"{"tray":{"waiting":3}}"#);
+        assert_eq!(app.face.lock().unwrap().asleep, 0);
+        assert!(app.face.lock().unwrap().asleep_cards.is_empty());
 
         /* absent leaves it standing, and an empty array empties it */
         read(&app, r#"{"tray":{"waiting":3}}"#);

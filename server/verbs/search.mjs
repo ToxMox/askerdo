@@ -2,6 +2,7 @@
    handoffs, each hit with its record's head and the lines that matched. The
    index is contentless, so the lines are found in each hit's own text. */
 import { readTx } from '../db.mjs';
+import { unguardHeadings } from '../records.mjs';
 import { UsageError, resolveRecord } from './labels.mjs';
 
 export const HITS_MAX = 50;
@@ -25,13 +26,15 @@ const KEEP_SQL = 'SELECT 1 AS kept ' + KEPT.replace('%s', '(SELECT ?1 AS key)');
 
 const clip = (s) => (s.length > LINE_CUT ? s.slice(0, LINE_CUT - 3) + '...' : s);
 
+/* `texts` as stored: a section heading starts its line, a written # line carries the guard's space */
 function matchingLines(texts, terms) {
   const low = terms.map((t) => t.toLowerCase());
   const out = [];
   for (const text of texts) {
     for (const raw of String(text || '').split('\n')) {
-      const line = raw.replace(/\s+/g, ' ').trim();
-      if (!line || /^#+ /.test(line) || out.includes(clip(line))) continue;
+      if (/^#+ /.test(raw)) continue;
+      const line = unguardHeadings(raw).replace(/\s+/g, ' ').trim();
+      if (!line || out.includes(clip(line))) continue;
       if (low.some((t) => line.toLowerCase().includes(t))) out.push(clip(line));
       if (out.length >= LINES_MAX) return out;
     }

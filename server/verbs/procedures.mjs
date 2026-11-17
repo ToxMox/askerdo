@@ -3,8 +3,9 @@
    lives in a repo on a PC, so the PC reads and judges it (parseProcedure, judge,
    lint and git stay in lib/procedures.mjs) and hands the result in here. */
 import { tx } from '../db.mjs';
-import { actorOf, addNote, changesOf, guardHeadings, kebab, logRow, mintKey, orderFields, putRecord } from '../records.mjs';
+import { actorOf, addNote, changesOf, guardHeadings, kebab, labelOf, logRow, mintKey, orderFields, putRecord } from '../records.mjs';
 import { UsageError, endingStamps, loadEntry as recordByKey, lookupFor, pickLabel, resolveRecord } from './labels.mjs';
+import { placeOf } from './found.mjs';
 import {
   PROC_DIR, SCRIPT_AFTER, cardForFile, cardView, cardsOfProject, fileTriggerText, findCardIn, foreign, isAbsolute,
   normPath, ofRepo, sameDir,
@@ -42,6 +43,7 @@ function scanned(project, repo, proc) {
     summary: proc.summary, words: proc.triggers.words, commands: proc.triggers.commands,
     files: proc.triggers.files.map(fileTriggerText), repos: { ...proc.repos },
     paths: proc.refs.filter((r) => r.kind === 'path').map((r) => r.target), live: proc.live || undefined,
+    record: proc.record === 'command' ? 'command' : undefined,
   };
 }
 const recordRefs = (proc) => proc.refs.filter((r) => r.kind !== 'path').map((r) => r.target);
@@ -162,7 +164,7 @@ export function scanProject(db, { project: dir, repo = '', homes, head = '', fil
   });
 }
 
-/* a run report rides the note, so the draft and the flag carry only its
+/* a run report rides the note, so the flag carries only its
    first sentence, which names the step that differed; the journal keeps the note. */
 function leadOf(note) {
   const line = String(note || '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).find(Boolean) || '';
@@ -171,24 +173,102 @@ function leadOf(note) {
 }
 const LEAD_MAX = 200;
 
-/* `proc ran <name> clean|deviated`: a clean run moves the verified commits to
-   the `heads` the PC read where it ran; a deviation flags the card and drafts
-   the edit as a journal note. The PC judges `stale` against the moved commits
-   and names `base`, the checkout whose steps file it read. */
-export function recordRun(db, { name, result, note, project = '', repo = '', base, heads = {}, stale, source = '' } = {}, actor) {
+/* The card a run or a drafts call names, as recordRun has always found it. */
+function cardNamed(db, name, home, repo, actor) {
+  const rows = cardRows(db);
+  /* PR-n names its live holder, never a retired card that held the label before */
+  const live = /^pr-\d+$/i.test(String(name || '').trim()) ? resolveRecord(db, name, { kinds: ['procedure'], day: actorOf(actor).day }) : null;
+  const hit = findCardIn(rows.map((r) => r.fields), live ? live.key : name, { project: home, repo });
+  if (!hit) throw new UsageError('no procedure named ' + name + (home ? ' in ' + home : '') + ': proc scan reads a project\'s ' + PROC_DIR);
+  return { hit, row: rows.find((r) => r.fields === hit) };
+}
+
+/* ---- a deviated run carries its outcome in the same call; the board files no task ---- */
+
+const ENDED = ['done', 'dropped'];
+/* the step a deviation names: the first "step N" of its lead, else of its note; '' for none */
+export function stepOf(lead, text) {
+  const m = /\bsteps?\s+(\d+)\b/i.exec(String(lead || '')) || /\bsteps?\s+(\d+)\b/i.exec(String(text || ''));
+  return m ? 'step ' + m[1] : '';
+}
+const slotOf = (step) => step || 'steps';
+const isOpen = (db, key) => { const r = key ? db.stmt('SELECT status FROM records WHERE key = ?').get(key) : null; return !!r && !ENDED.includes(r.status); };
+/* the open tasks holding the flag: those a run named as filed, and the draft tasks the board filed before */
+const openTasks = (db, front) => [...new Set([...Object.values(front.filedTasks || {}), ...Object.values(front.drafts || {})])].filter((k) => isOpen(db, k));
+
+export const OUTCOMES = '--fixed <commit> (the steps are fixed now, in the commit that changed the card), --one-off "why" (a one-off, and the steps stand) or --filed T-n (real work you filed through the ladder: an open task on a track or in an inbox)';
+const MARK = '. Outcome: ';
+const SAID = { fixed: (r) => 'the steps are fixed in ' + r.slice(0, 7), 'one-off': (r) => 'a one-off, the steps stand: ' + r, filed: (r) => 'filed as ' + r };
+const HEARD = [['fixed', /^the steps are fixed in (\S+)$/], ['one-off', /^a one-off, the steps stand: ([\s\S]*)$/], ['filed', /^filed as (\S+)$/]];
+
+/* The outcome a run names, checked before anything is written: one for a deviation, none for a clean run. */
+function outcomeOf(db, result, { fixed, oneOff, filed }) {
+  const given = [['fixed', fixed], ['one-off', oneOff], ['filed', filed]]
+    .map(([k, v]) => [k, typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : v ? String(v) : '']).filter(([, v]) => v);
+  if (result === 'clean') {
+    if (given.length) throw new UsageError('an outcome goes with a deviated run; a clean run takes none');
+    return null;
+  }
+  if (!given.length) throw new UsageError('a deviated run says what happens next, in the same call, with one of: ' + OUTCOMES);
+  if (given.length > 1) throw new UsageError('a deviated run takes one outcome, not ' + given.map(([k]) => '--' + k).join(' and '));
+  const [kind, v] = given[0];
+  if (kind === 'fixed') {
+    if (!/^[0-9a-f]{7,40}$/i.test(v)) throw new UsageError('--fixed takes the commit that changed the card, as a sha: ' + v);
+    return { kind, ref: v.toLowerCase() };
+  }
+  if (kind === 'one-off') return { kind, ref: v };
+  const rec = resolveRecord(db, v, { kinds: ['task'] });
+  if (!rec) throw new UsageError('--filed names the task you filed: no task ' + v);
+  const id = rec.fields.id;
+  if (ENDED.includes(rec.fields.status)) throw new UsageError(id + ' is ' + rec.fields.status + ': --filed names open work');
+  if (placeOf(db, rec).kind === 'none') {
+    throw new UsageError(id + ' is on no track and in no inbox: place it through the ladder first (the place tool, or `askerdo task edit ' + id + ' --track TR-n`), then record the run');
+  }
+  return { kind, ref: id, key: rec.key };
+}
+
+/* Each deviated run in a card's journal: its lead, step and outcome (kind none for the runs recorded before a run carried its outcome). */
+function deviations(db, key) {
+  const out = [];
+  for (const n of db.stmt('SELECT at, body FROM notes WHERE record = ? ORDER BY position').all(key)) {
+    const body = String(n.body || '');
+    if (!body.startsWith('deviated run: ')) continue;
+    const rest = body.slice('deviated run: '.length);
+    const at = rest.lastIndexOf(MARK);
+    const cut = at >= 0 ? at : rest.lastIndexOf('. Draft edit for ');
+    const text = cut < 0 ? rest : rest.slice(0, cut);
+    let outcome = { kind: 'none' };
+    const said = at >= 0 ? rest.slice(at + MARK.length).replace(/\.$/, '') : '';
+    for (const [kind, re] of HEARD) { const m = re.exec(said); if (m) { outcome = { kind, ref: m[1] }; break; } }
+    const lead = leadOf(text);
+    out.push({ at: String(n.at || '').slice(0, 10), lead, step: stepOf(lead, text), outcome });
+  }
+  return out;
+}
+
+/* `proc ran <name> clean|deviated`: a clean run moves the verified commits to the `heads` the PC
+   read where it ran; a deviated one names its outcome (outcomeOf), which the card records. Only
+   a filed outcome flags the card, until that task closes. The PC judges `stale` against the
+   moved commits and names `base`, the checkout whose steps file it read. */
+export function recordRun(db, { name, result, note, fixed, oneOff, filed, project = '', repo = '', base, heads = {}, stale } = {}, actor) {
   if (!['clean', 'deviated'].includes(result)) throw new UsageError('a run is clean or deviated');
   const text = String(note || '').replace(/\s+/g, ' ').trim();
-  if (result === 'deviated' && !text) throw new UsageError('a deviated run needs --note "what differed"');
+  if (result === 'deviated' && !text) throw new UsageError('a deviated run needs --note "what differed", with one of: ' + OUTCOMES);
   const lead = leadOf(note);
   const home = project ? normPath(project) : '';
   repo = repo || home.toLowerCase();
   return tx(db, () => {
-    const rows = cardRows(db);
-    /* PR-n names its live holder, never a retired card that held the label before */
-    const live = /^pr-\d+$/i.test(String(name || '').trim()) ? resolveRecord(db, name, { kinds: ['procedure'], day: actorOf(actor).day }) : null;
-    const hit = findCardIn(rows.map((r) => r.fields), live ? live.key : name, { project: home, repo });
-    if (!hit) throw new UsageError('no procedure named ' + name + (home ? ' in ' + home : '') + ': proc scan reads a project\'s ' + PROC_DIR);
-    const row = rows.find((r) => r.fields === hit);
+    const { hit, row } = cardNamed(db, name, home, repo, actor);
+    const outcome = outcomeOf(db, result, { fixed, oneOff, filed });
+    const step = outcome ? stepOf(lead, text) : '';
+    /* a one-off that recurs at a step is the card to fix, not a run to excuse again */
+    if (outcome && outcome.kind === 'one-off' && step) {
+      const last = deviations(db, row.key).filter((d) => d.step === step).at(-1);
+      if (last && last.outcome.kind === 'one-off') {
+        throw new UsageError(step + ' of ' + hit.id + ' deviated as a one-off before (' + last.at + ': ' + last.lead
+          + '): a deviation that recurs means the card should be fixed (--fixed <commit>) or the work filed (--filed T-n)');
+      }
+    }
     const mine = !!home && (sameDir(home, hit.project) || ofRepo(hit, repo));
     /* a project's shared name is no folder, so a card placed nowhere names none */
     const at0 = normPath(base || (mine ? home : hit.project || ''));
@@ -196,37 +276,83 @@ export function recordRun(db, { name, result, note, project = '', repo = '', bas
     if (result === 'clean') for (const [k, h] of Object.entries(heads || {})) if (h) verified[k] = h;
     const clean = result === 'clean' ? (Number(hit.cleanRuns) || 0) + 1 : 0;
     const suggest = clean === SCRIPT_AFTER;
-    const draft = result === 'deviated'
-      ? 'Draft edit for ' + hit.doc + ': bring the step that differed in line with this run ('
-        + lead + (lead === text.replace(/[.!?]$/, '') ? '' : "; the whole note is in the card's journal") + '), commit it in '
-        + (at0 || (hit.everywhere ? 'the checkout of ' + (source || "the AskerDo plugin's repo") + ', on the PC that holds it'
-          : 'the folder of ' + (hit.projectRepo || 'its project'))) + ', then record a clean run.'
-      : '';
+    const ctx = actorOf(actor);
+    const filedTasks = outcome && outcome.kind === 'filed' ? { ...(hit.filedTasks || {}), [slotOf(step)]: outcome.key } : hit.filedTasks;
+    const waits = openTasks(db, { ...hit, filedTasks }).map((k) => labelOf(db, k));
     const runNote = result === 'clean'
       ? 'clean run' + (verified.self ? ' at ' + verified.self.slice(0, 7) : '') + (text ? ': ' + text : '')
         + (suggest ? '. ' + clean + ' clean runs in a row: the steps could become a script.' : '')
-      : 'deviated run: ' + text + '. ' + draft;
-    const ctx = actorOf(actor);
+        + (waits.length ? '. The flag holds while ' + waits.join(', ') + ' waits.' : '')
+      : 'deviated run: ' + text.replace(/\.$/, '') + MARK + SAID[outcome.kind](outcome.ref) + '.';
     const f = updateCard(db, row, (front) => {
       front.runs = (Number(front.runs) || 0) + 1;
       front.cleanRuns = clean;
       front.lastRun = ctx.at;
       if (Array.isArray(stale)) front.stale = stale;
-      if (result === 'clean') { front.verified = verified; front.verifiedAt = ctx.at; front.flag = ''; }
-      else front.flag = lead;
+      if (result === 'clean') { front.verified = verified; front.verifiedAt = ctx.at; }
+      if (outcome && outcome.kind === 'filed') { front.filedTasks = filedTasks; front.flag = lead; }
+      else if (!waits.length) front.flag = '';
     }, ctx, runNote);
     return {
       id: f.id, slug: f.slug, name: f.name, result, runs: f.runs, cleanRuns: f.cleanRuns, verified: f.verified || {},
       stale: f.stale || [], flag: f.flag || '', path: at0 ? at0 + '/' + f.doc : f.doc,
-      ...(draft ? { draft } : {}),
+      ...(outcome ? { outcome: { kind: outcome.kind, ref: outcome.ref, ...(step ? { step } : {}) } } : {}), ...(waits.length ? { openTasks: waits } : {}),
       ...(f.cleanRuns >= SCRIPT_AFTER ? { suggestScript: f.id + ' ran clean ' + f.cleanRuns + ' times in a row: its steps could become a script, with the file pointing at it.' } : {}),
     };
   });
 }
 
-/* Every card as the CLI and the mod read it, by number. */
+/* `proc drafts <name>`: the card's deviated runs by the step each names, with the outcome each run
+   recorded, and the draft tasks the board once filed for a deviated run still open, for the session to settle. */
+export function procDrafts(db, { name, project = '', repo = '' } = {}, actor) {
+  const home = project ? normPath(project) : '';
+  return tx(db, () => {
+    const { hit, row } = cardNamed(db, name, home, repo || home.toLowerCase(), actor);
+    const groups = new Map();
+    for (const d of deviations(db, row.key)) {
+      const g = groups.get(d.step) || { step: d.step, runs: [] };
+      g.runs.push(d);
+      groups.set(d.step, g);
+    }
+    const steps = [...groups.values()].sort((a, b) => b.runs.length - a.runs.length).map((g) => {
+      const outcomes = {};
+      for (const r of g.runs) outcomes[r.outcome.kind] = (outcomes[r.outcome.kind] || 0) + 1;
+      const last = g.runs.at(-1);
+      return { step: g.step, runs: g.runs.length, from: g.runs[0].at, to: last.at, lead: last.lead, last: last.outcome, outcomes };
+    });
+    const drafts = Object.entries(hit.drafts || {}).filter(([, k]) => isOpen(db, k))
+      .map(([slot, k]) => ({ step: slot === slotOf('') ? '' : slot, task: labelOf(db, k) }));
+    return { id: hit.id, slug: hit.slug, steps, drafts };
+  });
+}
+
+const viewOf = (db, fields) => {
+  const open = openTasks(db, fields).map((k) => labelOf(db, k));
+  return cardView(open.length ? { ...fields, openTasks: open } : fields);
+};
+
+/* Every card as the CLI and the mod read it, by number; `openTasks`, the open tasks holding its flag. */
 export function procedureCards(db) {
-  return cardRows(db).map((r) => cardView(r.fields)).sort((a, b) => Number(a.id.slice(3)) - Number(b.id.slice(3)));
+  return cardRows(db).map((r) => viewOf(db, r.fields)).sort((a, b) => Number(a.id.slice(3)) - Number(b.id.slice(3)));
+}
+
+/* The cards a record's refs name (a key, or a PR-n stored as written), each with its badge and reasons. */
+export function cardsCited(db, refs) {
+  const out = [];
+  for (const v of Array.isArray(refs) ? refs : []) {
+    const e = resolveRecord(db, String(v), { kinds: [KIND] });
+    if (!e || out.some((c) => c.key === e.key)) continue;
+    const c = viewOf(db, e.fields);
+    out.push({ id: c.id, key: c.key, name: c.name, badge: c.badge, reasons: c.reasons });
+  }
+  return out;
+}
+
+/* The open tasks whose refs name a card, by its key or its label. */
+export function tasksCiting(db, card) {
+  return db.stmt(`SELECT DISTINCT r.key, r.label, r.title, r.status FROM records r, json_each(r.fields, '$.refs') j
+    WHERE r.kind = 'task' AND coalesce(r.status, '') NOT IN ('done', 'dropped') AND (j.value = ? OR upper(j.value) = ?) ORDER BY r.id`)
+    .all(card.key, String(card.label || '').toUpperCase());
 }
 
 /* The live cards for the tool-call watcher; each PC shows them at its own

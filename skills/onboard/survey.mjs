@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-/* the onboarding survey gathers facts and judges nothing. It reads one project and never writes it: the entry points, git history
+/* the onboarding survey gathers facts and judges nothing.
+   It reads one project and never writes it: the entry points, git history
    and status in one pass each, every folder with its cites and readers, Claude's memory files, the CLAUDE.md clauses
    and the board. It writes facts.json; the session reads it and writes proposal.json.
    node survey.mjs <project dir> [--work <dir>] [--cli <path>] [--no-board] [--manifest <file>] */
@@ -61,6 +62,11 @@ const SKIP_DIR = /(^|\/)(\.git|node_modules|\.claude\/worktrees|Library|Temp|obj
 const TEXT_EXT = /\.(md|markdown|txt)$/i;
 const PROSE_EXT = /\.(md|markdown|txt|rst|adoc|org)$/i;
 const CODE_EXT = /\.(m?[jt]sx?|cjs|cs|py|rs|go|java|c|cpp|h|hpp|ps1|psm1|sh|bash|rb|kt|swift|lua|cmd|bat)$/i;
+/* a data or config file naming a folder reads it as code does (a path value a tool loads) */
+const DATA_EXT = /\.(json|ya?ml|toml|ini|cfg)$/i;
+const reads = (f) => CODE_EXT.test(f) || DATA_EXT.test(f);
+/* JSON the grep leaves out, read under the cap the outside readers use */
+const DATA_MAX = 512 << 10;
 /* the files a cite or a code reader can sit in: prose, code, config and Claude's settings; JSON elsewhere is data
    (on Tidewatch a 6 MB inventory took 70 of the grep's 78 s) */
 const CITE_SPECS = [...['md', 'markdown', 'txt', 'rst', 'adoc', 'org', 'yml', 'yaml', 'toml', 'ini', 'cfg', 'mjs', 'js', 'cjs', 'jsx', 'ts', 'tsx', 'mts',
@@ -229,7 +235,7 @@ function listedFolders(nodes) {
 }
 
 /* One git grep over the prose, code and config for the listed folders' first segments, each folder's path then
-   matched per hit line: a hit from a file outside the folder is a cite into it, and from code a code reader too.
+   matched per hit line: a hit from a file outside the folder is a cite into it, and from code or data a reader too.
    Every folder a line names counts it; only the deepest keeps the citing file, so parents do not repeat it. */
 function citesOf(ctx, folders, workDir) {
   if (!ctx.isGit || !folders.length) return;
@@ -245,12 +251,19 @@ function citesOf(ctx, folders, workDir) {
      400 folder patterns ran past ten minutes) */
   const file = join(workDir, 'cite-patterns.txt');
   mkdirSync(workDir, { recursive: true });
-  writeFileSync(file, [...bySeg.keys()].join('\n') + '\n');
+  /* '../' too, since a relative value names its folder only once resolved from its own file's folder */
+  writeFileSync(file, [...bySeg.keys(), '../'].join('\n') + '\n');
   const out = git(ctx, ['-c', 'core.quotepath=false', 'grep', '--untracked', '-I', '-n', '-z', '-F', '-f', file, '--', ...CITE_SPECS], [0, 1]) || '';
   rmSync(file, { force: true });
-  for (const l of out.split('\n')) {
-    const [f, line, text] = l.split('\0');
-    if (!text) continue;
+  const listed = new Set(folders.map((n) => n.path));
+  /* each ./ or ../ value rewritten as the root path it reaches; one past the root names nothing here */
+  const resolveRel = (f, text) => text.replace(/(?<![\w./-])(?:\.\.?\/)+[\w./-]*/g, (rel) => {
+    const p = posix.normalize(posix.join(dirOf(f), rel)).replace(/\/$/, '');
+    if (p === '.' || p.startsWith('../')) return '';
+    return p + (listed.has(p) || rel.endsWith('/') ? '/' : '');
+  });
+  const scan = (f, line, raw) => {
+    const text = raw.includes('./') ? resolveRel(f, raw) : raw;
     const hit = [];
     for (const [seg, pats] of bySeg) {
       if (!text.includes(seg)) continue;
@@ -260,16 +273,40 @@ function citesOf(ctx, folders, workDir) {
         if (i < 0) continue;
         const before = text[i - 1] || '';
         const after = text[i + p.length] || '';
-        if (/[\w.-]/.test(before) || (!p.endsWith('/') && (/[\w-]/.test(after) || (after === '.' && /\w/.test(text[i + p.length + 1] || ''))))) continue;
+        /* a slash after a name means a deeper folder of the same name (its value resolved above); a leading slash is the root */
+        const deeper = before === '/' && /[\w.-]/.test(text[i - 2] || '');
+        if (/[\w.-]/.test(before) || deeper || (!p.endsWith('/') && (/[\w-]/.test(after) || (after === '.' && /\w/.test(text[i + p.length + 1] || ''))))) continue;
         hit.push({ n, inside });
         n.hits++;
         n.citing.add(f);
-        if (CODE_EXT.test(f)) n.codeReaders.add(f);
+        if (reads(f)) n.codeReaders.add(f);
       }
     }
     for (const { n, inside } of hit) {
       if (!hit.some((x) => x.inside !== inside && x.inside.startsWith(inside)) && !n.direct.has(f)) n.direct.set(f, Number(line));
     }
+  };
+  /* a JSON string holds a folder only when, past a leading slash or resolved from its file's folder, it starts with a
+     folder's path, never a mention in prose; the strings go on as written, so scan resolves a relative one */
+  const segs = [...bySeg.keys()];
+  const jsonValues = (f, t) => (t.match(/"(?:[^"\\]|\\.)*"/g) || []).map((v) => v.slice(1, -1)).filter((v) => {
+    const at = /^\.\.?\//.test(v) ? resolveRel(f, v) : v.replace(/^\//, '');
+    return segs.some((g) => at.startsWith(g));
+  });
+  const scanJson = (f, i, t) => { const v = jsonValues(f, t); if (v.length) scan(f, i, v.join(' ')); };
+  const grepped = new Set();
+  for (const l of out.split('\n')) {
+    const [f, line, text] = l.split('\0');
+    if (!text) continue;
+    grepped.add(f);
+    /* the grepped JSON (.claude/*.json, package.json) holds commands, where a path inside a string is a real read */
+    scan(f, line, text);
+  }
+  for (const f of ctx.list.files) {
+    if (!/\.json$/i.test(f) || grepped.has(f) || SKIP_DIR.test(f)) continue;
+    let text;
+    try { if (statSync(join(ctx.root, f)).size > DATA_MAX) continue; text = readFileSync(join(ctx.root, f), 'utf8'); } catch { continue; }
+    if (segs.concat('../').some((g) => text.includes(g))) text.split('\n').forEach((t, i) => scanJson(f, i + 1, t));
   }
 }
 
@@ -483,13 +520,16 @@ export function boardState(cli, { shared, slug, dir, env = process.env }) {
   }
   /* every rule in force on the project with its source, and the decisions of its workstreams */
   const eff = get(['profile', 'show-effective', dir, '--rules']);
-  out.rules = ((eff && eff.rows) || []).map((r) => ({ rule: r.rule, text: r.text, source: r.source, ...(r.for ? { for: r.for } : {}) }));
+  out.rules = ((eff && eff.rows) || []).map((r) => ({ rule: r.rule, text: r.text, source: r.source, ...(r.for ? { for: r.role ? 'agents:' + r.role : r.for } : {}) }));
   const decided = new Map();
   for (const w of out.workstreams) {
     for (const d of get(['decisions', '--workstream', w.id]) || []) if (!decided.has(d.id)) decided.set(d.id, { id: d.id, key: d.key || null, name: d.name, words: d.words, created: d.created, workstream: w.id, question: d.question || null });
   }
   out.decisions = [...decided.values()];
-  out.tasks = out.workstreams.flatMap((w) => (get(['list', '--kind', 'task', '--all', '--workstream', w.id]) || []).map((t) => ({ id: t.id, name: t.name, status: t.status, workstream: w.id, updated: t.updated || null, inHand: t.inHand || null, refs: t.refs || [], unplaced: t.unplaced || null })));
+  out.tasks = out.workstreams.flatMap((w) => (get(['list', '--kind', 'task', '--all', '--workstream', w.id]) || []).map((t) => ({ id: t.id, name: t.name, status: t.status, workstream: w.id, updated: t.updated || null, inHand: t.inHand || null, refs: t.refs || [], unplaced: t.unplaced || null,
+    /* what the doctor's task checks read from the list row as stored */
+    word: t.word || null, labels: t.labels || [], created: t.created || null, ...(t.close ? { close: t.close } : {}), ...(t.landed ? { landed: t.landed } : {}),
+    ...(t.wake ? { wake: t.wake } : {}), ...(t.runBy ? { runBy: t.runBy } : {}) })));
   /* what readersOf reads beside this PC's Claude folder: the project folders this PC maps */
   out.projects = ((get(['projects']) || {}).projects || []).map((x) => ({ name: x.name, dir: x.dir }));
   /* the conversion map; a board without the verb yet reads as no map, never as a failed read */
@@ -586,7 +626,7 @@ function directOf(ctx, n, k) {
   const direct = [...n.direct].map(([f, line]) => ({ f, line, day: touchOf(ctx, f).day || '' }))
     .sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : a.f < b.f ? -1 : 1));
   const shown = (xs) => xs.slice(0, k).map((c) => c.f + ':' + c.line);
-  return { prose: shown(direct.filter((c) => !CODE_EXT.test(c.f))), code: shown(direct.filter((c) => CODE_EXT.test(c.f))) };
+  return { prose: shown(direct.filter((c) => !reads(c.f))), code: shown(direct.filter((c) => reads(c.f))) };
 }
 
 function folderFacts(ctx, n, [subjectsShown, citesShown] = SAMPLE_STEPS[0]) {
@@ -605,7 +645,7 @@ function folderFacts(ctx, n, [subjectsShown, citesShown] = SAMPLE_STEPS[0]) {
 
 function boardFacts(bs) {
   if (!bs) return null;
-  const done = new Set(['completed', 'dropped']);
+  const done = new Set(['done', 'dropped']);
   return {
     read: bs.read, errors: bs.errors,
     workstreams: bs.workstreams,
@@ -613,7 +653,8 @@ function boardFacts(bs) {
     tracks: bs.tracks.map((t) => ({ id: t.id, name: t.name, state: t.state, workstream: t.workstream, ...(t.handoff ? { handoff: t.handoff } : {}), ...(t.parkReason ? { parkReason: t.parkReason } : {}), ...(t.unpark ? { unpark: t.unpark } : {}),
       ...(t.labels.length ? { labels: t.labels } : {}), ...(t.refs.length ? { refs: t.refs } : {}) })),
     openTasks: bs.tasks.filter((t) => !done.has(t.status)).map((t) => ({ id: t.id, name: t.name, status: t.status, workstream: t.workstream, ...(t.updated ? { updated: t.updated } : {}), ...(t.inHand ? { inHand: t.inHand } : {}),
-      ...(t.unplaced ? { unplaced: t.unplaced } : {}), ...(t.refs.length ? { refs: t.refs } : {}) })),
+      ...(t.unplaced ? { unplaced: t.unplaced } : {}), ...(t.refs.length ? { refs: t.refs } : {}), ...(t.word ? { word: t.word } : {}), ...(t.labels.length ? { labels: t.labels } : {}),
+      ...(t.created ? { created: t.created } : {}), ...(t.close ? { close: t.close } : {}), ...(t.landed ? { landed: t.landed } : {}), ...(t.wake ? { wake: t.wake } : {}), ...(t.runBy ? { runBy: t.runBy } : {}) })),
     questions: bs.questions.map((q) => ({ id: q.id, title: q.name, answer: clip(q.answer, RULING_MAX) })),
     decisions: bs.decisions.map((d) => ({ id: d.id, ...(d.key ? { key: d.key } : {}), title: d.name, ruling: clip(d.words, RULING_MAX), ...(d.question ? { question: d.question } : {}), ...(d.created ? { created: String(d.created).slice(0, 10) } : {}) })),
     knowledge: bs.knowledge,

@@ -60,7 +60,7 @@ Nothing changes until the handover. Your go after the rehearsal covers the edits
 
 |What|Becomes|
 |-|-|
-|Each old workflow folder|Deleted in one commit of its own once nothing of it is left: no code reads it, every source converted from it is covered on the board, and no open item in it outlived your dormant-plans answer; the old text stays in git history. A folder git does not track stays, since git has no copy of it, and Claude names it. A folder code reads stays, with that reader as the reason.|
+|Each old workflow folder|Deleted in one commit of its own once nothing of it is left: no code or data file reads it, every source converted from it is covered on the board, and no open item in it outlived your dormant-plans answer; the old text stays in git history. A folder git does not track stays, since git has no copy of it, and Claude names it. A folder code or a data file reads stays, with that reader as the reason.|
 |Files that stay and cite a folder that goes|Repointed to the record or file that holds it now, or to the commit that holds the old text. A citation a tool prints that the handover cannot resolve keeps the folder it names.|
 |CLAUDE.md (or the AGENTS.md Claude reads)|Rewritten: it keeps what the project is; its working rules move to the board, a clause that is both a fact and a rule keeps the fact in new words, the lines that send a session to a retired file come out, and one section at the end points at the board. The rehearsal report lists every clause and where it goes.|
 |Hooks, menus and servers that loaded the old rules|Retired with what they load, their entries taken out of `.claude/settings.json` or `.mcp.json` in the same commit. A hook that enforces a rule (refuses a push, runs a formatter) stays as the project's tool, and its rule also goes to the board.|
@@ -76,7 +76,7 @@ Every id the import wrote is kept in a manifest on this PC (`manifest.json` in t
 |Tasks and tracks|Removed: a dropped track takes its handoffs, and edges go with their tasks|
 |Questions and rule lines|Removed; the profile comes off the project first|
 |The workstream it made|Closed|
-|Decision records|One withdraw request takes them all, which you Allow or Keep once on its card|
+|Decision records|One withdraw request takes them all, which you Withdraw or Keep once on its card|
 |Knowledge records|Stay, and the undo says so: no command removes one|
 |A finished track|Stays finished with its handoffs; its tasks are dropped|
 |A profile's last rule line, and procedure cards|Stay: a profile has to set something, and cards follow their `docs/procedures` files|

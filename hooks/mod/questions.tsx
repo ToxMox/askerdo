@@ -3,19 +3,20 @@
  * question, the held track's first. The same card draws under the reply that asked (the first
  * telling). Drawn from the model alone; index.ts owns the writes. */
 import {
-  STAR, badgePicture, cardHref, cardMeta, cellWidth, chipGroups, chipOf, clampWords, gridWidths, pinnedSplit, questionsHeader, rowParts, slotLine,
+  STAR, badgePicture, cardHref, cardMeta, cellWidth, chipGroups, chipOf, clampWords, gridWidths, moonPicture, pinnedSplit, questionsHeader, rowParts, slotLine,
   updatedText,
 } from '../../lib/mod-core.mjs'
 import { GLYPHS, queuedLabel, token } from '../../lib/mod-core.mjs'
-import { SKY, TILE_GAP, chipHeaderTree, pressFace, pressOver, tileLook, tilePress, wordLink } from './status.tsx'
-import { OPEN, SHUT, foldGap, foldRing } from './fold.tsx'
+import { SKY, TILE_GAP, chipHeaderTree, linkLine, pressFace, pressOver, tileLook, tilePress, wordLink } from './status.tsx'
+import { CELL, OPEN, SHUT, foldGap, foldHead, foldRing } from './fold.tsx'
 
 export type QuestionsActions = {
   /* `version`: the one the card was drawn from, so a press made before a rewording is refused */
   pick: (id: string, letter: string, version?: number) => void
   ask: (id: string, tok: string) => void
   asking: (id: string) => void
-  toggle: (tok: string) => void
+  /* `id`: the option's question, whose cards alone the flip redraws */
+  toggle: (tok: string, id?: string) => void
   note: (id: string, value: string) => void
   expand: (id: string) => void
   /* the note field's hotkey: moves the pane's focus ring onto the field */
@@ -33,6 +34,12 @@ export type QuestionsActions = {
   unqueue?: (id: string) => void
   /* records and delivers every queued answer together */
   send?: () => void
+  /* the band's one-line strip opens or shuts its note field in place of the option's words */
+  bandNote?: (id: string) => void
+  /* the Asleep group's fold, a row's Wake press, and that press's state ('busy', or a failure's words) */
+  fold?: () => void
+  wake?: (id: string) => void
+  waking?: (id: string) => string | undefined
 }
 
 /* expanded: the card pinned at the top; asking: the card whose next chip press asks. */
@@ -48,6 +55,8 @@ export type QuestionsView = {
   confirm?: boolean
   strip?: Record<string, string>
   queued?: Record<string, { letter: string }>
+  /* the questions whose band strip shows its note field */
+  bandNote?: Record<string, boolean>
 }
 
 /* hotkeys: the pane's pinned card only; two cards on one key would clash.
@@ -56,8 +65,8 @@ export type QuestionsView = {
    changed: a telling reworded since, drawn as its one line (changedStub's). */
 export type CardOpts = { columns?: number; answered?: string; ended?: string; hotkeys?: boolean; surface?: string; changed?: string; here?: any }
 
-/* The pane head: when the band last read a change, now, and the board's address. */
-export type PaneHead = { at?: number; now?: number; board?: string }
+/* The pane head: when the band last read a change, now, and the board's address; asleep: the Asleep fold open */
+export type PaneHead = { at?: number; now?: number; board?: string; asleep?: boolean }
 
 const OUT = '↗', DOT = '●', SEP = ' · '
 /* the strip's keys, digits so they never take an option's letter or n */
@@ -84,22 +93,29 @@ function col(w: any, which: 'option' | 'happens' | 'catch'): any {
   return { flexGrow: 1, flexShrink: 1 }
 }
 
-export function questionsTree(els: any, m: any, view: QuestionsView, act: QuestionsActions, columns?: number, head: PaneHead = {}, surface?: string): any {
+/* what the size guard cut: the list's questions past a count, the open card's long text folded,
+   the open Asleep fold's rows past a count */
+export type QuestionsTrim = { rows?: number; fold?: boolean; asleep?: number }
+
+export function questionsTree(els: any, m: any, view: QuestionsView, act: QuestionsActions, columns?: number, head: PaneHead = {}, surface?: string, trim: QuestionsTrim = {}): any {
   const { Box, Text } = els
-  const title: any[] = [<Text weight="semibold" size="heading">{questionsHeader(m)}</Text>]
+  const title: any[] = [<Box key="questions-heading" flexShrink={1} minWidth={0}><Text weight="semibold" size="heading">{questionsHeader(m)}</Text></Box>]
   const fresh = updatedText(head.at as number, head.now as number)
-  if (fresh) title.push(<Text dimColor>{fresh}</Text>)
-  const top: any[] = [<Box key="questions-title" flexDirection="row" columnGap={2} flexShrink={1}>{title}</Box>]
+  /* the time never shrinks: where the two do not fit one line it drops under the heading whole */
+  if (fresh) title.push(<Box key="questions-fresh" flexShrink={0}><Text dimColor>{fresh}</Text></Box>)
+  const top: any[] = [<Box key="questions-title" flexDirection="row" columnGap={2} rowGap={0.5} flexWrap="wrap" alignItems="flex-end" flexShrink={1} minWidth={0}>{title}</Box>]
   /* in the form the desktop opens, lit grey there */
   const board = cardHref(head.board)
   if (board) top.push(wordLink(els, 'questions-board', board, 'open the board ' + OUT, surface === 'desktop'))
   const rows: any[] = [<Box key="questions-head" flexDirection="row" justifyContent="space-between" columnGap={2}>{top}</Box>]
-  const { pinned, rest } = pinnedOf(m, view)
+  const { pinned, rest: all } = pinnedOf(m, view)
   /* the pane's cards wear their track and PC chips, "this PC" and the held track in sky */
   const here = m.here || {}
-  if (pinned) rows.push(cardTree(els, pinned, view, act, { columns, hotkeys: true, surface, here }))
-  if (rest.length) {
-    const index: any[] = [<Box key="questions-also"><Text dimColor>{'Also waiting (' + rest.length + ')'}</Text></Box>]
+  if (pinned) rows.push(cardTree(els, trim.fold ? foldedCard(pinned) : pinned, view, act, { columns, hotkeys: true, surface, here }))
+  const rest = Number(trim.rows) >= 0 ? all.slice(0, trim.rows) : all
+  const left = all.length - rest.length
+  if (all.length) {
+    const index: any[] = [<Box key="questions-also"><Text dimColor>{'Also waiting (' + all.length + ')'}</Text></Box>]
     const room = Number(columns) > 0 ? Number(columns) - 3 : 0
     for (const g of chipGroups(rest, here)) {
       const first = g.rows[0].id
@@ -108,10 +124,73 @@ export function questionsTree(els: any, m: any, view: QuestionsView, act: Questi
         {g.rows.map((c: any) => indexRow(els, c, view, act, columns, surface))}
       </Box>)
     }
+    if (left) index.push(<Box key="questions-cut"><Text dimColor wrap="wrap">{left + (rest.length ? ' more' : '') + (left === 1 ? ' question is' : ' questions are')
+      + ' not listed here while the Questions tab holds this much; the board link above lists every one.'}</Text></Box>)
     rows.push(<Box key="questions-index" flexDirection="column" rowGap={1}>{index}</Box>)
   }
   if (m.more) rows.push(<Box key="questions-more"><Text dimColor>{'And ' + m.more + ' more: /askerdo'}</Text></Box>)
+  if (m.asleep && m.asleep.length) rows.push(asleepFold(els, m.asleep, !!head.asleep, act, columns, surface, trim.asleep))
   return <Box key="questions" flexDirection="column" rowGap={1}>{rows}</Box>
+}
+
+/* the snoozed questions last, under a dim heading shut until pressed; open, each its name in full,
+   what wakes it dim (the waking record linked), and a Wake press that takes no model turn */
+function asleepFold(els: any, list: any[], open: boolean, act: QuestionsActions, columns?: number, surface?: string, keep?: number): any {
+  const { Box, Button, Svg, Text } = els
+  const desk = surface === 'desktop' && !!Svg
+  const cols = Number(columns) > 0 ? Number(columns) : 200
+  const moon = moonPicture()
+  /* the terminal's heading is its Button's words, which take Text alone */
+  const words = <Text dimColor>{'Asleep (' + list.length + ')'}</Text>
+  const title = !desk ? words : (
+    <Box key="asleep-title" flexDirection="row" alignItems="center" columnGap={LEAD_GAP}>
+      <Box key="asleep-moon" flexShrink={0}><Svg source={moon.source} alt={moon.alt} width={moon.width} height={moon.height} /></Box>
+      {words}
+    </Box>
+  )
+  const head = foldHead(els, { key: 'asleep-head', press: 'asleep-fold', open, toggle: () => { if (act.fold) act.fold() }, desk, cols, title })
+  /* no hair over the group as the mock draws: the engine refuses a Box's per-side border props (desktop-capabilities) */
+  if (!open) return <Box key="questions-asleep" flexDirection="column">{head}</Box>
+  const shown = Number(keep) >= 0 ? list.slice(0, keep) : list
+  const left = list.length - shown.length
+  const rows = shown.map((q: any) => {
+    const st = act.waking ? act.waking(q.id) : undefined
+    /* a row's wake words open with a capital; the tooltip's run on after the name in lower case */
+    const pieces = (q.pieces || [{ text: q.wake }]).map((p: any, i: number) => (i ? p : { ...p, text: String(p.text || '').charAt(0).toUpperCase() + String(p.text || '').slice(1) }))
+    const parts = pieces.map((p: any) => ({ text: p.text, ...(p.url ? { href: p.url, tone: 'sky' } : { tone: 'dim' }) }))
+    const wake = linkLine(els, parts, 'asleep-wake-' + q.id, desk, false) || <Text dimColor wrap="wrap">{pieces.map((p: any) => p.text).join('')}</Text>
+    const press = st === 'busy' ? <Text dimColor>waking</Text>
+      : <Button key={'wake-' + q.id} label="Wake" onPress={() => { if (act.wake) act.wake(q.id) }} />
+    return (
+      <Box key={'asleep-' + q.id} flexDirection="row" columnGap={1} alignItems="flex-start">
+        <Box key={'asleep-text-' + q.id} flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+          <Text wrap="wrap">{q.name}{q.project ? <Text dimColor>{', in ' + q.project}</Text> : ''}</Text>
+          <Box key={'asleep-when-' + q.id} minWidth={0}>{wake}</Box>
+          {st && st !== 'busy' ? <Text color="warning" wrap="wrap">{st}</Text> : null}
+        </Box>
+        <Box key={'asleep-press-' + q.id} flexShrink={0}>{press}</Box>
+      </Box>
+    )
+  })
+  if (left) rows.push(<Box key="asleep-cut"><Text dimColor wrap="wrap">{left + (shown.length ? ' more' : '') + (left === 1 ? ' asleep question is' : ' asleep questions are')
+    + ' not listed here while the Questions tab holds this much; the board link above lists every one.'}</Text></Box>)
+  /* the rows start under the heading's word, past the crescent and its gap */
+  const indent = desk ? { paddingLeft: Math.round((moon.width / CELL + LEAD_GAP) * 1000) / 1000 } : { paddingLeft: 2 }
+  return (
+    <Box key="questions-asleep" flexDirection="column" rowGap={1}>
+      {head}
+      <Box key="asleep-rows" flexDirection="column" rowGap={1} {...indent}>{rows}</Box>
+    </Box>
+  )
+}
+/* the Asleep heading's gap between the crescent and its words, in cells */
+const LEAD_GAP = 1
+
+/* the open card with its long text folded: the why, the stakes and the ruling's lines left out, the rest cut short */
+const SHORT = (s: any) => (typeof s === 'string' && s ? clampWords(s, 120, 2) : s)
+function foldedCard(c: any): any {
+  return { ...c, name: SHORT(c.name), ask: SHORT(c.ask), crux: SHORT(c.crux), gist: '', stakes: '', ruling: [], folded: true,
+    options: c.options.map((o: any) => ({ ...o, option: SHORT(o.option), gets: SHORT(o.gets), catch: SHORT(o.catch), slots: (o.slots || []).map((x: any) => ({ ...x, text: SHORT(x.text) })) })) }
 }
 
 /* The card pinned at the top: the one expanded, else the one asked for, else pinnedSplit's;
@@ -209,7 +288,7 @@ function badgeChip(els: any, o: any, state: string, press?: () => void, hotkeys 
 
 /* Markdown draws the why and the stakes as a reply's text is drawn: one list item per stored
    line (lineSet), bold leads kept; with no Markdown the same items as plain lines. */
-function prose(els: any, key: string, text: string): any {
+export function prose(els: any, key: string, text: string): any {
   const { Box, Text, Markdown } = els
   return Markdown ? <Markdown key={key} text={text} /> : <Box key={key}><Text>{text}</Text></Box>
 }
@@ -237,7 +316,7 @@ export function cardTree(els: any, c: any, view: QuestionsView, act: QuestionsAc
   const stripAt = live && view.confirm && view.strip && c.options.some((o: any) => o.letter === view.strip![c.id]) ? view.strip[c.id] : undefined
   const w = gridWidths(opts.columns as number, opts.surface, c.options)
   /* in the pane the chips say where it was asked and the title line its age */
-  const chipped = !!opts.here && !!(c.track || c.pc)
+  const chipped = !!opts.here && !!(c.track || c.pc || c.project)
   const chipHead = chipped ? chipHeaderTree(els, 'qchiphead-' + c.id, { chips: chipOf(c, opts.here), trackName: c.trackName },
     Number(opts.columns) > 0 ? Number(opts.columns) - 4 : 0, opts.surface) : null
   /* each part its own box, so a narrow card wraps between parts, never inside the track's */
@@ -292,6 +371,8 @@ export function cardTree(els: any, c: any, view: QuestionsView, act: QuestionsAc
   /* no fold on the pinned card; the why and the stakes under the grid */
   if (c.gist) groups.push(<Box key={'qwhy-' + c.id} flexDirection="column"><Text weight="semibold">Why</Text>{prose(els, 'qgist-' + c.id, c.gist)}</Box>)
   if (c.stakes) groups.push(<Box key={'qstakesbox-' + c.id} flexDirection="column"><Text weight="semibold">Stakes</Text>{prose(els, 'qstakes-' + c.id, c.stakes)}</Box>)
+  if (c.folded) groups.push(<Box key={'qfolded-' + c.id}><Text dimColor wrap="wrap">{'The why, the stakes and the long words are folded while the Questions tab holds this much; '
+    + (c.url ? 'the card\'s ' + OUT + ' link above has them whole.' : 'the session that asked it has them whole.')}</Text></Box>)
   if (opts.ended) {
     groups.push(<Box key={'qdone-' + c.id}><Text dimColor>{opts.ended}</Text></Box>)
   } else if (!answered) {
@@ -324,7 +405,7 @@ export function cardTree(els: any, c: any, view: QuestionsView, act: QuestionsAc
 }
 
 /* The card's one note field; keyed, its label is the n press beside it. */
-function noteField(els: any, c: any, view: QuestionsView, act: QuestionsActions, keyed: boolean, placeholder: string, submit?: () => void): any {
+export function noteField(els: any, c: any, view: QuestionsView, act: QuestionsActions, keyed: boolean, placeholder: string, submit?: () => void): any {
   const { Input } = els
   return <Input key={'qnote-' + c.id} {...(keyed ? {} : { label: c.options.length ? 'note' : 'answer' })} placeholder={placeholder}
     value={(view.drawn || {})[c.id] || ''} onInput={(v: string) => act.note(c.id, v)}
@@ -409,18 +490,17 @@ function optionRow(els: any, c: any, o: any, w: any, view: QuestionsView, act: Q
   const isOpen = view.unfolded.has(o.token)
   /* a desktop's fold ring ends the tile's first line, its own press placed over the
      tile's; the terminal keeps its arrow after the title */
-  const fold = () => act.toggle(o.token)
+  const fold = () => act.toggle(o.token, c.id)
   const ring = desk && o.slots.length ? foldRing(els, isOpen, { key: 'oarrow-' + o.token, pressKey: 'unfold-' + o.token, press: fold }) : null
   const arrow = !o.slots.length || desk ? null
     : <Box key={'oarrow-' + o.token} flexShrink={0}><Button key={'unfold-' + o.token} plain label={isOpen ? OPEN : SHUT} onPress={fold} /></Box>
   /* a desktop's title flows word by word. A word too long for the
-     column breaks there, never to dots; the star is its own item, dropped where it does not fit */
+     column breaks there, never to dots; the star is its own item, kept on every card */
   const words = String(o.option || '').split(' ').filter(Boolean)
   const flow = desk && words.length > 0
   const word = (wd: string) => <Text wrap="wrap" dimColor={dim}>{wd + ' '}</Text>
-  const starred = o.pick && !(w.weights && w.weights.star === false)
   const title = flow
-    ? [starred ? <Box key={'ostar-' + o.token} flexShrink={0}>{star}</Box> : null, ...words.map(word)]
+    ? [o.pick ? <Box key={'ostar-' + o.token} flexShrink={0}>{star}</Box> : null, ...words.map(word)]
     : <Text dimColor={dim}>{o.pick ? star : null}{o.option}</Text>
   /* the badge alone, centered on the title's first line */
   const optionCell: any[] = [
@@ -498,7 +578,7 @@ function changeRows(els: any, n: number, change: any, columns?: number, desk = f
 }
 
 /* an override request under the reply that made it, slim: a reversal's lead loud on top,
-   the session's summary, what the board measured, its page, and Allow and Keep (overrideCard). */
+   the session's summary, what the board measured, its page, and its act and Keep (overrideCard). */
 export function overrideTellingTree(els: any, m: any, press: (decision: string) => void, surface?: string, columns?: number): any {
   const { Box, Text, Button } = els
   const desk = surface === 'desktop' && !!els.Svg

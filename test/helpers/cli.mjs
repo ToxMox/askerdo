@@ -16,7 +16,7 @@ import { createServer, request } from 'node:http';
 import { PassThrough } from 'node:stream';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { childEnv } from './sandbox.mjs';
+import { childEnv, quietPort } from './sandbox.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const CLI_PATH = join(here, '..', '..', 'bin', 'askerdo.mjs');
@@ -92,18 +92,25 @@ export function runCli(args, { env, cwd, input } = {}) {
 
 /* The local server's CLI route on 127.0.0.1 with the server's own refusal, and the
    <root>/board/local.json the launcher finds it by. `own` is the server's env; each
-   answer's status lands in `answered` as { verb, status } (409: the caller ran it). */
+   answer's status lands in `answered` as { verb, status } (409: the caller ran it), and a refusal's reason in `refused`. */
 export async function cliRoute(root, own) {
   const { handleCli } = await import('../../lib/local-route.mjs');
   const { routeRefusal, runCommand } = await import('../../lib/cli-commands.mjs');
   const { pluginVersion } = await import('../../lib/node-helpers.mjs');
   const answered = [];
+  const refused = [];
   const srv = createServer((req, res) => handleCli(req, res, {
     run: runCommand,
-    refuse: (b) => routeRefusal(b, { root, own, version: pluginVersion() }),
+    refuse: (b) => {
+      const why = routeRefusal(b, { root, own, version: pluginVersion() });
+      if (why) refused.push(why);
+      return why;
+    },
     timing: (verb, ms, status) => answered.push({ verb, status }),
   }));
-  await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
+  /* a quiet port: once closed, nothing else takes it, so a dead route stays dead */
+  const port = await quietPort();
+  await new Promise((ok) => srv.listen(port, '127.0.0.1', ok));
   const url = 'http://127.0.0.1:' + srv.address().port + '/s/local';
   mkdirSync(join(root, 'board'), { recursive: true });
   writeFileSync(join(root, 'board', 'local.json'), JSON.stringify({ board: null, url, pid: process.pid, code: new URL('../../', import.meta.url).href }));
@@ -119,5 +126,5 @@ export async function cliRoute(root, own) {
     req.end(text);
   });
   const close = () => new Promise((ok) => { srv.closeAllConnections(); srv.close(ok); });
-  return { url, answered, post, close };
+  return { url, answered, refused, post, close };
 }

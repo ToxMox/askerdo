@@ -2,8 +2,8 @@
  * decision fields under `claude plugin test`, on the terminal
  * and the desktop. */
 import { describe, expect, test } from 'claude-code/testing'
-import { pressAgain, start, world } from './world.ts'
-import { questionsModel } from '../../../lib/mod-core.mjs'
+import { COLD_START, pressAgain, pressRow, start, twiceAtMost, world } from './world.ts'
+import { gridWidths, questionsModel } from '../../../lib/mod-core.mjs'
 import { ringKey } from '../questions.tsx'
 
 const PLUGIN = 'askerdo'
@@ -55,7 +55,7 @@ const keysWith = async (ui: any, prefix: string) =>
   (await ui.findAll({ type: 'Box' })).map((b: any) => String(b.key)).filter((k: string) => k.startsWith(prefix))
 
 describe('the Questions pane', () => {
-  test('/askerdo questions opens the AskerDo pane on Questions, its ring on the pinned card\'s note press', async ($: any, on: any) => {
+  test('/askerdo questions opens the AskerDo pane on Questions, its ring on the pinned card\'s note press', COLD_START, async ($: any, on: any) => {
     const w = decisionWorld(on)
     await start($, w)
     /* a desktop draws the band first; this kit has no ui.focus, so the open fails open past it */
@@ -89,7 +89,8 @@ describe('the Questions pane', () => {
     await start($, w)
     for (const surface of SURFACES) {
       const ui = await mountPane($, surface)
-      expect((await ui.find({ key: 'questions-head' }))?.text).toContain('4 open questions, 2 blocking')
+      /* its own two counted, the band's blocker from another track and Q600 from elsewhere apart */
+      expect((await ui.find({ key: 'questions-head' }))?.text).toMatch(/^2 \D*1 blocking\D*2 from elsewhere/)
       const boxes = await keysWith(ui, 'q')
       expect(boxes.filter((k: string) => /^q(card|line)-/.test(k))).toEqual(['qcard-Q106', 'qline-Q107', 'qline-Q503', 'qline-Q600'])
       const card = await ui.find({ key: 'qcard-Q106' })
@@ -148,8 +149,8 @@ describe('the Questions pane', () => {
     await ui.unmount()
   })
 
-  /* The grid: fixed widths the header shares, two columns under 60 cells */
-  test('the grid keeps its columns with the header, folds the catch under 60 cells, and marks the pick row', async ($: any, on: any) => {
+  /* The grid: three columns the header shares where every word fits whole, else the catch folds */
+  test('the grid keeps its columns with the header, folds the catch where a word no longer fits, and marks the pick row', async ($: any, on: any) => {
     const w = decisionWorld(on)
     w.questions[1].options[0].getsYou = 'simple: one place to read, one place to write, and no index to keep in step'
     const long = 'move check second throwaway question'
@@ -218,6 +219,8 @@ describe('the Questions pane', () => {
         await ui.unmount()
       }
     }
+    /* the switch is by the card's words, so short ones keep three columns where these fold */
+    expect(gridWidths(50, 'desktop', [{ option: 'yes', gets: 'done', catch: 'none', slots: [] }]).two).toBe(false)
     /* in the narrowest pane a title wraps at its spaces, no word cut to dots;
        an index row's name ends at a word before its chips, which draw whole */
     const ui = await mountPane($, 'desktop', { ...PANE, bodyColumns: 28 })
@@ -254,6 +257,20 @@ describe('the Questions pane', () => {
       w.questions.push({ id: 'Q108', name: 'later one', blocking: false, subscribers: ['sess-1'], pick: null, gist: 'Later.',
         options: [{ type: 'a', option: 'yes', getsYou: 'g', costsYou: '' }] },
       { id: 'Q109', name: 'version name', blocking: false, subscribers: ['sess-1'], pick: null, gist: 'Free text.', options: [] })
+      /* one snoozed question, which the wake verb puts back */
+      const napOne = { id: 'Q110', name: 'nap one', wake: 'until Nov 20' }
+      let nap = [napOne]
+      const bandOf = w.near
+      w.near = (...a: any[]) => ({ ...bandOf(...a), asleep: nap })
+      const fake = w.cli
+      let down = true
+      w.cli = (args: string[], stdin?: string, env?: any) => {
+        if (args[0] !== 'wake') return fake(args, stdin, env)
+        if (down) return { exitCode: 1, stdout: '', stderr: 'AskerDo: the board at http://127.0.0.1:52565 is unreachable (ECONNREFUSED)\n' }
+        nap = nap.filter((q) => q.id !== args[1])
+        w.change()
+        return { exitCode: 0, stdout: JSON.stringify({ id: args[1], status: 'open' }) + String.fromCharCode(10), stderr: '' }
+      }
       await start($, w)
       const ui = await mountPane($, surface)
       await ui.input({ key: 'qnote-Q106', text: 'files are the truth', kind: 'change' })
@@ -307,13 +324,44 @@ describe('the Questions pane', () => {
       expect((await ui.find({ key: 'qanswer-Q109' }))?.props.variant).toBe('primary')
       await ui.input({ key: 'qnote-Q109', text: 'Moxglow' })
       expect(w.last('answer').args).toEqual(['answer', 'Q109', '--user', 'sess-1', '--json', '--note', 'Moxglow'])
+      /* the asleep one counts in no number and no crescent draws by the tab;
+         its fold is shut until pressed, and Wake runs the verb as the user's act */
+      const tabWith = async () => [(await ui.find({ key: 'tab-questions' }))?.props.label, JSON.stringify(await ui.find({ key: 'tabbox-questions' })).includes('Crescent')]
+      const tabAsleep = await tabWith()
+      expect([tabAsleep[1], await ui.find({ key: 'asleep-Q110' })]).toEqual([false, undefined])
+      await ui.press({ key: 'asleep-fold' })
+      const rested = (await ui.find({ key: 'asleep-Q110' }))?.text
+      expect(rested).toContain('nap one')
+      /* a failed Wake says so on the row with no id or address, and the words go once the row leaves and returns */
+      await ui.press({ key: 'wake-Q110' })
+      await w.clock.settle()
+      await ui.redraw()
+      const said = String((await ui.find({ key: 'asleep-Q110' }))?.text)
+      expect([said !== rested, /Q110|127\.0\.0\.1/.test(said)]).toEqual([true, false])
+      const reread = async (list: any[]) => { nap = list; w.change(); await w.clock.settle(); await ui.redraw() }
+      await reread([])
+      expect(await tabWith()).toEqual(tabAsleep)
+      await reread([napOne])
+      expect((await ui.find({ key: 'asleep-Q110' }))?.text).toBe(rested)
+      down = false
+      await ui.press({ key: 'wake-Q110' })
+      expect(w.last('wake').args).toEqual(['wake', 'Q110', '--user', 'sess-1', '--json'])
+      await w.clock.settle()
+      await ui.redraw()
+      expect(await ui.find({ key: 'asleep-Q110' })).toBeUndefined()
       await ui.unmount()
     })
 
     /* queued answers stay off the board, saved on this PC, until one Send records them all
        with their notes and starts one turn carrying them; the band and every open strip offer Send */
-    test('queue, change, then Send records both answers and starts one turn (' + surface + ')', async ($: any, on: any) => {
+    test('queue, change, then Send records both answers and starts one turn (' + surface + ')', { timeoutMs: 15000 }, async ($: any, on: any) => {
       const w = decisionWorld(on)
+      /* each save of the queue file sets or clears the session's list */
+      let saves = 0
+      w.queuedFile = new Proxy(w.queuedFile, {
+        set: (t: any, k: string, v: any) => { saves++; t[k] = v; return true },
+        deleteProperty: (t: any, k: string) => { saves++; delete t[k]; return true },
+      })
       await start($, w)
       const ui = await mountPane($, surface)
       await ui.input({ key: 'qnote-Q106', text: 'files are the truth', kind: 'change' })
@@ -334,16 +382,25 @@ describe('the Questions pane', () => {
       const band = await mountBand($, surface)
       expect((await band.find({ key: 'queued' }))?.text).toContain('2')
       const prompts = w.prompts.length
+      const saved = saves
       await band.press({ key: 'queued-send' })
       await w.clock.settle()
       const answered = w.cliRuns().filter((r: any) => r.args[0] === 'answer').map((r: any) => r.args)
+      /* a batch, so the queue file is written once for every answer sent */
+      expect(saves - saved).toBe(1)
       expect(answered.map((a: string[]) => a[1] + a[3])).toEqual(['Q106b', 'Q107a'])
       expect(answered[0]).toContain('files are the truth')
+      /* the timing rows ride the next band read: a lap for each answer sent, and the draw check's */
+      const rode = w.reads.map((r: any) => decodeURIComponent(String(r.url))).filter((u: string) => u.includes('/local/band?')).join(' ')
+      expect([(rode.match(/"x":"send"/g) || []).length, rode.includes('"x":"check"')]).toEqual([2, true])
       const turn = w.prompts.slice(prompts)
       expect(turn.length).toBe(1)
       expect([/106b/.test(turn[0]), /107a/.test(turn[0])]).toEqual([true, true])
       expect(w.queuedFile['sess-1']).toBeUndefined()
       expect(await band.find({ key: 'queued' })).toBeUndefined()
+      /* the whole queue draws each surface at the press, then once more when the batch, its reload
+         and its turn have landed, never a draw an answer */
+      expect(twiceAtMost(await pressRow(w, 'answer', 'send'), 2)).toBe(true)
       await band.unmount()
       await ui.unmount()
     })
@@ -361,20 +418,210 @@ describe('the Questions pane', () => {
     })
   }
 
-  /* a restart keeps the queue: the mod comes back over the data folder its last run saved */
-  test('a queued answer survives a restart and Send records it with its note', async ($: any, on: any) => {
+  /* a restart keeps the queue: the mod comes back over the data folder its last run saved;
+     one answered another way meanwhile (the session's answer tool, the CLI) leaves it at the next read */
+  test('a queued answer survives a restart and Send records it with its note; one answered elsewhere leaves the queue', async ($: any, on: any) => {
     const w = decisionWorld(on)
-    w.queuedFile['sess-1'] = [{ id: 'Q106', letter: 'b', note: 'kept over a restart', version: 1, site: 'pane' }]
+    w.queuedFile['sess-1'] = [{ id: 'Q106', letter: 'b', note: 'kept over a restart', version: 1, site: 'pane' },
+      { id: 'Q107', letter: 'a', note: '', version: 1, site: 'band' }]
     await start($, w)
     const ui = await mountPane($, 'terminal')
     expect((await ui.find({ key: 'qqueued-Q106' }))?.text).toContain('106b')
     const band = await mountBand($, 'terminal')
+    expect((await band.find({ key: 'queued' }))?.text).toContain('2')
+    const q107 = w.questions.find((q: any) => q.id === 'Q107')
+    w.questions = w.questions.filter((q: any) => q !== q107)
+    w.answered.push({ ...q107, status: 'answered', answer: '107b.' })
+    w.marker += '+'
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    expect((await band.find({ key: 'queued' }))?.text).toContain('1')
     await band.press({ key: 'queued-send' })
     await w.clock.settle()
     const a = w.last('answer').args
     expect([a[1], a[3], a.includes('kept over a restart')]).toEqual(['Q106', 'b', true])
+    expect(w.cliRuns().filter((r: any) => r.args[0] === 'answer').length).toBe(1)
     expect(w.queuedFile['sess-1']).toBeUndefined()
     await band.unmount()
+    await ui.unmount()
+  })
+
+  /* one Send starts one turn carrying every answer, even when the board writes the last
+     one's inbox line well after its verb returned */
+  test('Send of four queued answers starts one turn carrying all four when the last line lands late', async ($: any, on: any) => {
+    const w = decisionWorld(on)
+    const one = (id: string) => ({ id, name: 'one of four', blocking: false, subscribers: ['sess-1'], pick: null, gist: 'One.',
+      options: [{ type: 'a', option: 'yes', getsYou: 'g', costsYou: '' }] })
+    w.questions.push(one('Q108'), one('Q110'))
+    w.queuedFile['sess-1'] = [['Q106', 'b'], ['Q107', 'a'], ['Q108', 'a'], ['Q110', 'a']]
+      .map(([id, letter]) => ({ id, letter, note: '', version: 1, site: 'band' }))
+    w.inboxLag = (label: string) => (['Q110', 'Q111'].includes(label) ? 1500 : 0)
+    await start($, w)
+    const band = await mountBand($, 'terminal')
+    const prompts = w.prompts.length
+    await band.press({ key: 'queued-send' })
+    await w.clock.settle()
+    await w.clock.advance(2000)
+    await w.clock.settle()
+    expect(w.cliRuns().filter((r: any) => r.args[0] === 'answer').length).toBe(4)
+    const turn = w.prompts.slice(prompts)
+    expect(turn.length).toBe(1)
+    expect(['106b', '107a', '108a', '110a'].filter((t) => !turn[0].includes(t))).toEqual([])
+    /* a single press waits on its own answer's line, not on the board change its verb makes */
+    w.questions.push(one('Q111'), { ...one('Q112'), noSession: true }, one('Q113'))
+    w.marker += '+'
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    const ui = await mountPane($, 'terminal')
+    await ui.press({ key: 'pick-111a' })
+    await ui.press({ key: 'qnow-Q111' })
+    await w.clock.settle()
+    await w.clock.advance(2000)
+    await w.clock.settle()
+    expect(w.prompts.slice(prompts + 1).filter((p: string) => p.includes('111a')).length).toBe(1)
+    /* a line that never lands here holds no Send, and a second press meanwhile says so */
+    for (const id of ['Q112', 'Q113']) {
+      await ui.press({ key: 'pick-' + id.slice(1) + 'a' })
+      await ui.press({ key: 'qqueue-' + id })
+    }
+    await ui.unmount()
+    const toasts = w.toasts.length
+    void band.press({ key: 'queued-send' })
+    await band.press({ key: 'queued-send' })
+    await w.clock.settle()
+    await w.clock.advance(2000)
+    await w.clock.settle()
+    expect([w.prompts.some((p: string) => p.includes('113a')), w.toasts.slice(toasts).some((t: string) => /still/i.test(t))]).toEqual([true, true])
+    await band.unmount()
+  })
+
+  /* a press made while a Send records draws at once, and a call the local server never answers
+     ends at the route's limit: the answer stays queued and presses keep drawing */
+  test('a press during a Send draws, and a Send whose call never answers ends with the answer still queued', async ($: any, on: any) => {
+    const w = decisionWorld(on)
+    w.queuedFile['sess-1'] = [{ id: 'Q106', letter: 'b', note: '', version: 1, site: 'pane' }, { id: 'Q107', letter: 'a', note: '', version: 1, site: 'band' }]
+    w.hold = { verb: 'answer Q106', until: new Promise(() => {}) }
+    await start($, w)
+    const ui = await mountPane($, 'terminal')
+    const band = await mountBand($, 'terminal')
+    await band.press({ key: 'queued-send' })
+    await w.clock.settle()
+    await ui.press({ key: 'pick-503a' })
+    expect(!!(await ui.find({ key: 'qstrip-Q503' }))).toBe(true)
+    /* nothing drawn is read past here, so the surfaces go before the clock runs */
+    await band.unmount()
+    await ui.unmount()
+    /* just past the route's 25 s limit: each mocked second runs the mod's ticks */
+    await w.clock.advance(26000)
+    await w.clock.settle()
+    expect((w.queuedFile['sess-1'] || []).map((q: any) => q.id)).toEqual(['Q106', 'Q107'])
+    expect(w.toasts.some((t: string) => t.includes('106b'))).toBe(true)
+  })
+
+  /* the call that ran out of time landed after all: it counts as sent, said once, with the Send's
+     turn, and Send runs again for the rest (split from the case above for its time under load) */
+  test('a Send whose call ran out of time but landed counts as sent once, and Send runs again', async ($: any, on: any) => {
+    const w = decisionWorld(on)
+    w.queuedFile['sess-1'] = [{ id: 'Q106', letter: 'b', note: '', version: 1, site: 'pane' }, { id: 'Q107', letter: 'a', note: '', version: 1, site: 'band' }]
+    w.hold = { verb: 'answer Q106', until: new Promise(() => {}) }
+    await start($, w)
+    const first = await mountBand($, 'terminal')
+    await first.press({ key: 'queued-send' })
+    await w.clock.settle()
+    /* no band drawn while the clock runs past the route's limit */
+    await first.unmount()
+    await w.clock.advance(26000)
+    await w.clock.settle()
+    const q106 = w.questions.find((q: any) => q.id === 'Q106')
+    w.questions = w.questions.filter((q: any) => q !== q106)
+    w.answered.push({ ...q106, status: 'answered', answer: '106b.' })
+    w.inbox['sess-1'] = [w.event('Q106', 'b', 'user:sess-1')]
+    const toasts = w.toasts.length, prompts = w.prompts.length
+    /* the marker's move answers the held wait at once */
+    w.marker += '+'
+    await w.clock.advance(2000)
+    await w.clock.settle()
+    expect((w.queuedFile['sess-1'] || []).map((q: any) => q.id)).toEqual(['Q107'])
+    expect([w.toasts.slice(toasts).filter((t: string) => t.includes('106b')).length, w.prompts.length - prompts]).toEqual([1, 1])
+    w.hold = undefined
+    const band = await mountBand($, 'terminal')
+    await band.press({ key: 'queued-send' })
+    await w.clock.settle()
+    expect(w.queuedFile['sess-1']).toBeUndefined()
+    await band.unmount()
+  })
+  /* a respawn between the late toast and the read that shows the answer landed keeps the toast and the turn */
+  test('a fresh copy still says once that a late Send landed', async ($: any, on: any) => {
+    const w = decisionWorld(on)
+    /* the snapshot and queue the late Send leaves, so the case stands alone */
+    const late = { v: 1, starts: 1, sending: null, view: null, q: null, queue: [], hc: {}, late: ['Q106'] }
+    on('state.get', ($: any, e: any, next: any) => e.key === 'snapshot' ? { value: { value: late, version: 1 } } : next(e))
+    w.queuedFile['sess-1'] = [{ id: 'Q106', letter: 'b', note: '', version: 1, site: 'pane' }, { id: 'Q107', letter: 'a', note: '', version: 1, site: 'band' }]
+    const q106 = w.questions.find((q: any) => q.id === 'Q106')
+    w.questions = w.questions.filter((q: any) => q !== q106)
+    w.answered.push({ ...q106, status: 'answered', answer: '106b.' })
+    w.inbox['sess-1'] = [w.event('Q106', 'b', 'user:sess-1')]
+    await start($, w)
+    await w.clock.advance(2000)
+    await w.clock.settle()
+    expect((w.queuedFile['sess-1'] || []).map((q: any) => q.id)).toEqual(['Q107'])
+    expect([w.toasts.filter((t: string) => t.includes('106b')).length, w.prompts.length]).toEqual([1, 1])
+  })
+
+  /* a hooks worker respawn cut a Send; the fresh copy finds the send's mark in the
+     session's state and finishes it once: the answer the board already holds is not recorded again */
+  /* landed: the cut came after the board write and before its mark; the board's stood answer is the send's own */
+  for (const landed of [false, true]) test('a Send cut by a respawn is finished once by the fresh copy, with one turn' + (landed ? ' (its write landed)' : ''), async ($: any, on: any) => {
+    const w = decisionWorld(on)
+    if (landed) { w.already = true; w.inbox['sess-1'] = [w.event('Q106', 'b', 'user:sess-1')] }
+    w.queuedFile['sess-1'] = [{ id: 'Q106', letter: 'b', note: '', version: 1, site: 'pane' },
+      { id: 'Q107', letter: 'a', note: '', version: 1, site: 'band' }]
+    const q107 = w.questions.find((q: any) => q.id === 'Q107')
+    w.questions = w.questions.filter((q: any) => q !== q107)
+    w.answered.push({ ...q107, status: 'answered', answer: '107a.' })
+    let mark: any = { before: null, done: [], here: true }
+    on('state.get', ($: any, e: any, next: any) => e.key === 'snapshot' ? { value: { value: { v: 1, starts: 1, sending: mark }, version: 1 } } : next(e))
+    on('state.set', ($: any, e: any, next: any) => { if (e.key === 'snapshot') mark = e.value.sending; return next(e) })
+    await start($, w)
+    await w.clock.advance(5000)
+    await w.clock.settle()
+    const answered = w.cliRuns().filter((r: any) => r.args[0] === 'answer').map((r: any) => r.args[1])
+    expect(answered).toEqual(['Q106'])
+    expect(w.prompts.length).toBe(1)
+    expect(mark).toBeNull()
+    expect(w.queuedFile['sess-1']).toBeUndefined()
+    const said = w.toasts.join(' ')
+    expect([said.includes('Sent 1 answer'), said.includes('not recorded')]).toEqual([true, false])
+  })
+
+  /* the kit loads each test's module afresh, so the second test is a fresh copy over the
+     $.state the first one's copy wrote, as after a hooks worker respawn (the queue file left empty) */
+  let left: any
+  test('the session\'s own slices are mirrored into its state as they change', async ($: any, on: any) => {
+    const w = decisionWorld(on)
+    on('state.set', ($: any, e: any, next: any) => { if (e.key === 'snapshot') left = e.value; return next(e) })
+    await start($, w)
+    const ui = await mountPane($, 'terminal')
+    await ui.press({ key: 'pick-106b' })
+    await ui.press({ key: 'qqueue-Q106' })
+    await ui.press({ key: 'pick-107a' })
+    await ui.input({ key: 'qnote-Q107', text: 'typed before the respawn', kind: 'change' })
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    expect([left.view.tab, left.q.strip, left.queue.map((q: any) => q.id + q.letter)]).toEqual(['questions', { Q107: 'a' }, ['Q106b']])
+    await ui.unmount()
+  })
+  test('a respawned copy draws the tab, the open strip, the typed note and the queue its last copy left, with no loading line', async ($: any, on: any) => {
+    const w = decisionWorld(on)
+    on('state.get', ($: any, e: any, next: any) => e.key === 'snapshot' ? { value: { value: left, version: 1 } } : next(e))
+    /* the engine asks the fresh copy to draw before its session.start lands */
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: PANE_ID, props: PANE })
+    expect(await ui.find({ type: 'Text', text: /^Reading the/ })).toBeUndefined()
+    expect((await ui.find({ key: 'qnote-Q107' }))?.props.value).toBe('typed before the respawn')
+    /* the queue rides the open strip's Send row */
+    expect((await ui.find({ key: 'qsendcount-Q107' }))?.text).toMatch(/^1 answer/)
+    await start($, w)
+    expect(!!(await ui.find({ key: 'qstrip-Q107' }))).toBe(true)
     await ui.unmount()
   })
 })

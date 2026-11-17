@@ -64,7 +64,7 @@ fn store_root_in(home: &Path) -> PathBuf {
 /* The board URL the "Open board" menu item opens: the loopback form, never the
    askerdo.localhost name. The boundary is the OS resolver ShellExecute hands
    the URL to, which knows no such name; the browsers resolve `*.localhost`
-   themselves, Chromium and Firefox both (measured 2026-09-15). */
+   themselves, Chromium and Firefox both (measured). */
 pub fn board_url(port: u16, secret: &str) -> String {
     format!("http://127.0.0.1:{port}/{secret}/")
 }

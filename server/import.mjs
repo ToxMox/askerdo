@@ -7,10 +7,30 @@ import { join } from 'node:path';
 import { splitFile } from './frontmatter.mjs';
 import { tx } from './db.mjs';
 import {
-  RECORD_DIRS, ANSWER_PLACEHOLDER, WHERE_HEAD, ITEMS_HEAD, INBOX_FILE, HISTORY_DIR, READS_FILE, READS_SINCE, OVERRIDES_FILE, SETTINGS, SETTINGS_FILE, COMMITS_FILE, COVERS_FILE, CONVERSION_FILE,
+  RECORD_DIRS, ANSWER_PLACEHOLDER, WHERE_HEAD, ITEMS_HEAD, INBOX_FILE, HISTORY_DIR, READS_FILE, READS_SINCE, OVERRIDES_FILE, SETTINGS, SETTINGS_FILE, COMMITS_FILE, COVERS_FILE, CONVERSION_FILE, RUNS_FILE,
 } from './render.mjs';
 import { KEY_LISTS, KEY_MAPS, KEY_ORDERS, addActivity, isKey, labelTops, putHandoff, putNotes, putRecord, setMeta, stampNow } from './records.mjs';
 import { createHash } from 'node:crypto';
+import { migrations } from './migrate.mjs';
+
+/* An export from before migration 015 carries who was on a task as fields and statuses: the
+   migration's own statements from its runs on make the same runs, so both paths agree. */
+const OLD_FACTS = "SELECT 1 FROM records WHERE kind = 'task' AND (status IN ('in_progress', 'blocked', 'deferred') OR json_type(fields, '$.inHand') IS NOT NULL"
+  + " OR json_type(fields, '$.inHandSince') IS NOT NULL OR json_type(fields, '$.agent') IS NOT NULL OR json_type(fields, '$.agentEnd') IS NOT NULL) LIMIT 1";
+function runsFromOldFacts(db) {
+  if (!db.prepare(OLD_FACTS).get()) return;
+  const sql = readFileSync(migrations().find((m) => m.n === 15).file, 'utf8');
+  const at = sql.indexOf("-- A schema 14 board's facts as runs");
+  if (at < 0) throw new Error('migration 015 has no runs part to build an old export\'s runs from');
+  db.exec(sql.slice(at));
+}
+
+/* An export from before migration 016 carries open promoted side tracks: its statements make
+   their pointers closing tasks, as on a migrated board. */
+function closingFromOldTracks(db) {
+  if (!db.prepare("SELECT 1 FROM records WHERE kind = 'track' AND json_extract(fields, '$.origin') = 'promote' AND status IN ('open', 'parked') LIMIT 1").get()) return;
+  db.exec(readFileSync(migrations().find((m) => m.n === 16).file, 'utf8'));
+}
 
 const STAMP = '\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2}[+-]\\d{2}:\\d{2})?';
 const ENTRY_RE = new RegExp('^(' + STAMP + '): ([\\s\\S]*)$');
@@ -106,15 +126,33 @@ export function readRecordFile(kind, file, text) {
   return withItems({ rec: { key: fields.key, kind, slug, fields, body: cut.body }, notes: journalNotes(cut.tail) });
 }
 
+/* An export from before migration 015 carries `checklist` rows by position, a strike inside
+   done_at: numbered by that order, as the migration numbers them. */
+const STRUCK = ' struck: ';
+function stepsOfGraph(g) {
+  if (Array.isArray(g.steps)) return g.steps;
+  const seen = new Map();
+  return [...(g.checklist || [])].sort((a, b) => (a.task < b.task ? -1 : a.task > b.task ? 1 : a.position - b.position)).map((c) => {
+    const n = (seen.get(c.task) || 0) + 1;
+    seen.set(c.task, n);
+    const at = c.doneAt ?? null;
+    const cut = c.done && at ? at.indexOf(STRUCK) : -1;
+    return { task: c.task, n, position: n, text: c.text, state: !c.done ? 'open' : cut < 0 ? 'done' : 'struck',
+      word: cut < 0 ? null : at.slice(cut + STRUCK.length), at: !c.done ? null : cut < 0 ? at : at.slice(0, cut) || null };
+  });
+}
+
 /* The graph rows a track file (or the inbox file) carries, once every record is in. */
 function putGraph(db, track, g) {
   const item = db.prepare('INSERT INTO track_items (track, task, position) VALUES (?, ?, ?)');
   const dep = db.prepare('INSERT INTO depends (task, "on", reason, added, actor) VALUES (?, ?, ?, ?, ?)');
-  const step = db.prepare('INSERT INTO checklist (task, position, text, done, done_at) VALUES (?, ?, ?, ?, ?)');
+  const step = db.prepare('INSERT INTO steps (task, n, position, text, state, word, at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  const top = db.prepare('INSERT INTO step_tops (task, top) VALUES (?, ?) ON CONFLICT (task) DO UPDATE SET top = max(top, excluded.top)');
   const link = db.prepare('INSERT INTO links ("from", "to", type, added) VALUES (?, ?, ?, ?)');
   for (const i of g.items || []) item.run(track, i.task, i.position);
   for (const d of g.depends || []) dep.run(d.task, d.on, d.reason, d.added, d.actor ?? null);
-  for (const c of g.checklist || []) step.run(c.task, c.position, c.text, c.done ? 1 : 0, c.doneAt ?? null);
+  for (const s of stepsOfGraph(g)) { step.run(s.task, s.n, s.position, s.text, s.state, s.word ?? null, s.at ?? null); top.run(s.task, s.n); }
+  for (const t of g.stepTops || []) top.run(t.task, t.top);
   for (const j of g.junctions || []) link.run(track, j.to, j.type, j.added ?? null);
 }
 
@@ -196,6 +234,8 @@ function importFrom(db, src) {
       for (const file of listMd(src, dir)) {
         try {
           const { rec, notes, graph } = readRecordFile(kind, file, read(dir + '/' + file));
+          /* an export from before migration 015 names a task's done `completed` */
+          if (kind === 'task' && rec.fields.status === 'completed') rec.fields.status = 'done';
           putRecord(db, rec);
           putNotes(db, rec.key, notes);
           if (graph) graphs.push([dir + '/' + file, rec.key, graph]);
@@ -276,6 +316,24 @@ function importFrom(db, src) {
       (r) => [r.review, r.task, r.at, r.through ?? null, r.through_at ?? null, typeof r.given === 'boolean' ? Number(r.given) : null]);
     rows(CONVERSION_FILE, 'INSERT INTO conversion (project, source, kind, hash, sha, records, fate, why, answer, detail, run, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       (r) => [r.project, r.source, r.kind, r.hash ?? null, r.sha ?? null, JSON.stringify(r.records || []), r.fate ?? null, r.why ?? null, r.answer ?? null, JSON.stringify(r.detail || {}), r.run, r.at], 'conversion');
+    /* a run keeps its number and the tasks it served */
+    if (src.has(RUNS_FILE)) {
+      const run = db.prepare(`INSERT INTO runs (id, worker, agent_id, job, session, pc, repo, branch, start_commit, state_note, started, heard, ended, how,
+        report, continue_line, landed, handoff) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const serves = db.prepare('INSERT INTO run_tasks (run, task) VALUES (?, ?)');
+      read(RUNS_FILE).split('\n').forEach((text, i) => {
+        if (!text) return;
+        try {
+          const r = JSON.parse(text);
+          run.run(r.id, r.worker, ...['agent_id', 'job', 'session', 'pc', 'repo', 'branch', 'start_commit', 'state_note'].map((k) => r[k] ?? null),
+            r.started, r.heard, ...['ended', 'how', 'report', 'continue_line', 'landed', 'handoff'].map((k) => r[k] ?? null));
+          for (const task of r.tasks || []) serves.run(r.id, task);
+          count('run');
+        } catch (e) { problems.push(RUNS_FILE + ' line ' + (i + 1) + ': ' + e.message); }
+      });
+    }
+    runsFromOldFacts(db);
+    closingFromOldTracks(db);
     if (src.has(SETTINGS_FILE)) {
       try {
         const set = JSON.parse(read(SETTINGS_FILE));

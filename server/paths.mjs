@@ -4,7 +4,7 @@
 
 /* Bumped by a release that changes what a PC sends or what the board accepts: the board
    refuses a PC on another protocol (426), so nothing half works. */
-export const PROTOCOL = 2;
+export const PROTOCOL = 4;
 export const PROTOCOL_HEADER = 'x-askerdo-protocol';
 
 /* the loopback admin route takes the per-start secret the board writes beside
@@ -28,6 +28,10 @@ export const WEB = Object.freeze({
   override: (n) => '/override/' + seg(n),
   archive: (rel) => '/archive/' + String(rel || '').split('/').filter(Boolean).map(seg).join('/'),
 });
+
+/* A run is heard while its last renewal is inside this window (renewed each minute);
+   here so a PC's local server knows when a kept running word turns */
+export const HEARD_MS = 3 * 60000;
 
 export const PLUGIN_UPDATE = 'claude plugin update askerdo@askerdo';
 

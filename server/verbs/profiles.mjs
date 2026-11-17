@@ -8,13 +8,14 @@ import { actorOf, getMeta, logRow, orderFields, setMeta, putRecord } from '../re
 import { profileKey } from '../import.mjs';
 import { UsageError, loadEntry as recordByKey, lookupFor, resolveRecord } from './labels.mjs';
 import { addHistory, historyRef, timeOf } from './history.mjs';
+import { openRunSql } from './runs.mjs';
 
 /* Replace a row's fields in its kind's key order, keeping body, slug, layout and track. */
 const saveRecord = (db, row, fields) => putRecord(db, {
   key: row.key, kind: row.kind, slug: row.slug, fields: orderFields(row.kind, fields), body: row.body, layout: row.layout, track: row.track,
 });
 import {
-  AUDIENCES, BUILTIN, KIND_LEVEL, LEVELS, PC_SETTINGS, REPO_KEY, RETIRED, SETTINGS, activeAt, byLabel, chainOver, checkName, checkPairs, checkSetting, clashes,
+  BUILTIN, KIND_LEVEL, LEVELS, PC_SETTINGS, REPO_KEY, RETIRED, SETTINGS, activeAt, byLabel, chainOver, checkName, checkPairs, checkSetting, clashes, audienceOf,
   contractHeld, contractHome, heldIn, heldOf, isDirKey, isRepoKey, noSub, normProjectDir, parseRecordWith, parseValue, profileOf, projectKeys, projectSub,
   listCopy, remoteOf, resolveChain, sameDir, settingRows, settingsOf, tabsOf, travelText, travelsOf, wordsOf,
 } from './profile-rules.mjs';
@@ -154,14 +155,15 @@ export function resolveSession(db, { cwd, repo, repos, track } = {}) {
   return resolveChain(loadProfiles(db), chainOver(lookupFor(db), rec, { project: cwd, repo, repos }));
 }
 
-/* The newest task the session has in hand, else the one it holds
-   in_progress (it subscribes), lowest label first. */
+/* The newest task the session has in hand, else one its agent runs (an open run
+   this session started), lowest label first. */
 function heldTask(db, session) {
-  const hand = db.stmt(`SELECT key, label FROM records WHERE kind = 'task' AND json_extract(fields, '$.inHand') = ?
-    AND status NOT IN ('completed', 'dropped') ORDER BY json_extract(fields, '$.inHandSince') DESC, id DESC LIMIT 1`).get(session);
+  const hand = db.stmt(`SELECT k.key, k.label FROM runs r JOIN run_tasks rt ON rt.run = r.id JOIN records k ON k.key = rt.task
+    WHERE r.session = ? AND r.worker = 'session' AND r.ended IS NULL AND k.status NOT IN ('done', 'dropped')
+    ORDER BY r.started DESC, r.id DESC LIMIT 1`).get(session);
   if (hand) return { level: 'task', key: hand.label, ref: hand.key, row: lookupFor(db)(hand.key) };
-  const held = db.stmt(`SELECT key, label FROM records AS r WHERE kind = 'task' AND status = 'in_progress'
-    AND EXISTS (SELECT 1 FROM json_each(r.fields, '$.subscribers') WHERE value = ?)`).all(session)
+  const held = db.stmt(`SELECT key, label FROM records AS r WHERE kind = 'task' AND status NOT IN ('done', 'dropped')
+    AND ${openRunSql('r.key', { session: true, worker: 'agent' })}`).all(session)
     .sort((a, b) => String(a.label).localeCompare(String(b.label), 'en', { numeric: true }));
   return held.length ? { level: 'task', key: held[0].label, ref: held[0].key, row: lookupFor(db)(held[0].key) } : null;
 }
@@ -336,7 +338,7 @@ function lineAt(settings, s) {
 
 /* Rule lines on a profile: add (or replace) a line, drop a wider one by slug,
    clear a slug from both lists. Add or drop makes a missing profile. A line is
-   for the session, its agents, or both (`for` left out, as before).
+   for the session, its agents, or both (`for` left out, as before), or one role's agents.
    a line names the ruling it came from, and then changes only with a newer one. */
 export function profileRule(db, { name, op, slug, text, for: aud, from, ruling } = {}, actor) {
   const n = checkName(name);
@@ -346,8 +348,10 @@ export function profileRule(db, { name, op, slug, text, for: aud, from, ruling }
   if (!SLUG_RE.test(s)) throw new UsageError('a rule slug is lowercase letters, digits and dashes, at most 40: ' + slug);
   const sentence = String(text ?? '').replace(/\s+/g, ' ').trim();
   if (op === 'add' && (!sentence || sentence.length > 400)) throw new UsageError('profile rule add takes the rule in plain words, at most 400 characters');
-  const who = aud === undefined || aud === null || aud === '' || aud === 'both' ? null : String(aud).trim();
-  if (who !== null && (op !== 'add' || !AUDIENCES.includes(who))) throw new UsageError('--for takes session, agents or both, on rule-add: ' + aud);
+  const raw = aud === undefined || aud === null || aud === '' || aud === 'both' ? null : String(aud).trim();
+  const a = raw === null ? null : audienceOf(raw);
+  if (raw !== null && (op !== 'add' || !a)) throw new UsageError('--for takes session, agents, agents:<role> (a subagent type or a task label) or both, on rule-add: ' + aud);
+  const who = a ? (a.role ? 'agents:' + a.role : a.for) : null;
   if (from !== undefined && from !== null && from !== '' && op !== 'add') throw new UsageError('--from names where a new line came from, on rule-add');
   return tx(db, () => {
     const data = loadProfiles(db);
@@ -534,6 +538,21 @@ function dropProfile(db, data, name, c) {
   if (subs) saveSubscriptions(db, data.subscriptions);
   db.stmt('DELETE FROM records WHERE key = ?').run(profileKey(name));
   logRow(db, c, { verb: 'delete', kind: 'profile', front: { id: name, name, key: profileKey(name) }, changes: { emptied: true } });
+}
+
+/* Delete a profile's definition. Refused while any record holds it, so no record
+   loses settings unseen; drops of it go with it, since they name nothing after. */
+export function profileDelete(db, { name } = {}, actor) {
+  const n = checkName(name);
+  if (BUILTIN[n]) throw new UsageError(n + ' is built in and cannot be deleted');
+  return tx(db, () => {
+    const data = loadProfiles(db);
+    if (!data.profiles[n]) throw new UsageError('no profile named ' + n + ' (profile list shows them)');
+    const on = holdings(db, data).filter((h) => h.sub.add.includes(n)).map((h) => h.shown);
+    if (on.length) throw new UsageError('refused: ' + on.join(', ') + (on.length === 1 ? ' holds ' : ' hold ') + n + '; profile remove takes it off each first');
+    dropProfile(db, data, n, actorOf(actor));
+    return { profile: n, deleted: true };
+  });
 }
 
 /* The /askerdo guard shortcut on a project: guard-on or guard-off on it, swapped
