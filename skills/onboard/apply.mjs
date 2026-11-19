@@ -1,32 +1,33 @@
 #!/usr/bin/env node
 /* runs plan.json through the AskerDo CLI's own command code, in order and in this one process.
-   Without --board it is a dry run that prints each command. --board file:<db> rehearses on a scratch board
-   (it keeps going and lists every refusal); --board live writes the board the CLI's config names, takes the
-   go plan.mjs --go recorded, stops at the first refusal and resumes from its results. Every id written goes
-   in the manifest, which --undo walks backwards. --coverage proves each converted source against its records,
-   and --handover then makes the repo edits, one commit per folder, each named in the manifest; --repoint runs
-   its citation step alone.
+   Without --board it is a dry run that prints each command. --board file:<db> rehearses on a scratch board: it
+   writes (keeping going and listing every refusal), runs coverage, then runs the undo with its one press and
+   reports both counts. --board live writes the board the CLI's config names, takes the go
+   plan.mjs --go recorded, stops at the first refusal and resumes from its results. Every id written goes in the
+   manifest, which --undo walks backwards (--group <call> takes back one group a later answer dropped). --coverage
+   proves each converted source against its records; --handover then makes the repo edits in one commit, named
+   in the manifest; --reader writes the file one fresh reader pass reads, on the user's ask.
    node apply.mjs <work dir> [--board file:<db> | --board live] [--cli <path>]
-     [--coverage | --handover [--file <path>] | --repoint [--file <path>] | --undo [--all] [--session <own id>] [--dry]] */
+     [--coverage | --handover [--file <path>] | --reader | --undo [--all | --group <call>] [--session <own id>] [--dry]] */
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { storeRoot } from '../../lib/node-helpers.mjs';
 import { stateProblems, wakeIn } from '../../server/handoff-text.mjs';
 import { cardRow, cardText, writeCard } from './cards.mjs';
-import { WAKE_REF, citeJudge, folderKey, under } from './plan.mjs';
-import { coverage, recordReader, repointGaps, table } from './coverage.mjs';
-import { citer, fencedLines, folderRe, inText, isGlob, linksIn, MD, printed, relFrom, resolveFrom, UP_PATH, wrapLead } from './cites.mjs';
-import { CALL, NONE, RUN, blobsOf, folderSig, isFolder, parseTree } from './map.mjs';
+import { WAKE_REF, citeJudge, editLines, folderKey, lineEditTakes, readFacts, under } from './plan.mjs';
+import { coverage, lineEditHeld, recordReader, repointGaps, table } from './coverage.mjs';
+import { SESSION_READS, citer, fencedLines, folderRe, fromRoot, inText, isGlob, linksIn, MD, nearestOf, printed, relFrom, resolveFrom, UP_PATH, wrapLead } from './cites.mjs';
+import { CALL, NONE, RUN, blobsOf, boardRecords, folderSig, isFolder, parseTree } from './map.mjs';
 import { blockAt } from './survey.mjs';
 import { DEFAULT_MODE, instructionFiles, kindOf as fileKind, pathsFront } from './instructions.mjs';
 import { refreshAgentsOverride } from '../../lib/agents-override.mjs';
 
 const DEFAULT_CLI = join(homedir(), '.claude', 'askerdo', 'cli.mjs');
 const USAGE = 'node apply.mjs <work dir> [--board file:<db> | --board live] [--cli <path>]\n'
-  + '  [--coverage | --handover [--file <path>] | --repoint [--file <path>] | --undo [--all] [--session <own id>] [--dry]]';
+  + '  [--coverage | --handover [--file <path>] | --reader | --undo [--all | --group <call>] [--session <own id>] [--dry]]';
 const REF = /@\{([^}]+)\}/g;
 const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 const clip = (s, n = 90) => { const t = oneLine(s); return t.length > n ? t.slice(0, n - 3) + '...' : t; };
@@ -47,9 +48,29 @@ function renameRetry(from, to) {
 const writeJson = (p, v) => { mkdirSync(dirname(p), { recursive: true }); const t = p + '.' + process.pid + '.tmp'; writeFileSync(t, JSON.stringify(v, null, 2) + '\n'); renameRetry(t, p); };
 
 /* git's own words for a refusal, or the spawn's error when git never ran (ENAMETOOLONG prints nothing) */
-const gitWhy = (r) => oneLine((r.error && r.error.message) || r.stderr || r.stdout) || 'exit ' + r.status;
+const gitWhy = (r) => oneLine((r.error && r.error.message) || String(r.stderr || '').split('\n').filter((l) => !/^warning:/.test(l)).join('\n') || r.stdout) || 'exit ' + r.status;
 /* git in the project, every pathspec literal (a path may hold * or [) */
 const gitIn = (dir) => (args, input) => spawnSync('git', ['--literal-pathspecs', ...args], { cwd: dir, encoding: 'utf8', windowsHide: true, maxBuffer: 256 << 20, ...(input === undefined ? {} : { input }) });
+/* a handover's git, each lookup of refs, commits or the index run once until its next write; a command outside
+   READS (add, commit, rm, mv, reset, checkout) clears them. Status and the other work-tree reads are never kept: the
+   handover writes files between its git calls */
+const KEPT = ['rev-parse', 'ls-tree', 'cat-file', 'merge-base', 'diff-tree'];
+const READS = [...KEPT, 'status', 'ls-files', 'show', 'diff', 'log', 'hash-object', 'config'];
+const verbOf = (args) => { for (let i = 0; i < args.length; i++) { if (args[i] === '-c') i++; else if (!args[i].startsWith('-')) return args[i]; } return ''; };
+function gitCall(dir) {
+  const run = gitIn(dir);
+  const kept = new Map();
+  return (args, input) => {
+    const verb = verbOf(args);
+    const keep = input === undefined && (KEPT.includes(verb) || args.join(' ') === 'ls-files -z');
+    const k = args.join('\0');
+    if (keep && kept.has(k)) return kept.get(k);
+    const r = run(args, input);
+    if (keep) kept.set(k, r);
+    else if (!READS.includes(verb)) kept.clear();
+    return r;
+  };
+}
 /* a call over a batch's paths reads them from a file in the work folder, never the command line, so no batch
    is too long for Windows' 32767 characters */
 function gitBatch(git, work, args, paths) {
@@ -59,14 +80,13 @@ function gitBatch(git, work, args, paths) {
   try { return git([...args, '--pathspec-from-file=' + file, '--pathspec-file-nul']); } finally { rmSync(file, { force: true }); }
 }
 /* the paths git tracks, or null outside a repo */
-export function trackedIn(dir) {
-  const r = gitIn(dir)(['ls-files', '-z']);
+export function trackedIn(dir, git = gitIn(dir)) {
+  const r = git(['ls-files', '-z']);
   return r.status === 0 ? new Set(String(r.stdout || '').split('\0').filter(Boolean)) : null;
 }
 /* what the repo holds now: the tracked paths, the untracked ones, and the ones with uncommitted changes */
-export function repoState(dir) {
-  const git = gitIn(dir);
-  const tracked = trackedIn(dir) || new Set();
+export function repoState(dir, git = gitIn(dir)) {
+  const tracked = trackedIn(dir, git) || new Set();
   const untracked = [];
   const changed = new Set();
   const st = String(git(['status', '--porcelain=v1', '-z', '-uall']).stdout || '').split('\0');
@@ -108,6 +128,7 @@ const KIND = {
 const FIX_KIND = {
   'profile rule-add': 'rule line', 'profile rule-clear': 'rule clear', 'knowledge amend': 'knowledge amend', 'knowledge edit': 'knowledge ref',
   'knowledge supersede': 'knowledge supersede', 'track park': 'park condition', 'edge add': 'task edge', 'question edit': 'question gate',
+  wake: 'question wake', drop: 'question drop',
 };
 /* a task fix is named by what it changes */
 const taskFixKind = (s) => {
@@ -163,16 +184,31 @@ function undoFix(step) {
     /* a line from a ruling changes only with a newer one, so the old words never come back: it stays */
     case 'profile rule-add': return a.includes('--from') ? null : line(a[2], a[3]) || ['profile', 'rule-clear', a[2], a[3]];
     case 'profile rule-clear': return line(a[2], a[3]);
+    /* a pointer's amend goes back to the text apply read before it (was.body); any other amend stands */
+    case 'knowledge amend': return typeof was.body === 'string' ? ['knowledge', 'edit', a[2], '--body', was.body] : null;
     case 'task edit':
     case 'knowledge edit': {
       const back = [];
       for (const [add, rm] of [['--add-ref', '--remove-ref'], ['--add-project', '--remove-project'], ['--add-label', '--remove-label']]) if (flag(add) !== undefined) back.push(rm, flag(add));
+      a.forEach((x, i) => { if (a[i - 1] === '--add-file') back.push('--remove-file', x); });
       /* the track took the task into its workstream: back unplaced in the one it left */
       if (flag('--track') !== undefined) back.push(...(was.track ? ['--track', was.track] : ['--unplaced', was.unplaced || 'undo of the doctor', '--wake', '@{' + WAKE_REF + '}', ...(was.workstream ? ['--workstream', was.workstream] : [])]));
       return back.length ? [a[0], 'edit', a[2], ...back] : null;
     }
     case 'edge add': return ['edge', 'remove', a[2], a[3], '--reason', 'undo of the doctor'];
     case 'question edit': return flag('--add-gate') !== undefined ? ['question', 'edit', a[2], '--remove-gate', flag('--add-gate')] : null;
+    /* a woken or dropped question goes back asleep on the conditions it had; a snooze that stored none takes a trigger,
+       since the board snoozes on at least one */
+    case 'wake':
+    case 'drop': {
+      const z = was.snooze;
+      if (!z) return null;
+      const on = [...(z.until ? ['--until', z.until] : []), ...(z.trigger ? ['--trigger', z.trigger] : []), ...(z.wakeOn ? ['--wake-on', z.wakeOn + (z.wakeStatus ? ':' + z.wakeStatus : '')] : [])];
+      return [step.op === 'wake' ? 'snooze' : 'reopen', a[1], ...(on.length ? on : ['--trigger', 'the user wakes it'])];
+    }
+    /* a cleared handoff folder goes back to the one the workstream named, with no seed: the printed git revert
+       restores a folder the handover deleted, and seeded files would block it */
+    case 'ws edit': return a.includes('--clear-handoff') && was.handoff ? ['ws', 'edit', a[2], '--handoff', was.handoff, '--no-seed'] : null;
     /* a move of steps, a description amend and a cleared close stand: no verb takes them back */
     /* a park again keeps the condition it had (checked on a scratch board), so no verb takes one back */
     default: return null;
@@ -197,7 +233,8 @@ export function undoArgs(step, id, label) {
   const why = 'undo of the ' + label + ' import';
   switch (step.op) {
     case 'ws create': return ['ws', 'close', id, '--outcome', why];
-    case 'task create': return ['task', 'edit', id, '--status', 'dropped'];
+    /* the undo adds a strike for each open step the import's own @steps step added (importDrop) */
+    case 'task create': return ['task', 'update', id, '--status', 'dropped'];
     case 'track new': return ['track', 'drop', id, '--reason', why, '--leftovers', 'drop'];
     case 'register': return ['drop', id, '--note', why];
     /* a line that replaced one on the same profile gets its old words back */
@@ -209,6 +246,23 @@ export function undoArgs(step, id, label) {
     case 'profile define': return step.unset ? ['profile', 'define', step.args[2], '--unset', step.unset] : null;
     default: return null;
   }
+}
+const addsOf = (args) => (args || []).filter((a, i) => args[i - 1] === '--check-add');
+const addedSteps = (args, out) => {
+  const texts = addsOf(args);
+  return ((out && out.checks && out.checks.items) || []).filter((x) => texts.includes(x.text)).map((x) => x.n);
+};
+/* An imported task's drop, read against its checklist: it strikes the open steps its import added, done ones stay done.
+   An open step that is not the import's leaves the task open and named (null). A manifest from before the strikes
+   names no numbers: the plan's step texts are the import's when its plan is that import's, else nothing is struck. */
+export function importDrop(entry, imp, rec, { plan = null, label = 'the', session = null } = {}) {
+  const adds = imp.steps.find((x) => x.step === entry.step + '@steps');
+  const planned = plan && plan.made === imp.plan ? (plan.steps || []).find((x) => adds && x.id === adds.step) : null;
+  const own = (x) => (adds && Array.isArray(adds.checks) ? adds.checks.includes(x.n) : planned ? addsOf(planned.args).includes(x.text) : false);
+  const open = rec ? (rec.checklist || []).filter((x) => !x.done) : (adds && adds.checks ? adds.checks.map((n) => ({ n })) : []);
+  const theirs = open.filter((x) => !own(x));
+  if (theirs.length) return { left: theirs };
+  return { args: ['task', 'update', entry.id, '--status', 'dropped', ...open.flatMap((x) => ['--check-strike', x.n + ': undo of the ' + label + ' import']), ...(session ? ['--session', session] : [])] };
 }
 const idOf = (step, out) => {
   if (step.fix) return step.target;
@@ -257,30 +311,37 @@ export function mapRows(plan, imp, { tree = new Map(), dirty = () => false, blob
   }
   for (const sd of (plan.map && plan.map.seeds) || []) for (const k of sd.kinds || []) put(sd.source, [1, null, k]);
   const subjects = (plan.answers || []).flatMap((a) => a.subjects || []);
-  /* an item the session left out, with its source's hash, so a later run leaves it while that source is unchanged */
-  const left = (plan.left || []).map((id) => ({ item: id, source: filesOf(items.get(id))[0] || null }));
+  /* what the run left out, counted per group answer (the call that dropped it, or none), never by item */
+  const leftBy = new Map();
+  for (const id of plan.left || []) { const by = (items.get(id) || {}).dropped || null; leftBy.set(by, (leftBy.get(by) || 0) + 1); }
+  const left = [...leftBy].map(([call, count]) => ({ ...(call ? { call } : {}), count }));
   /* a kept path that is a file is judged and mapped as a file, its hash re-checked */
   const bareOf = (p) => String(p || '').replace(/\/+$/, '');
   const judged = (plan.judged || []).map((j) => (j.kind === 'folder' && isFile(bareOf(j.subject)) ? { ...j, key: 'file:' + bareOf(j.subject), kind: 'file', subject: bareOf(j.subject) } : j));
   const hashed = judged.filter((j) => j.kind === 'item' || j.kind === 'file').map((j) => j.subject);
-  const texts = blobs([...byFile.keys(), ...((plan.map && plan.map.seeds) || []).map((sd) => sd.source), ...restamp.map((r) => r.source), ...subjects, ...left.map((l) => l.source), ...hashed].filter((f) => f && !isFolder(f) && loose(f)));
+  const texts = blobs([...byFile.keys(), ...((plan.map && plan.map.seeds) || []).map((sd) => sd.source), ...restamp.map((r) => r.source), ...subjects, ...hashed].filter((f) => f && !isFolder(f) && loose(f)));
   const hashOf = (f) => (loose(f) ? texts.get(f) || null : tree.get(f) || null);
   const file = [...byFile].map(([f, ids]) => ({ source: f, kind: 'file', hash: hashOf(f), sha: head, records: [...ids], detail: { lines: lines.get(f) || [] } }));
   for (const sd of (plan.map && plan.map.seeds) || []) if (!byFile.has(sd.source)) file.push({ source: sd.source, kind: isFolder(sd.source) ? 'folder' : 'file', hash: isFolder(sd.source) ? sigOf(sd.source) : hashOf(sd.source), sha: head, records: sd.records, why: 'an earlier import', ...(lines.has(sd.source) ? { detail: { lines: lines.get(sd.source) } } : {}) });
   /* an earlier run's row for a file the handover edited takes the new hash with its records, so a rerun reads it unchanged */
-  for (const r of restamp) if (!file.some((x) => x.source === r.source)) file.push({ source: r.source, kind: 'file', hash: hashOf(r.source), sha: head, records: r.records || [], ...(r.why ? { why: r.why } : {}), ...(lines.has(r.source) ? { detail: { lines: lines.get(r.source) } } : r.detail ? { detail: r.detail } : {}) });
+  for (const r of restamp) if (!file.some((x) => x.source === r.source)) file.push({ source: r.source, kind: 'file', hash: hashOf(r.source), sha: head, records: r.records || [], ...(r.fate ? { fate: r.fate } : {}), ...(r.why ? { why: r.why } : {}), ...(lines.has(r.source) ? { detail: { lines: lines.get(r.source) } } : r.detail ? { detail: r.detail } : {}) });
   const call = (plan.answers || []).map((a) => ({ source: CALL + a.call, kind: 'call', answer: a.letter, sha: head,
     detail: { ask: a.ask, label: a.label, subjects: Object.fromEntries((a.subjects || []).map((p) => [p, isFolder(p) ? sigOf(p) || NONE : hashOf(p) || NONE])) } }));
-  const folder = (plan.folders || []).filter((f) => f.end === 'keep').map((f) => ({ source: isFile(bareOf(f.path)) ? bareOf(f.path) : f.path.replace(/\/*$/, '/'), kind: 'folder', fate: 'keep', why: f.why || null, sha: head }));
+  const folder = [];
+  /* a kept file that is also a source keeps one row, its records, hash and lines with the keep */
+  for (const f of (plan.folders || []).filter((x) => x.end === 'keep')) {
+    const k = { source: isFile(bareOf(f.path)) ? bareOf(f.path) : f.path.replace(/\/*$/, '/'), kind: 'folder', fate: 'keep', why: f.why || null, sha: head };
+    const src = file.find((x) => x.kind === 'file' && x.source === k.source);
+    if (src) Object.assign(src, { fate: 'keep', why: k.why }); else folder.push(k);
+  }
   const run = [{ source: RUN + plan.made, kind: 'run', sha: head, detail: { folders,
-    ...(left.length ? { left: left.map((l) => (l.source ? { ...l, hash: hashOf(l.source) || NONE } : { item: l.item })) } : {}),
+    ...(left.length ? { left } : {}),
     ...(judged.length ? { judged: judged.map((j) => ((j.kind === 'item' || j.kind === 'file') && hashOf(j.subject) ? { ...j, hash: hashOf(j.subject) } : j)) } : {}),
     ...(instructions ? { instructions } : {}) } }];
   return { file, call, folder, run };
 }
 /* the repo's blobs and trees at HEAD, what is uncommitted and its text's hashes, for the map */
-export function mapState(dir, work) {
-  const git = gitIn(dir);
+export function mapState(dir, work, git = gitIn(dir)) {
   const top = git(['rev-parse', 'HEAD']);
   const blobs = (paths) => blobsOf(dir, paths.filter((f) => existsSync(join(dir, f))));
   const seen = readJson(join(work, 'facts-map.json'), {}) || {};
@@ -288,9 +349,9 @@ export function mapState(dir, work) {
   const more = { isFile, instructions: seen.instructions || null };
   if (top.status !== 0) return { tree: new Map(), dirty: () => true, blobs, folders: {}, head: null, ...more };
   const tree = parseTree(git(['-c', 'core.quotepath=false', 'ls-tree', '-r', '-t', '-z', '--full-tree', 'HEAD']).stdout);
-  const repo = repoState(dir);
+  const repo = repoState(dir, git);
   const loose = new Set([...repo.untracked, ...repo.changed]);
-  return { tree, dirty: (f) => loose.has(f), blobs, folders: seen.folders || {}, head: String(top.stdout).trim(), ...more };
+  return { tree, dirty: (f) => loose.has(f), loose, blobs, folders: seen.folders || {}, head: String(top.stdout).trim(), ...more };
 }
 /* one put per kind; a refusal is reported, never a stop: the records are written either way */
 async function putMap(run, env, project, runId, groups, log) {
@@ -443,7 +504,7 @@ export async function applyPlan(work, { board, cli = DEFAULT_CLI, log = console.
     const tag = '[' + s.n + '] ' + s.op + (s.item ? ' (' + clip(s.item, 70) + ')' : '');
     if (results[s.id] && results[s.id].id) {
       /* a step whose manifest line was lost to a crash after it landed is put back, so the undo still finds it */
-      if (manifest && !manifest.imports.some((i) => i.steps.some((x) => x.step === s.id))) imp.steps.push(entry(s, results[s.id].id));
+      if (manifest && !manifest.imports.some((i) => i.steps.some((x) => x.step === s.id))) imp.steps.push(entry(results[s.id].was ? { ...s, was: results[s.id].was } : s, results[s.id].id));
       tally[s.op] = (tally[s.op] || 0) + 1;
       continue;
     }
@@ -483,7 +544,19 @@ export async function applyPlan(work, { board, cli = DEFAULT_CLI, log = console.
       continue;
     }
     if (bodyFile) { mkdirSync(t.bodies, { recursive: true }); writeFileSync(bodyFile, sub(s.body).replace(/\r\n/g, '\n') + '\n'); }
-    results[s.id] = { started: new Date().toISOString() };
+    /* the text an amend's undo puts back, read before the amend lands */
+    let was = null;
+    if (s.undoText) {
+      const [rec] = await showMany(run, [real(s.target)], unread(env));
+      const body = rec && rec.sections && rec.sections.Body;
+      if (typeof body !== 'string') {
+        refusals.push(tag + ': ' + real(s.target) + ' could not be read, so its undo would have no text to put back');
+        if (!t.rehearsal) { writeJson(t.manifest, manifest); saveIdmap(); log('\nStopped at step ' + s.n + '. ' + refusals[refusals.length - 1] + '\nRun again once the board shows it.'); return { tally, refusals, skipped, stopped: s.n, timing: timing() }; }
+        continue;
+      }
+      was = { ...(s.was || {}), body };
+    }
+    results[s.id] = { started: new Date().toISOString(), ...(was ? { was } : {}) };
     writeJson(t.results, results);
     const r = await run(argv, { stdin: step.stdin ? JSON.stringify(sub(step.stdin)) : '', env });
     ran++;
@@ -506,8 +579,10 @@ export async function applyPlan(work, { board, cli = DEFAULT_CLI, log = console.
        so the read-back sees the line */
     if (t.rehearsal && s.op === 'profile rule-add') await run(['profile', 'add', plan.project.dir, s.onReal || s.args[2]], { env });
     known.set(s.id, id);
-    results[s.id] = { id, at: new Date().toISOString() };
-    imp.steps.push(entry(s, id));
+    results[s.id] = { id, at: new Date().toISOString(), ...(was ? { was } : {}) };
+    imp.steps.push(entry(was ? { ...s, was } : s, id));
+    /* the numbers of the steps the import added, which its undo strikes; a step added later is never the import's */
+    if (s.op === 'task update' && String(s.id).endsWith('@steps')) imp.steps[imp.steps.length - 1].checks = addedSteps(s.args, r.out);
     writeJson(t.results, results);
     writeJson(t.manifest, manifest);
     tally[s.op] = (tally[s.op] || 0) + 1;
@@ -532,29 +607,46 @@ export async function applyPlan(work, { board, cli = DEFAULT_CLI, log = console.
   if (scratch.length) log('Named on the real board, which a scratch board lacks (' + scratch.length + '):\n  ' + scratch.join('\n  '));
   if (refusals.length) log('Refused (' + refusals.length + '):\n  ' + refusals.join('\n  '));
   const goes = (plan.folders || []).filter((f) => f.end !== 'keep');
-  if (goes.length || (plan.cards || []).length || (plan.claude || []).length) log('The handover makes the repo edits on the go, each folder once its gate clears it (--coverage, then --handover): '
-    + (plan.cards || []).length + ' cards, ' + (plan.claude || []).length + ' ledger rewrites, ' + goes.length + ' folders deleted, retired or moved');
+  if (goes.length || (plan.cards || []).length || (plan.claude || []).length || (plan.lineEdits || []).length) log('The handover makes the repo edits on the go in one commit, each folder once its gate clears it (--coverage, then --handover): '
+    + (plan.cards || []).length + ' cards, ' + (plan.lineEdits || []).length + ' line edits of kept files, ' + (plan.claude || []).length + ' ledger rewrites, ' + goes.length + ' folders deleted, retired or moved');
   if (plan.pending.length) log('Not in this plan, waiting on the session: ' + plan.pending.length + ' items (plan.mjs lists them)');
-  let copy = null;
-  if (t && t.rehearsal) {
-    const cov = await runCoverage(work, { board, cli, log: () => {} });
-    const sample = new Map();
-    for (const s of imp.steps.filter((x) => /^(?:[A-Z]{1,3}-\d+(?:\.\d+)?|Q\d+)$/.test(String(x.id)) && !String(x.step).endsWith('@detail'))) {
-      if (!sample.has(s.kind)) sample.set(s.kind, []);
-      if (sample.get(s.kind).length < 3) sample.get(s.kind).push(s);
-    }
-    const ids = [...sample.values()].flat().map((s) => s.id);
-    const recs = await showMany(run, ids, unread(env));
-    const records = new Map(ids.map((id, i) => [id, recs[i]]));
-    /* the handover on a copy of the repo, which the fresh reader reads before the go; a write
-       with refused steps leaves the board short of the plan, so it gets no copy and no reader file */
-    if (refused) { dropCopy(work, t); log('No copy for the fresh reader: the write refused ' + refused + ' steps; fix them and rehearse again'); }
-    else try { copy = await rehearseHandover(work, { board, cli, log }); } catch (e) { log('No copy for the fresh reader: ' + oneLine(e && e.message)); }
-    const file = join(work, 'rehearsal.md');
-    writeFileSync(file, rehearsalReport(work, { plan, manifest, cov, wouldRun, triggers, copy, repo: repoState(plan.project.dir), records, timing: took }));
-    log('The rehearsal report, what will land: ' + file);
+  return { tally, refusals, skipped, scratch, wouldRun, triggers, refused, timing: took };
+}
+
+/* one rehearsal on a scratch board: the write, coverage, then the undo with its one press (a stand-in
+   on the scratch board for the user's Withdraw), so the undo is proven, not checked by hand; both counts in the report */
+const STAND_IN = 'rehearsal';
+export async function rehearse(work, { board, cli = DEFAULT_CLI, log = console.log } = {}) {
+  const t = target(work, board);
+  if (!t || !t.rehearsal) throw new Error('a rehearsal runs on a scratch board: --board file:<db>');
+  const w = await applyPlan(work, { board, cli, log });
+  const plan = loadPlan(work);
+  const cov = await runCoverage(work, { board, cli, log: () => {} });
+  const imp = () => readJson(t.manifest, { imports: [] }).imports.filter((i) => i.plan === plan.made).pop() || { steps: [] };
+  /* a record or a rule line the write made; a step on one (its checklist, its order) goes with it */
+  const made = (s) => s.id && s.id !== 'ok' && !s.fix;
+  const written = imp().steps.filter(made);
+  const undo = await proveUndo(work, { board, cli, log });
+  const after = imp().steps.filter(made);
+  const back = after.filter((s) => s.undoneAt && !s.stays);
+  const left = after.filter((s) => !(s.undoneAt && !s.stays));
+  const file = join(work, 'rehearsal.md');
+  writeFileSync(file, rehearsalReport(work, { plan, manifest: readJson(t.manifest, null), cov, written, undo: { back, left, failed: undo.failed, waiting: undo.waiting }, wouldRun: w.wouldRun, refusals: w.refusals }));
+  log('The undo took back ' + back.length + ' of the ' + written.length + ' records the write made' + (left.length ? '; ' + left.length + ' stay: ' + left.map((s) => s.kind + ' ' + s.id).join(', ') : '') + '.');
+  log('The rehearsal report: ' + file);
+  return { ...w, cov, written: written.length, undone: back.length, left: left.map((s) => s.id), undo };
+}
+/* the undo as the go's would run, on the scratch board: its request, the stand-in press, the undo again */
+async function proveUndo(work, { board, cli, log }) {
+  const t = target(work, board);
+  const quiet = () => {};
+  let u = await undoImport(work, { board, cli, session: STAND_IN, log: quiet });
+  for (const n of u.requests || []) {
+    const r = await cliRunner(cli)(['override', 'decide', String(n), 'allow', '--user', STAND_IN], { env: { ...process.env, ...t.env } });
+    if (!r.ok) { log('The stand-in press on request #' + n + ' was refused: ' + clip(r.why, 200)); return u; }
   }
-  return { tally, refusals, skipped, scratch, wouldRun, triggers, ...(copy ? { copy } : {}), timing: took };
+  if ((u.requests || []).length) u = await undoImport(work, { board, cli, session: STAND_IN, log: quiet });
+  return u;
 }
 
 /* a folder's end on the go. A delete needs nothing live in it: no code reader, a dormant plan's
@@ -575,13 +667,17 @@ function readersLeft(v, gone) {
   return more ? [...left, more + ' more files'] : left;
 }
 export const GONE = ['delete', 'retire'];
-export function folderGate(f, { cov = null, tracked = new Set(), untracked = [], changed = new Set(), runs = [], going = new Set() } = {}) {
+/* a skill folder that stays as a pointer at its card (`to`): its SKILL.md keeps only its name and
+   description, and its other files go */
+export const POINT = 'point';
+export function folderGate(f, { cov = null, tracked = new Set(), untracked = [], changed = new Set(), runs = [], going = new Set(), keeps = [] } = {}) {
   const path = folderKey(f.path);
   const end = f.end;
-  if (end !== 'move' && !GONE.includes(end)) return { path, end: 'keep', go: false, why: f.why || 'kept' };
+  if (end !== 'move' && end !== POINT && !GONE.includes(end)) return { path, end: 'keep', go: false, why: f.why || 'kept' };
   const ev = f.evidence || {};
   const stay = (why) => ({ path, end, go: false, hold: 'kept', why });
   if (end === 'move' && !f.to) return stay('a move with no folder to go to');
+  if (end === POINT && !f.to) return stay('a pointer with no card to name');
   const gone = (r) => [...going].some((g) => under(r, g)) || (tracked.size > 0 && !tracked.has(r) && !untracked.includes(r));
   const readers = readersLeft(ev.codeReaders, gone);
   if (readers.length) return stay('read by ' + readers.join(', '));
@@ -590,10 +686,16 @@ export function folderGate(f, { cov = null, tracked = new Set(), untracked = [],
   const dirty = [...changed].filter((x) => under(x, path));
   if (dirty.length) return { path, end, go: false, hold: 'skipped', why: 'uncommitted changes in ' + dirty.length + ' files (' + dirty.slice(0, 3).join(', ') + ')' };
   let hooked = [];
-  if (GONE.includes(end)) {
+  let left = [];
+  if (GONE.includes(end) || end === POINT) {
     if (ev.openItems > 0 && f.dormant && !f.answeredBy) return stay(ev.openItems + ' open items, and no answer to the dormant-work call names it');
-    const loose = untracked.filter((x) => under(x, path));
-    if (loose.length || ev.untracked > 0) return stay('it holds ' + (loose.length || ev.untracked) + ' untracked files: git has no copy of them');
+    /* an untracked file a keep entry of its own names stays on disk, since git rm takes tracked files only */
+    const inside = untracked.filter((x) => under(x, path));
+    left = inside.filter((x) => keeps.some((k) => k !== path && under(k, path) && under(x, k)));
+    const loose = inside.filter((x) => !left.includes(x));
+    if (loose.length || (!inside.length && ev.untracked > 0)) return stay('it holds ' + (loose.length || ev.untracked) + ' untracked files: git has no copy of them');
+  }
+  if (GONE.includes(end)) {
     /* the settings entries that run it leave in its commit; one in a file git does not keep is the user's to take out */
     hooked = runs.filter((x) => runsIt(x.command, path, tracked.has(path)));
     const local = hooked.find((x) => !x.tracked);
@@ -604,19 +706,36 @@ export function folderGate(f, { cov = null, tracked = new Set(), untracked = [],
   let files = 0;
   for (const x of tracked) if (under(x, path)) files++;
   if (!files) return stay('nothing of it is in git');
-  return { path, end, go: true, files, ...(tracked.has(path) ? { file: true } : {}), ...(end === 'move' ? { to: folderKey(f.to) } : {}),
-    ...(hooked.length ? { unhook: hooked.map((x) => ({ file: x.file, what: x.what })) } : {}), why: f.why || '' };
+  return { path, end, go: true, files, ...(tracked.has(path) ? { file: true } : {}), ...(end === 'move' || end === POINT ? { to: folderKey(f.to) } : {}), ...(end === POINT && f.description ? { description: String(f.description) } : {}),
+    ...(hooked.length ? { unhook: hooked.map((x) => ({ file: x.file, what: x.what })) } : {}), ...(left.length ? { stays: left } : {}), why: f.why || '' };
 }
 /* a folder as its commit names it; a file unit keeps its own name */
 const unit = (g) => g.path + (g.file ? '' : '/');
+/* a skill's SKILL.md as a pointer: its frontmatter name and description, then a line naming the card, so the
+   agent keeps a skill it can call while the card holds the one copy of the steps; `description` replaces a stale one */
+export function pointerSkill(text, to, description = null) {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(String(text || ''));
+  let key = null;
+  const keep = [];
+  for (const l of front ? front[1].split(/\r?\n/) : []) {
+    const k = /^([A-Za-z][\w-]*):/.exec(l);
+    if (k) key = k[1];
+    if (key === 'name' || (key === 'description' && !description)) keep.push(l);
+  }
+  if (description) keep.push('description: ' + JSON.stringify(String(description).replace(/\s+/g, ' ').trim()));
+  const name = (/^name:\s*(.+)$/m.exec(keep.join('\n')) || [])[1];
+  if (!name) return null;
+  return '---\n' + keep.join('\n') + '\n---\n\n# ' + name.trim().replace(/^["']|["']$/g, '') + '\n\nThe steps of this routine live in the procedure card `' + to + '`: read it and follow its steps.\n';
+}
 /* the gates with the readers that go in the same run discounted: a unit leaves the going set when its
    own gate holds it, until none does; `goes` limits the units this call takes (--file) */
 export function gatesOf(plan, cov, repo, { goes = () => true } = {}) {
   const fs = plan.folders || [];
   const loads = Object.entries(plan.loaders || {});
   let going = new Set(fs.filter((f) => GONE.includes(f.end) && goes(f.path)).map((f) => folderKey(f.path)));
+  const keeps = fs.filter((f) => f.end === 'keep').map((f) => folderKey(f.path));
   for (;;) {
-    const gates = fs.map((f) => folderGate(f, { cov, ...repo, going }));
+    const gates = fs.map((f) => folderGate(f, { cov, ...repo, going, keeps }));
     /* a loader stays while a file it loads stays held, so the rules a gap holds back still reach sessions */
     const heldAt = (file) => gates.find((g) => g.end !== 'keep' && !g.go && under(file, g.path));
     for (const g of gates.filter((x) => x.go && GONE.includes(x.end))) {
@@ -689,131 +808,59 @@ function unignore(dir, g, tracked, dirty) {
   return { files, left };
 }
 
-/* the rehearsal shows content, not counts. It opens with the check against the aim: does the
-   converted project hold the old system's live state and none of its history; then every rule line in full,
-   each card, three records per other kind read back, the CLAUDE.md ledger, coverage and every folder's end. */
-function keptVerdict(step) {
-  const x = step.replaces || {};
-  if (x.how === 'clear') return 'the rule wins: written on ' + step.args[2] + ', and the old line comes off ' + x.profile + (x.holders > 1 ? ', which ' + x.holders + ' records hold' : '');
-  if (x.how === 'setting') return 'the rule wins: written on ' + step.args[2] + ', with ' + x.with + ' switched off there';
-  if (x.how === 'beside') return 'both stand: ' + x.with + ' is a setting the rule cannot replace, so change it in Settings';
-  return step.args[3] === x.with ? 'the rule wins, replacing it on ' + step.args[2] : 'the rule wins, written beside it';
+/* the reports are counts by kind and by group, the group answers, and what the user acts on */
+const kindsSaid = (steps) => { const n = {}; for (const s of steps) n[s.kind || s.op] = (n[s.kind || s.op] || 0) + 1; return Object.entries(n).map(([k, c]) => counted(c, KIND_WORD[k] || k)).join(', ') || 'none'; };
+function groupLines(plan) {
+  const out = [];
+  for (const a of plan.answers || []) {
+    const items = (plan.items || []).filter((x) => x.dropped === a.call || x.answeredBy === a.call).length;
+    const folders = (plan.folders || []).filter((f) => f.group === a.call || f.answeredBy === a.call).map((f) => f.path + ' (' + f.end + ')');
+    out.push('- ' + a.call + ': ' + oneLine(a.ask) + ' Answered ' + a.letter + ', ' + a.label + (a.count !== undefined ? ' (' + counted(a.count, 'item') + ')' : '')
+      + (items ? '; ' + counted(items, 'item') + ' follow it' : '') + (folders.length ? '; folders ' + folders.join(', ') : '') + '.');
+  }
+  return out.length ? out : ['None.'];
 }
-const evidenceLine = (ev = {}) => [ev.lastTouch ? 'last touched ' + ev.lastTouch : null, ev.commits !== undefined ? ev.commits + ' commits' : null,
-  ev.workflowShare !== undefined ? Math.round(ev.workflowShare * 100) + '% workflow commits' : null, ev.untracked ? ev.untracked + ' untracked' : null,
-  ev.openItems ? ev.openItems + ' open items' : null, readersIn(ev.liveCites).length ? 'cited live at ' + readersIn(ev.liveCites).join(', ') : null,
-  readersIn(ev.codeReaders).length ? 'read by ' + readersIn(ev.codeReaders).join(', ') : null].filter(Boolean).join('; ') || 'no evidence recorded';
-export function rehearsalReport(work, { plan, manifest, cov, records = new Map(), wouldRun = [], triggers = [], copy = null, repo = null, timing = null }) {
-  const steps = manifest.imports.filter((i) => !i.undone).flatMap((i) => i.steps);
-  const idOf = (step) => (steps.find((s) => s.step === step) || {}).id || null;
-  const written = new Set(steps.filter((s) => s.id).map((s) => s.row));
-  const items = plan.items || [];
-  const gates = gatesOf(plan, cov, repo || { tracked: new Set(), untracked: [], changed: new Set() });
-  const out = ['# Rehearsal of the ' + plan.label + ' conversion', '', 'Read back from the scratch board ' + manifest.store + '. Nothing is on the live board or changed in the repo yet.', ''];
-  out.push('## The check against the aim', '', 'Does the converted project hold the old system\'s live state, and none of its history?', '');
-  /* the doctor's fixes change records already on the board: counted apart from the old system's live state */
-  const live = items.filter((x) => x.kind !== 'fix');
-  const fixes = items.filter((x) => x.kind === 'fix' && !x.cut && !(x.fields && x.fields.info));
-  /* a cut coverage backs (out of force in its source) loses nothing */
-  const backed = new Set(((cov && cov.sources) || []).flatMap((s) => s.drops.map((d) => d.item)));
-  const gaps = live.filter((x) => x.cut && !x.dropped && !backed.has(x.id));
-  const off = live.filter((x) => x.cut && !x.dropped && backed.has(x.id));
-  const notWritten = live.filter((x) => !x.cut && !x.covered && !written.has(x.id) && x.kind !== 'card');
-  const stays = gates.filter((g) => g.hold);
-  out.push('- Live state: ' + (live.length - gaps.length - off.length - notWritten.length) + ' of ' + live.length + ' items reach the board or are already there'
-    + (off.length ? '; ' + off.length + ' cut and backed (out of force in their sources, or dropped on evidence that holds)' : '')
-    + (gaps.length ? '; ' + gaps.length + ' cut with no answer of the user (gaps): ' + gaps.map((x) => x.id).join(', ') : '')
-    + (notWritten.length ? '; ' + notWritten.length + ' the write did not take: ' + notWritten.map((x) => x.id).join(', ') : '') + '.');
-  out.push('- History: ' + gates.filter((g) => g.go).length + ' folders leave the tree on the go' + (stays.length ? '; ' + stays.length + ' stay, each named below with why' : '') + '.');
-  if (fixes.length) out.push('- The doctor\'s fixes: ' + fixes.length + ' to records already on the board, run on the go (listed at the end).');
-  out.push('');
-  out.push('### Items by kind, with their sources\' folders', '');
-  const kinds = [...new Set(items.map((x) => x.kind))];
-  for (const k of kinds) {
-    const of = items.filter((x) => x.kind === k);
-    const folders = [...new Set(of.map((x) => (x.source && x.source.file ? (x.source.file.includes('/') ? x.source.file.replace(/\/[^/]*$/, '/') : '(top level)') : '(no file)')))];
-    const writes = k === 'card' ? of.filter((x) => (plan.cards || []).some((c) => c.item === x.id)).length : of.filter((x) => written.has(x.id)).length;
-    out.push('- ' + k + ': ' + writes + (k === 'card' ? ' written by the handover, ' : ' written, ') + of.filter((x) => x.covered).length + ' already on the board, '
-      + of.filter((x) => x.dropped).length + ' dropped by an answer, ' + of.filter((x) => x.cut && !x.dropped).length + ' cut; from ' + folders.join(', '));
-  }
-  if (!kinds.length) out.push('None.');
-  out.push('', '### Folders by end, with their evidence', '');
-  for (const end of ['retire', 'delete', 'move', 'keep']) {
-    for (const f of (plan.folders || []).filter((x) => (x.end || 'keep') === end)) {
-      const g = gates.find((x) => x.path === folderKey(f.path)) || {};
-      out.push('- ' + f.path + ': ' + end + (f.to ? ' to ' + f.to : '') + (g.hold ? ', but it stays: ' + g.why : '') + '. ' + (f.why || '') + ' (' + evidenceLine(f.evidence) + ')'
-        + (f.answeredBy ? '; answered by ' + f.answeredBy : ''));
-    }
-  }
-  if (!(plan.folders || []).length) out.push('None.');
-  out.push('', '### The calls and their answers', '');
-  for (const a of plan.answers || []) out.push('- ' + a.call + ': ' + a.ask + ' Answered ' + a.letter + ': ' + a.label);
-  if (!(plan.answers || []).length) out.push('None.');
-  out.push('');
-  if (timing) out.push('The write: ' + timing.steps + ' calls in ' + (timing.ms / 1000).toFixed(1) + ' s, ' + timing.perSecond + ' a second, in one process.', '');
-  out.push('An undo cannot take back the ' + plan.steps.filter((s) => s.op === 'knowledge new').length + ' knowledge records this write makes (no verb removes one), and its '
-    + plan.steps.filter((s) => s.op === 'decide').length + ' decisions leave only by a withdraw request the user presses Withdraw on, one each.', '');
-  out.push('## Rule lines', '');
-  const rules = items.filter((x) => x.kind === 'rule');
-  for (const r of rules) {
-    const step = plan.steps.find((s) => s.id === r.id);
-    const verdict = r.covered ? 'already on the board as ' + r.covered + ', not written' : step ? (step.replaces ? 'differs from ' + step.replaces.with + ': ' + keptVerdict(step) : 'new')
-      : r.dropped ? 'dropped by the answer to ' + r.dropped : r.cut ? 'cut' : 'waiting on the session';
-    const text = step ? step.args[step.args.indexOf('--text') + 1] : (r.fields && r.fields.text) || r.text || r.title;
-    const detail = idOf(r.id + '@detail') || r.heldDetail;
-    out.push('- `' + ((r.fields && r.fields.slug) || (step && step.args[3]) || r.id) + '` (' + verdict + (detail ? '; its detail record ' + detail : '') + '): ' + oneLine(String(text).replace(REF, (m, id) => idOf(id) || m)));
-  }
-  if (!rules.length) out.push('None.');
-  out.push('', '## Procedure cards', '');
-  for (const c of plan.cards || []) {
-    const item = items.find((x) => x.id === c.item);
-    if (!item) continue;
-    const { text } = cardText(cardRow(item, c.target));
-    const front = (/^---\n([\s\S]*?)\n---/.exec(text) || [])[1] || '';
-    out.push('### ' + c.target, '', '```yaml', front, '```', '', ...text.split('\n').filter((l) => /^### /.test(l)).map((l) => '- ' + l.slice(4)), '');
-  }
-  if (!(plan.cards || []).length) out.push('None.', '');
-  out.push('## Sample records', '');
-  const byKind = new Map();
-  for (const s of steps.filter((x) => records.has(x.id))) { if (!byKind.has(s.kind)) byKind.set(s.kind, []); byKind.get(s.kind).push(s); }
-  const textOf = (v) => (typeof v === 'string' ? v : Array.isArray(v) ? v.map(textOf).join(' ') : '');
-  for (const [kind, list] of byKind) {
-    out.push('### ' + kind, '');
-    for (const s of list) {
-      const rec = records.get(s.id) || {};
-      const sec = rec.sections || {};
-      const body = oneLine(textOf([sec.Body || sec.Description || rec.description, sec.Words, sec.Ask || rec.ask, sec.Gist, rec.goal, rec.state].filter(Boolean)));
-      out.push('- ' + s.id + ' ' + oneLine(rec.name || rec.title || rec.focus || '') + ': ' + (body.length > 300 ? body.slice(0, 297) + '...' : body));
-    }
+function countLines(plan, written) {
+  const dropped = new Map();
+  for (const x of (plan.items || []).filter((y) => y.dropped)) dropped.set(x.dropped, (dropped.get(x.dropped) || 0) + 1);
+  const cut = (plan.items || []).filter((x) => x.cut && !x.dropped).length;
+  return ['- Written: ' + kindsSaid(written) + '.', '- Dropped by group: ' + ([...dropped].map(([c, n]) => c + ' ' + n).join(', ') || 'none') + '.',
+    ...(cut ? ['- Cut with no group answer: ' + cut + '.'] : []), ...((plan.covered || []).length ? ['- Already on the board: ' + plan.covered.length + '.'] : [])];
+}
+export function rehearsalReport(work, { plan, manifest, cov, written = [], undo = null, wouldRun = [], refusals = [] }) {
+  const out = ['# Rehearsal of the ' + plan.label + ' conversion', '', 'On the scratch board ' + ((manifest && manifest.store) || 'given') + ': written, read back by coverage, then undone. Nothing is on the live board or changed in the repo.', ''];
+  out.push('## Counts', '', ...countLines(plan, written), '');
+  out.push('## The group answers', '', ...groupLines(plan), '');
+  if ((plan.history || []).length) out.push('## History pointers', '', ...plan.history.map((h) => '- ' + h.item + (h.amends ? ', an amend of ' + h.amends + ' the go runs on the real board' : '') + ': ' + h.folders.join(', ') + ', in git at ' + h.commit + '.'), '');
+  if (undo) {
+    out.push('## The undo', '', 'The undo ran with its one press (a stand-in for the user\'s Withdraw on the scratch board): it took back ' + undo.back.length + ' of the ' + written.length + ' records the write made'
+      + (undo.back.length ? ' (' + kindsSaid(undo.back) + ')' : '') + '.');
+    if (undo.left.length) out.push('Stay: ' + undo.left.map((s) => s.kind + ' ' + s.id).join(', ') + '.');
+    for (const f of undo.failed || []) out.push('- refused: ' + f);
+    for (const w of undo.waiting || []) out.push('- still waiting: ' + w);
     out.push('');
   }
-  out.push('## The instruction files, clause by clause', '');
-  const section = 'section' in plan ? plan.section : 'CLAUDE.md';
-  out.push(section ? 'The AskerDo section goes at the end of ' + section + ', the instruction file Claude reads at the root.' : 'Claude reads no instruction file at the root here, so no AskerDo section is written.', '');
-  for (const l of plan.claude || []) for (const c of l.clauses) out.push('- ' + l.path + ' line ' + c.line + ', ' + c.fate + (c.by ? ' by ' + c.by : '') + (c.why ? ' (' + c.why + ')' : '') + ': ' + c.text
-    + (c.fate === 'split' ? ' Kept as: ' + oneLine(c.kept) : ''));
-  if (!(plan.claude || []).length) out.push('No ledger.');
-  out.push('', '## Coverage against the scratch board', '', table(cov), '');
-  out.push('## Every folder\'s end state', '');
-  for (const g of gates) out.push('- ' + g.path + ': ' + (g.go ? (g.end === 'move' ? 'moves to ' + g.to : g.end === 'retire' ? 'retires with what it loads, deleted, in git' : 'deleted, in git') + ', ' + g.files + ' files'
-    + (g.unhook ? ', its entries out of ' + g.unhook.map((u) => u.file + ' (' + u.what + ')').join(', ') : '') + ', one commit' : g.hold ? 'stays (' + g.hold + '): ' + g.why : 'kept: ' + g.why));
-  if (!gates.length) out.push('None.');
-  if ((plan.edits || []).length) out.push('', 'Edits the session makes by hand on the go:', ...plan.edits.map((e) => '- ' + e.what));
-  if (copy) out.push('', ...copyLines(copy));
-  if (triggers.length) out.push('', '## Files added to facts the board holds', '', 'Each fact already on the board gains the globs of the `paths:` menu it came from, so a session touching those files is shown it. It changes a record on the real board, so the go runs it.', '', ...triggers.map((w) => '- ' + w));
-  if (wouldRun.length) out.push('', '## The doctor\'s fixes', '', 'Each changes a record already on the real board, so the rehearsal runs none of them; the go runs them.', '', ...wouldRun.map((w) => '- ' + w));
-  out.push('');
+  out.push('## Coverage', '', table(cov), '');
+  const gates = gatesOf(plan, cov, repoState(plan.project.dir));
+  const go = gates.filter((g) => g.go);
+  out.push('## The handover, one commit on the go', '', '- ' + (plan.cards || []).length + ' cards, ' + (plan.lineEdits || []).length + ' line edits of kept files, ' + (plan.claude || []).length + ' instruction files from their ledgers.');
+  out.push(...go.map((g) => '- ' + g.path + ': ' + (g.end === 'move' ? 'moves to ' + g.to : g.end === POINT ? 'a pointer at ' + g.to : g.end === 'retire' ? 'retires' : 'goes') + ' (' + counted(g.files, 'file') + ')'));
+  out.push(...gates.filter((g) => g.hold).map((g) => '- ' + g.path + ' stays: ' + g.why), '');
+  if ((plan.unlinked || []).length) out.push('## Links the plan dropped', '', ...plan.unlinked.map((u) => '- ' + (u.kind || 'Edge') + ': ' + u.item + ' names ' + u.names + ', which ' + u.why + '.'), '');
+  if (refusals.length) out.push('## Refused', '', ...refusals.map((r) => '- ' + r), '');
+  if (wouldRun.length) out.push('## The doctor\'s fixes the go runs', '', ...wouldRun.map((w) => '- ' + w), '');
   return out.join('\n');
 }
-
-/* does a commit, or a file (with :line), exist in the project */
-export function gitHasIn(dir) {
-  return (ref) => {
-    const r = String(ref || '');
-    if (/^[0-9a-f]{7,40}$/i.test(r)) return spawnSync('git', ['cat-file', '-e', r + '^{commit}'], { cwd: dir, windowsHide: true }).status === 0;
-    const m = /^(.+?)(?:[:#]L?(\d+))?$/.exec(r);
-    try { const text = readFileSync(join(dir, m[1]), 'utf8'); return !m[2] || text.split('\n').length >= Number(m[2]); } catch { return false; }
-  };
+/* the run report after the handover: counts written and dropped by group, the group answers, the commit,
+   the undo command and the deviations; the session adds the field bugs it filed */
+export function runReport(work, { plan, manifest, commit = null, skipped = [], held = [], stopped = null }) {
+  const steps = ((manifest && manifest.imports) || []).filter((i) => i.plan === plan.made && !i.undone).flatMap((i) => i.steps).filter((s) => s.id && !s.fix && s.op !== 'proc scan');
+  const out = ['# The ' + plan.label + ' conversion', '', '## Counts', '', ...countLines(plan, steps), '', '## The group answers', '', ...groupLines(plan), ''];
+  out.push('## The commit', '', commit ? '`' + commit + '`, one commit; `git revert ' + commit + '` takes it back.' : 'None.', '');
+  out.push('## The undo', '', '`node apply.mjs ' + work + ' --undo --board live --session <own id>`, then `git revert ' + (commit || '<the handover commit>') + '` on the user\'s word.', '');
+  const dev = [...(stopped ? ['stopped at the ' + stopped.batch + ' step: ' + stopped.why] : []), ...held.map((h) => h.path + ' stays: ' + h.why), ...skipped.map((s) => s.path + ' skipped: ' + s.why)];
+  out.push('## Deviations', '', ...(dev.length ? dev.map((d) => '- ' + d) : ['None.']), '', '## Field bugs', '', 'The session names each it filed, or none.', '');
+  return out.join('\n');
 }
 
 /* the plan's items as coverage reads them: a card with the path the handover writes it at */
@@ -830,13 +877,20 @@ export async function runCoverage(work, { board = 'live', cli = DEFAULT_CLI, log
   const env = { ...process.env, ...(t.env || {}) };
   const dir = plan.project.dir;
   const eff = await run(['profile', 'show-effective', dir, '--rules'], { env });
-  const readFile = (p) => { try { return readFileSync(join(dir, p), 'utf8'); } catch { return null; } };
+  /* a file the handover's line edits changed reads as before them, the text the items' lines name */
+  const edited = new Map(manifest.imports.filter((i) => i.plan === plan.made && !i.undone).flatMap((i) => i.repo || []).filter((e) => e.op === LINES && e.commit).map((e) => [e.path, e.commit]));
+  const readFile = (p) => {
+    if (edited.has(p)) { const r = gitIn(dir)(['show', edited.get(p) + '^:' + p]); if (r.status === 0) return r.stdout; }
+    try { return readFileSync(join(dir, p), 'utf8'); } catch { return null; }
+  };
   const items = coverItems(plan);
   const readRecord = recordReader({ manifest, show: (ids) => showMany(run, ids, unread(env)), rules: (eff.ok && eff.out && eff.out.rows) || [], readFile,
     cardText: (item) => cardText(cardRow(item, item.target)).text });
   await readRecord.prefetch(items);
   const cov = coverage(items, { manifest, readRecord, readFile, ledger: plan.claude || [], repoint: readJson(t.repoint, null), judged: plan.judged || [], whole: plan.readWhole || [], proved: plan.readNamed || {},
-    exists: (p) => existsSync(join(dir, p)), going: (plan.folders || []).filter((f) => f.end === 'move' || GONE.includes(f.end)).map((f) => f.path) });
+    exists: (p) => existsSync(join(dir, p)), going: (plan.folders || []).filter((f) => f.end === 'move' || f.end === POINT || GONE.includes(f.end)).map((f) => f.path), lineEdits: plan.lineEdits || [], backed: plan.backed || [],
+    /* a cut's board records are read from the survey's facts, which a scratch board lacks */
+    records: boardRecords((readFacts(work) || {}).board || plan.board) });
   cov.board = t.name;
   writeJson(t.coverage, cov);
   log('Coverage against ' + t.name + ' (' + t.coverage + '):\n' + table(cov));
@@ -866,12 +920,14 @@ export function claudeText(text, claude, board) {
     const { end, clauses: parts } = blockAt(lines, line - 1);
     const now = parts.slice();
     const used = new Set();
+    /* a table is one clause: its kept words keep their rows */
+    const table = /^\s*\|/.test(lines[line - 1]);
     for (const c of cs) {
       const k = parts.findIndex((p, n) => !used.has(n) && fold(p).includes(fold(c.text).slice(0, 40)));
       if (k < 0) throw new Error(claude.path + ' changed since the survey: line ' + line + ' no longer holds "' + clip(c.text, 60) + '"; run the survey again');
       used.add(k);
       if (gone(c)) now[k] = null;
-      else if (c.fate === 'split') now[k] = oneLine(c.kept);
+      else if (c.fate === 'split') now[k] = table ? String(c.kept).trim() : oneLine(c.kept);
     }
     for (let i = line - 1; i < end; i++) out[i] = null;
     const left = now.filter(Boolean).join(' ');
@@ -993,26 +1049,58 @@ export function placeCite(line, at, len, to, { note = null, md = false, fenced =
   const head = line.slice(0, at) + to + line.slice(end, after);
   return head + (IN_GIT.test(line.slice(after)) ? '' : note) + line.slice(after);
 }
-/* the repoint, on the go before any move or delete. Only cites in files that stay of files or
-   folders that go are rewritten: a converted source's entry or section to its record, a moved path to its new
-   one, a deleted one to `<path> (in git at <sha>)`; a cite inside a folder that goes goes with it. `gone`
-   names the folders that pass their gate ({ path, end, to }); without it they are read from coverage.json. */
-export function repoint(work, { board = 'live', file = null, log = console.log, manifest: held = null, gone = null, dir: at = null, at: to = null } = {}) {
-  const t = to || target(work, board);
+/* the files proc scan reads as procedure cards */
+const CARD = /^docs\/procedures\/(?!_|README\.md$)[^/]+\.md$/;
+/* a card's parsed spots by line index: its frontmatter, and in References each bullet's target span */
+function cardSpots(lines, fenced) {
+  const front = new Set();
+  if (lines[0] === '---') for (let i = 0; i < lines.length; i++) { front.add(i); if (i && lines[i] === '---') break; }
+  const targets = new Map();
+  let refs = false;
+  lines.forEach((l, i) => {
+    if (front.has(i) || fenced.has(i)) return;
+    if (/^## /.test(l)) { refs = l.slice(3).trim() === 'References'; return; }
+    const m = refs ? /^- `([^`]+)`: /.exec(l) : null;
+    if (m) targets.set(i, [3, 3 + m[1].length]);
+  });
+  return { front, targets };
+}
+/* a References bullet keeps its target then ": " first, so the note follows the bullet's words; a note there already
+   (the last token before it no path) is this cite's */
+function noteAtEnd(line, at, len, to, note) {
+  const next = line.slice(0, at) + to + line.slice(at + len);
+  const body = next.replace(/\s+$/, '');
+  const was = /^(.*?) \(in git at [0-9a-f]+\)$/.exec(body);
+  if (was && !/[`/]/.test(was[1].split(/\s+/).pop())) return next;
+  return body + note + next.slice(body.length);
+}
+/* the parent of this plan's import's first handover commit, else HEAD (no batch has landed yet) */
+function handoverBase(git, manifest, plan) {
+  const imps = ((manifest && manifest.imports) || []).filter((i) => !i.undone);
+  const imp = imps.find((i) => i.plan === plan.made) || imps[imps.length - 1];
+  const first = ((imp && imp.repo) || []).find((e) => e.commit);
+  const up = first ? git(['rev-parse', '--verify', '--quiet', first.commit + '^']) : null;
+  return String((up && up.status === 0 ? up : git(['rev-parse', 'HEAD'])).stdout || '').trim();
+}
+/* the repoint, in the handover before any move or delete, its edits left for the handover's one commit.
+   Only cites in files that stay of files or folders that go are rewritten: a converted source's entry or section to
+   its record, a moved path to its new one, a deleted one to `<path> (in git at <sha>)`. `gone` names the folders
+   that pass their gate ({ path, end, to }); `repo` is the tree as the handover found it; `edited` the files this
+   handover's line edits changed. By default only the files a session reads (SESSION_READS and the plan's sessionReads);
+   the whole tree at depth. */
+function repoint(work, { log = console.log, manifest, gone, at: t, git, repo, edited = [] }) {
   const plan = loadPlan(work);
-  const dir = at || plan.project.dir;
-  const git = gitIn(dir);
-  if (git(['rev-parse', '--show-toplevel']).status !== 0) throw new Error(dir + ' is not a git repo: the repoint commits its edits, so it makes none here');
-  const manifest = held || readJson(t.manifest, null);
-  if (!manifest) throw new Error('no manifest at ' + t.manifest + ': the repoint follows the write');
-  const repo = repoState(dir);
-  const folders = (gone || gatesOf(plan, readJson(t.coverage, null), repo)).filter((g) => g.go);
-  /* a deleted folder's text stays at the commit before its delete; HEAD holds it now, which git show needs */
-  const sha = String(git(['rev-parse', 'HEAD']).stdout || '').trim();
+  const dir = plan.project.dir;
+  const folders = gone.filter((g) => g.go);
+  /* a note names the commit before the handover's first batch: it holds every going file and stays the parent of a
+     squash of the conversion's commits, where a commit inside the handover would be orphaned */
+  const sha = handoverBase(git, manifest, plan);
   const idmap = readJson(t.idmap, {}) || {};
-  for (const g of folders) idmap[g.path + '/'] = g.end === 'move' ? { kind: 'docs', path: g.to + '/', folder: true } : { kind: 'history', sha, folder: true };
+  /* a pointer skill's folder and SKILL.md stay: only its other files go */
+  const stays = (r) => folders.some((g) => (g.end === POINT && (folderKey(r) === g.path || folderKey(r) === g.path + '/SKILL.md')) || (g.stays || []).includes(folderKey(r)));
+  for (const g of folders) if (g.end !== POINT) idmap[g.path + '/'] = g.end === 'move' ? { kind: 'docs', path: g.to + '/', folder: true } : { kind: 'history', sha, folder: true };
   writeJson(t.idmap, idmap);
-  const goneOf = (f) => folders.find((g) => under(f, g.path));
+  const goneOf = (f) => (stays(f) ? undefined : folders.find((g) => under(f, g.path)));
   const tracked = [...repo.tracked];
   const retired = tracked.filter(goneOf);
   /* file-level ends, in memory: the id map keeps the folder's */
@@ -1075,12 +1163,16 @@ export function repoint(work, { board = 'live', file = null, log = console.log, 
     /* a file-level cite: the track it became, the new path, or git; a section's name stays after it */
     const m = idmap[h.of] && idmap[h.of].kind === 'track' && idmap[h.of].id ? idmap[h.of] : ends.get(h.of);
     if (rest.startsWith(' (in git at ')) return { done: true };
-    const to = !m ? null : m.kind === 'track' ? 'track ' + m.id : m.kind === 'docs' ? m.path : h.of;
+    /* a path git keeps stays as written (its slashes too), the note after it */
+    const to = !m ? null : m.kind === 'track' ? 'track ' + m.id : m.kind === 'docs' ? m.path : h.form === 'path' ? h.match.replace(/^\.\//, '') : h.of;
     return to ? { to, len: h.form === 'section' ? stemOf(h.of).length : h.match.length, ...(m.kind === 'history' ? { note } : {}) } : null;
   };
   /* a cite of a folder that goes, or of a path inside it no file holds, by its path */
-  const folderRes = folders.map((g) => ({ g, re: folderRe(g.path) }));
-  const list = file ? [file] : tracked.filter((f) => !goneOf(f));
+  /* the real project's root, which a cite on a rehearsal copy writes too */
+  const projectRoot = plan.project.dir;
+  const folderRes = folders.map((g) => ({ g, re: folderRe(g.path, projectRoot) }));
+  const reads = new Set(plan.sessionReads || []);
+  const list = tracked.filter((f) => !goneOf(f) && (plan.depth || SESSION_READS.test(f) || reads.has(f)));
   const rewritten = [];
   const unresolved = [];
   const failed = [];
@@ -1096,7 +1188,13 @@ export function repoint(work, { board = 'live', file = null, log = console.log, 
   /* a git note goes only where the cite sits in running text; elsewhere the session's word in `cites` (note,
      leave, point) decides, and with none the value stays as it is, listed. In running text the session's
      point wins, then the card a going skill became, then git */
-  const judged = citeJudge(plan.cites);
+  /* the session's words name lines as the plan read them, before the line edits took any out */
+  const judgedAt = citeJudge(plan.cites);
+  const lined = new Set([...linedFiles(manifest, plan), ...edited]);
+  const was = lineWas(plan, lined);
+  const judged = (f, n, of) => judgedAt(f, was(f, n), of);
+  /* a cite a waiting line edit takes out is left for it, so its line still holds what the plan checked */
+  const waitTakes = lineEditTakes((plan.lineEdits || []).filter((e) => !lined.has(e.file)));
   const asValue = new Set();
   const bareWord = (f, n, of, line, at, len, isFenced, tool, lead = '', link = false) => {
     if (line[at - 1] === '!' || isGlob(line.slice(at, at + len), line.slice(at + len)) || isFenced) return { do: 'note' };
@@ -1114,8 +1212,8 @@ export function repoint(work, { board = 'live', file = null, log = console.log, 
     missing.add(f + '\n' + n + '\n' + of);
     unresolved.push({ of, file: f, line: n, form: 'missing', text: clip(text, 200), missing: true });
   };
-  const goingAt = (r) => (r ? folders.find((g) => under(r, g.path)) : null);
-  const citesIn = citer(pieces);
+  const goingAt = (r) => (r && !stays(r) ? folders.find((g) => under(r, g.path)) : null);
+  const citesIn = citer(pieces, { root: projectRoot });
   /* a settings file the unhook rewrites is no prose: its entries leave whole with their unit */
   const unhooked = new Set(folders.flatMap((g) => (g.unhook || []).map((u) => u.file)));
   for (const f of list) {
@@ -1141,6 +1239,9 @@ export function repoint(work, { board = 'live', file = null, log = console.log, 
     /* the going path a link's target names: from its folder first; one that misses there may name a root path, as the
        prose here does */
     const linkGoes = (k) => {
+      /* a target written from the project root keeps its root as written */
+      const abs = k.len ? fromRoot(k.path, projectRoot) : null;
+      if (abs) return goingAt(abs.path) ? { r: abs.path, own: null, lead: abs.lead } : null;
       if (!k.len || /^(?:[a-z][\w+.-]*:|\/\/)/i.test(k.path)) return null;
       const own = k.path.startsWith('/') ? k.path.slice(1) : resolveFrom(f, k.path);
       const root = /^(?:\/|\.\.\/)/.test(k.path) ? null : k.path.replace(/^\.\//, '');
@@ -1149,16 +1250,43 @@ export function repoint(work, { board = 'live', file = null, log = console.log, 
     };
     /* a name labelling a link to the same going file stays its label, since the link pass moves or notes the target */
     const labels = (line, at, of) => md && linksIn(line).some((k) => at >= k.start && at < k.at && (linkGoes(k) || {}).r === of);
+    const card = CARD.test(f) ? cardSpots(lines, fenced) : null;
     /* the rewrite placed: kept as code where no note may go, listed where git never held what the note would name */
     const place = (line, n, at, len, to, of, noted) => {
-      const next = placeCite(line, at, len, to, { note: noted ? note : null, md, fenced: fenced.has(n - 1) });
+      /* a card's frontmatter takes no note, which would change a trigger or the summary its parser checks */
+      if (noted && card && card.front.has(n - 1)) {
+        if (!asValue.has(f + '\n' + n + '\n' + of)) { asValue.add(f + '\n' + n + '\n' + of); unresolved.push({ of, file: f, line: n, form: 'value', text: clip(line.trim(), 200), value: true, card: true }); }
+        return line;
+      }
+      const span = card && card.targets.get(n - 1);
+      const next = noted && span && at >= span[0] && at + len <= span[1] ? noteAtEnd(line, at, len, to, note)
+        : placeCite(line, at, len, to, { note: noted ? note : null, md, fenced: fenced.has(n - 1) });
       if (next === null) { keptAsCode(f, n, of, line); return line; }
       if (noted && !inGit(of)) { notInGit(f, n, of, line); return line; }
       return next;
     };
+    /* a bare name several going files share is one cite: the session's `of`, else the nearest file, else listed */
+    const spot = new Map();
+    for (const h of hits) if (h.form === 'name' || (h.form === 'section' && !h.anchor)) { const k = h.line + ':' + h.at; spot.set(k, [...(spot.get(k) || []), h]); }
+    const means = new Map();
+    for (const [k, hs] of spot) {
+      const cands = [...new Set(hs.map((h) => h.of))];
+      if (cands.length < 2) continue;
+      const said = cands.filter((of) => (judged(f, hs[0].line, of) || {}).of === of);
+      const pick = said.length === 1 ? said[0] : nearestOf(f, cands);
+      /* the session's leave keeps the words, listed nowhere */
+      if (said.length === 1 && judged(f, hs[0].line, pick).do === 'leave') { means.set(k, ''); continue; }
+      means.set(k, pick);
+      if (!pick) unresolved.push({ of: cands[0], file: f, line: hs[0].line, form: 'ambiguous', text: clip(hs[0].text, 200), among: cands, ...(hs.some((h) => h.tool) ? { tool: true } : {}) });
+    }
+    /* a span already rewritten on this line is never rewritten again */
+    const wrote = new Map();
     for (const h of hits.slice().sort((a, b) => b.line - a.line || b.at - a.at)) {
       const line = lines[h.line - 1];
-      if (inTarget(line, h.at)) continue;
+      const k = h.line + ':' + h.at;
+      if (means.has(k) && means.get(k) !== h.of) continue;
+      if ((wrote.get(h.line) || []).some(([a, b]) => h.at < b && h.at + h.match.length > a)) continue;
+      if (inTarget(line, h.at) || waitTakes(f, h.line, h.at, h.match.length, line)) continue;
       const r = resolveHit(h, line.slice(h.at + h.match.length), f, line, lead(h.line - 1));
       if (r && r.done) continue;
       if (r && h.form === 'name' && (r.note || r.to === (ends.get(h.of) || {}).path) && labels(line, h.at, h.of)) continue;
@@ -1170,6 +1298,7 @@ export function repoint(work, { board = 'live', file = null, log = console.log, 
       if (next === line) continue;
       lines[h.line - 1] = next;
       touched.add(h.line);
+      wrote.set(h.line, [...(wrote.get(h.line) || []), [h.at, h.at + h.match.length]]);
     }
     for (const { g, re } of near) {
       lines.forEach((line, i) => {
@@ -1180,6 +1309,7 @@ export function repoint(work, { board = 'live', file = null, log = console.log, 
           if (inTarget(next, m.index)) continue;
           const p = m[0].replace(/^\.\//, '').replace(/[.]+$/, '');
           const len = m[0].indexOf(p) + p.length;
+          if (stays(p) || waitTakes(f, i + 1, m.index, len, next)) continue;
           let to = g.end === 'move' ? g.to + p.slice(g.path.length) : p;
           const j = g.end === 'move' || next.slice(m.index + len).startsWith(' (in git at ') ? null : bareWord(f, i + 1, p, next, m.index, len, fenced.has(i), printed(next, m.index, f), lead(i));
           if (j && j.do === 'leave') continue;
@@ -1195,9 +1325,9 @@ export function repoint(work, { board = 'live', file = null, log = console.log, 
         const links = md ? linksIn(line) : [];
         const cands = [];
         for (const k of links) {
-          const { r, own } = linkGoes(k) || {};
+          const { r, own, lead } = linkGoes(k) || {};
           const dot = (s) => (k.path.startsWith('./') && !/^\.\.?\//.test(s) ? './' + s : s);
-          if (r) cands.push({ at: k.at, len: k.len, r, link: true, write: (to) => (k.path.startsWith('/') ? '/' + to : dot(r === own ? relFrom(f, to) : to)) });
+          if (r) cands.push({ at: k.at, len: k.len, r, link: true, write: (to) => (lead ? lead + to : k.path.startsWith('/') ? '/' + to : dot(r === own ? relFrom(f, to) : to)) });
         }
         for (const m of line.matchAll(UP_PATH)) {
           if (links.some((k) => m.index >= k.at && m.index < k.tEnd)) continue;
@@ -1206,6 +1336,7 @@ export function repoint(work, { board = 'live', file = null, log = console.log, 
         }
         let next = line;
         for (const c of cands.sort((a, b) => b.at - a.at)) {
+          if (waitTakes(f, i + 1, c.at, c.len, next)) continue;
           const g = goingAt(c.r);
           let to = next.slice(c.at, c.at + c.len);
           let noted = false;
@@ -1231,70 +1362,66 @@ export function repoint(work, { board = 'live', file = null, log = console.log, 
     rewritten.push({ file: f, lines: touched.size });
   }
   unresolved.sort((a, b) => Number(Boolean(b.tool)) - Number(Boolean(a.tool)));
-  let commit = null;
-  let refused = null;
-  const paths = rewritten.map((x) => x.file);
-  if (paths.length) {
-    const n = rewritten.reduce((k, x) => k + x.lines, 0);
-    const summary = plan.label + ': repoint citations of the retired workflow to the board and to git (' + n + ' lines in ' + paths.length + ' files)';
-    const added = gitBatch(git, work, ['add'], paths);
-    const r = added.status !== 0 ? added : gitBatch(git, work, ['commit', '-q', '-m', summary], paths);
-    if (r.status !== 0) {
-      /* the batch goes back as it was (every path here is tracked), and the handover stops on it */
-      const a = gitBatch(git, work, ['reset', '-q'], paths);
-      const c = gitBatch(git, work, ['checkout', '-q'], paths);
-      const left = [a, c].filter((x) => x.status !== 0).map(gitWhy).join('; ');
-      refused = { files: paths.length, why: 'git ' + (r === added ? 'add' : 'commit') + ' refused: ' + clip(gitWhy(r), 300) + (left ? '; putting it back failed too: ' + left : '') };
-      rewritten.length = 0;
-    } else {
-      commit = String(git(['rev-parse', 'HEAD']).stdout).trim();
-      const imp = manifest.imports.filter((i) => !i.undone).pop();
-      if (imp) {
-        imp.repo = imp.repo || [];
-        for (const p of paths) imp.repo.push({ kind: 'repo', op: 'repoint', path: p, batch: 'repoint', commit, at: new Date().toISOString() });
-        writeJson(t.manifest, manifest);
-      }
-      log(commit.slice(0, 8) + ' ' + summary);
-    }
-  }
-  /* a run on one file keeps what the last run found in the others */
-  const prev = file ? readJson(t.repoint, null) : null;
-  const keep = (xs) => ((prev && prev[xs]) || []).filter((x) => x.file !== file);
-  const out = { commit, ...(refused ? { refused } : {}), sha, rewritten: [...keep('rewritten'), ...rewritten], unresolved: [...keep('unresolved'), ...unresolved], failed: [...keep('failed'), ...failed] };
+  const out = { sha, rewritten, unresolved, failed };
   writeJson(t.repoint, out);
   for (const x of rewritten) log('  ' + x.file + ': ' + x.lines + ' lines repointed');
   if (unresolved.length) log('Not resolved (' + unresolved.length + '), for the session to reword or leave with the user:\n  '
-    + unresolved.map((u) => u.file + ' line ' + u.line + ' (' + (u.code ? 'kept as code: a fence, a glob or a negation' : u.value ? 'a value outside running text, left as it is: the proposal\'s `cites` says note, leave or point'
-      : u.missing ? 'git never held it at ' + sha.slice(0, 10) + ', so no note names that commit: left as it is' : u.form)
+    + unresolved.map((u) => u.file + ' line ' + u.line + ' (' + (u.code ? 'kept as code: a fence, a glob or a negation' : u.card ? 'a card\'s frontmatter, which takes no note, left as it is: the proposal\'s `cites` says leave or point' : u.value ? 'a value outside running text, left as it is: the proposal\'s `cites` says note, leave or point'
+      : u.missing ? 'git never held it at ' + sha.slice(0, 10) + ', so no note names that commit: left as it is'
+      : u.among ? 'a bare name ' + u.among.length + ' going files share and no nearer folder settles, left as it is: the proposal\'s `cites` names which (of): ' + u.among.join(', ') : u.form)
       + (u.tool ? ', printed by a tool' : '') + '): ' + u.of + (u.ids ? ', it became ' + (u.ids.join(', ') || 'no record') : '')).join('\n  '));
   if (failed.length) log('Left as they were (' + failed.length + '):\n  ' + failed.map((x) => x.file + ': ' + x.why).join('\n  '));
-  if (refused) log('The repoint\'s commit: ' + refused.why + '. Its ' + refused.files + ' files are as they were before it.');
   if (psSkipped) log('PowerShell files: not checked: no PowerShell');
-  if (!commit && !refused && !unresolved.length && !failed.length) log('No citation left to repoint' + (file ? ' in ' + file : '') + '.');
   return out;
 }
 
 /* the map's run for the hashes the handover stamps after its commits, under the write's run id */
 export const RESTAMPED = '@handover';
-/* the map's file rows on these paths, whichever run put them; a failed read stamps none, as putMap reports */
-async function mappedFiles(run, env, dir, paths) {
+/* the map's rows; a failed read stamps none and says so */
+async function mapNow(run, env, dir, log = () => {}, failed = null) {
   let r;
-  try { r = await run(['conversion', '--project', dir], { env: unread(env) }); } catch { return []; }
-  return ((r.ok && r.out && r.out.rows) || []).filter((x) => x.kind === 'file' && !x.fate && paths.has(x.source));
+  try { r = await run(['conversion', '--project', dir], { env: unread(env) }); } catch (e) { r = { ok: false, why: oneLine(e && e.message) }; }
+  if (!r.ok) { log('The conversion map was not read (' + clip(r.why, 200) + '): no row on it is restamped; run the step again'); if (failed) failed.push('map read'); }
+  return (r.ok && r.out && r.out.rows) || [];
+}
+/* the map's file rows on these paths, whichever run put them */
+const mappedFiles = (rows, paths, holds = () => false) => rows.filter((x) => x.kind === 'file' && (!x.fate || x.fate === 'keep') && (paths.has(x.source) || holds(x.source)));
+/* the write's run row with each item or file judgment on a path the handover changed at its new hash, or null */
+function restampedRun(rows, made, fresh, edited) {
+  const was = rows.find((x) => x.kind === 'run' && x.source === RUN + made);
+  const judged = (was && was.detail && was.detail.judged) || [];
+  const now = new Map(judged.filter((j) => (j.kind === 'item' || j.kind === 'file') && j.hash && edited(j.subject) && fresh.get(j.key) && fresh.get(j.key) !== j.hash).map((j) => [j.key, fresh.get(j.key)]));
+  if (!now.size) return null;
+  return { source: was.source, kind: 'run', ...(was.sha ? { sha: was.sha } : {}), records: was.records || [], detail: { ...was.detail, judged: judged.map((j) => (now.has(j.key) ? { ...j, hash: now.get(j.key) } : j)) } };
 }
 
-/* the handover, on the go after the rehearsal: the cards and their scan, the CLAUDE.md rewrite,
-   the repoint, then each folder that passes its gate moved or deleted in one commit of its own (git rm -r on
-   the folder). A refused commit puts its batch back and stops. --file runs only the edits on that path or the
-   folder holding it ("ask me per file"). */
-export const HANDOVER_BATCHES = ['cards', 'claude', 'repoint', 'moves', 'deletes'];
-export async function handover(work, { board = 'live', cli = DEFAULT_CLI, file = null, log = console.log, copy = null } = {}) {
-  /* on a rehearsal copy the repo edits land in the copy, with a manifest, id map and repoint file of its own,
-     and nothing reaches the board (no card scan, no map rows, no Codex override) */
-  const t = copy ? { ...target(work, board), manifest: copy.manifest, idmap: copy.idmap, repoint: copy.repoint } : target(work, board);
+/* the handover, on the go after the rehearsal, in one commit so one git revert takes it
+   back: the cards, the kept files' line edits, the instruction files from their ledgers, the repoint, then each unit
+   that passes its gate pointed, moved or deleted (its settings entries and un-ignore lines with it); last the card
+   scan. Anything refused puts every edit back and stops. --file runs only the edits on that path or the folder
+   holding it ("ask me per file"). */
+export const LINES = 'lines';
+/* a line edit stands when its file's line still holds what the plan checked */
+const lineHolds = (e, lines) => {
+  const t = lines[e.line - 1];
+  if (t === undefined || (e.end && e.end > lines.length)) return false;
+  if (e.kind === 'delete' || e.kind === 'empty') return e.head === '' ? !t.trim() : typeof e.head === 'string' ? t.startsWith(e.head) : true;
+  return typeof e.words === 'string' && t.includes(e.words);
+};
+/* the files this plan's live import's line edits landed in, which the lines step, lineWas and the repoint read alike;
+   another plan's import in the same manifest edited other text, as coverage's file reader keys it */
+const linedFiles = (manifest, plan) => new Set(((manifest && manifest.imports) || []).filter((i) => i.plan === plan.made && !i.undone).flatMap((i) => i.repo || []).filter((e) => e.op === LINES).map((e) => e.path));
+/* a file's line now, back to its line as the plan read it, across the deletes the line edits in `edited` made */
+function lineWas(plan, edited) {
+  const cuts = new Map();
+  for (const e of (plan.lineEdits || []).filter((x) => x.kind === 'delete' && edited.has(x.file))) cuts.set(e.file, [...(cuts.get(e.file) || []), e].sort((a, b) => a.line - b.line));
+  return (f, n) => { let old = n; for (const e of cuts.get(f) || []) { if (old < e.line) break; old += e.end - e.line + 1; } return old; };
+}
+export async function handover(work, { board = 'live', cli = DEFAULT_CLI, file = null, log = console.log } = {}) {
+  const t = target(work, board);
   const plan = loadPlan(work);
-  const dir = copy ? copy.dir : plan.project.dir;
-  const git = gitIn(dir);
+  const dir = plan.project.dir;
+  const git = gitCall(dir);
   if (git(['rev-parse', '--show-toplevel']).status !== 0) throw new Error(dir + ' is not a git repo: the handover deletes old folders only where git keeps their text, so it makes no edits here');
   const manifest = readJson(t.manifest, null);
   if (!manifest) throw new Error('no manifest at ' + t.manifest + ': the handover follows the write');
@@ -1303,234 +1430,262 @@ export async function handover(work, { board = 'live', cli = DEFAULT_CLI, file =
   const last = manifest.imports.filter((i) => !i.undone).map((i) => i.done || i.at).sort().pop();
   if (last && cov.made < last) throw new Error('the coverage file is older than the last write (' + last + '): run --coverage again');
   const imp = manifest.imports.filter((i) => !i.undone).pop();
+  if (!imp) throw new Error('every import in ' + t.manifest + ' was undone, so there is no write to hand over: run the write again first');
   imp.repo = imp.repo || [];
   const env = { ...process.env, ...(t.env || {}) };
   const done = (op, path) => imp.repo.some((e) => e.op === op && e.path === path);
   const mine = (p) => !file || folderKey(file) === folderKey(p) || under(file, p);
-  const repo = repoState(dir);
-  const dirty = (p) => String(git(['status', '--porcelain', '--', p]).stdout || '').trim().length > 0;
+  /* the tree as the handover found it: its own edits are never the user's uncommitted changes */
+  const repo = repoState(dir, git);
+  const dirty = (p) => repo.changed.has(p) || repo.untracked.includes(p);
   const skipped = [];
   const held = [];
-  const commits = [];
+  const lined = [];
+  /* every path the one commit names, and the manifest's entries for it, which take its sha once it lands */
+  const touched = new Set();
+  const entries = [];
   let stopped = null;
+  /* staged as each step makes them, one add a step */
+  const add = (es, paths) => {
+    entries.push(...es);
+    for (const p of paths) touched.add(p);
+    const here = paths.filter((p) => existsSync(join(dir, p)));
+    const r = here.length ? gitBatch(git, work, ['add'], here) : { status: 0 };
+    if (r.status !== 0) stop(es[0].op, 'git add refused: ' + clip(gitWhy(r), 300));
+  };
   let override = null;
   let stays = [];
   /* the instruction file the AskerDo section goes in; an older plan names none, so CLAUDE.md */
   const section = 'section' in plan ? plan.section : 'CLAUDE.md';
-  const land = (batch, entries, summary, putBack) => {
-    if (!entries.length) return null;
-    const paths = [...new Set(entries.flatMap((e) => e.paths))];
-    const r = gitBatch(git, work, ['commit', '-q', '-m', summary], paths);
-    if (r.status !== 0) {
-      const left = putBack ? putBack() : null;
-      stopped = { batch, files: paths.length, why: 'git commit refused: ' + clip(gitWhy(r), 300) + (left ? '; putting it back failed too: ' + left : '') };
-      return null;
-    }
-    const sha = String(git(['rev-parse', 'HEAD']).stdout).trim();
-    for (const e of entries) imp.repo.push({ kind: 'repo', op: e.op, path: e.path, ...(e.item ? { row: e.item } : {}), ...(e.files ? { files: e.files } : {}), ...(e.to ? { to: e.to } : {}), batch, commit: sha, at: new Date().toISOString() });
-    commits.push({ batch, commit: sha, summary, files: paths.length });
-    writeJson(t.manifest, manifest);
-    log(sha.slice(0, 8) + ' ' + summary);
-    return sha;
-  };
-  const restore = (paths) => () => {
+  /* a path HEAD holds (a file, or a folder of tracked files) comes back; one the handover made goes */
+  const putBack = () => {
+    const paths = [...touched];
+    if (!paths.length) return null;
     const a = gitBatch(git, work, ['reset', '-q'], paths);
-    /* a path HEAD holds (a file, or a folder of tracked files) comes back; one the batch made goes */
-    const held = paths.filter((p) => repo.tracked.has(p) || [...repo.tracked].some((x) => under(x, p)));
-    for (const p of paths.filter((x) => !held.includes(x))) rmSync(join(dir, p), { force: true });
-    const c = held.length ? gitBatch(git, work, ['checkout', '-q'], held) : { status: 0 };
+    const kept = paths.filter((p) => repo.tracked.has(p) || [...repo.tracked].some((x) => under(x, p)));
+    for (const p of paths.filter((x) => !kept.includes(x))) rmSync(join(dir, p), { recursive: true, force: true });
+    const c = kept.length ? gitBatch(git, work, ['checkout', '-q'], kept) : { status: 0 };
     return [a, c].filter((x) => x.status !== 0).map(gitWhy).join('; ') || null;
   };
+  const stop = (step, why) => { stopped = { batch: step, files: touched.size, why }; };
+  const since = String(git(['rev-parse', 'HEAD']).stdout || '').trim();
   let gates = gatesOf(plan, cov, repo, { goes: mine });
-  for (const batch of HANDOVER_BATCHES) {
+
+  /* the cards */
+  const cards = [];
+  for (const c of (plan.cards || []).filter((x) => mine(x.target) && !done('write', x.target))) {
+    const item = (plan.items || []).find((x) => x.id === c.item);
+    if (!item) { skipped.push({ path: c.target, why: 'its item ' + c.item + ' is not in the plan' }); continue; }
+    if (existsSync(join(dir, c.target)) && dirty(c.target)) { skipped.push({ path: c.target, why: 'it has uncommitted changes' }); continue; }
+    const was = readText(join(dir, c.target));
+    const w = writeCard(dir, cardRow(item, c.target));
+    /* a card already in the repo as written needs no commit */
+    if (was !== null && was === readText(join(dir, w.path))) continue;
+    cards.push({ op: 'write', path: w.path, row: c.item });
+  }
+  if (cards.length) add(cards, cards.map((e) => e.path));
+  /* the kept files' line edits, before the repoint, so each meets the words the plan checked and a cite it takes out is
+     never repointed; a file's edits land together or wait together */
+  const byFile = new Map();
+  const waits = new Map();
+  const landed = linedFiles(manifest, plan);
+  for (const e of (plan.lineEdits || []).filter((x) => mine(x.file) && !landed.has(x.file))) {
+    const why = lineEditHeld(e, cov, plan.items || []);
+    if (why) waits.set(e.file, [...(waits.get(e.file) || []), 'line ' + e.line + ': ' + why]);
+    byFile.set(e.file, [...(byFile.get(e.file) || []), e]);
+  }
+  for (const [f, w] of waits) { byFile.delete(f); skipped.push({ path: f, why: 'its line edits wait on coverage (' + w.join('; ') + ')' }); }
+  const edits = [];
+  for (const [f, es] of byFile) {
+    if (dirty(f)) { skipped.push({ path: f, why: 'it has uncommitted changes, which a commit of its path would carry' }); continue; }
+    const raw = readText(join(dir, f));
+    const lines = raw === null ? [] : raw.split('\n');
+    const bad = es.find((e) => !lineHolds(e, lines));
+    if (bad) { stop(LINES, f + ' line ' + bad.line + ' no longer holds what the plan checked (' + bad.kind + '); run the plan again'); break; }
+    edits.push({ f, text: editLines(lines, es).join('\n'), es });
+  }
+  if (!stopped && edits.length) {
+    for (const x of edits) {
+      writeFileSync(join(dir, x.f), eolLike(join(dir, x.f), x.text));
+      lined.push(...x.es.map((e) => ({ file: e.file, line: e.line, kind: e.kind, why: e.why })));
+    }
+    add(edits.map((x) => ({ op: LINES, path: x.f })), edits.map((x) => x.f));
+  }
+  /* each instruction file from its ledger, with the AskerDo section in the file the plan names */
+  const ledgers = (plan.claude || []).map((x) => keptBack(x, gates));
+  const rewrites = [];
+  if (!stopped) {
+    stays = ledgers.filter((x) => mine(x.ledger.path)).flatMap((x) => x.back);
+    if (stays.length) log('Clauses that stay while what they load is held (' + stays.length + '):\n  ' + stays.map((s) => s.path + ': ' + s.why).join('\n  '));
+    for (const l of ledgers.map((x) => x.ledger).filter((x) => mine(x.path) && !done('rewrite', x.path))) {
+      if (!l.clauses.some((c) => c.fate === 'carried' || c.fate === 'dropped' || c.fate === 'split') && l.path !== section) continue;
+      const c = (cov.claude || []).find((x) => x.path === l.path);
+      if (c && c.blocked) { skipped.push({ path: l.path, why: c.gaps.length + ' clauses with no fate or backing (apply.mjs --coverage lists them)' }); continue; }
+      if (repo.changed.has(l.path)) { skipped.push({ path: l.path, why: 'it has uncommitted changes, which a commit of its path would carry' }); continue; }
+      /* never a new instruction file (a CLAUDE.md would hide an AGENTS.md Claude reads), and only one git keeps */
+      const was = readText(join(dir, l.path));
+      if (was === null) { skipped.push({ path: l.path, why: 'it is not in the repo, and the handover makes no instruction file' }); continue; }
+      /* a private file (CLAUDE.local.md, or one git ignores) is never committed: its skip is expected, not a failure */
+      const priv = /(^|\/)CLAUDE\.local\.md$/i.test(l.path) || !repo.untracked.includes(l.path);
+      if (!repo.tracked.has(l.path)) { skipped.push({ path: l.path, why: 'git does not track it, so its words would have no copy: edit it by hand on the user\'s word', ...(priv ? { expected: true } : {}) }); continue; }
+      let text;
+      try { text = eolLike(join(dir, l.path), claudeText(was, l, l.path === section ? boardIds(manifest, plan, undefined, was) : null)); } catch (e) { skipped.push({ path: l.path, why: e.message }); continue; }
+      const left = l.path === section ? stateProblems(text.slice(text.lastIndexOf('## AskerDo')), { state: 10240, line: 400 }) : [];
+      if (left.length) { skipped.push({ path: l.path, why: 'the board paragraph does not fit: ' + left.join('; ') }); continue; }
+      /* a rewrite that changes nothing (a doctor run that moves no clause) has nothing to commit */
+      if (text === readFileSync(join(dir, l.path), 'utf8')) continue;
+      writeFileSync(join(dir, l.path), text);
+      rewrites.push({ op: 'rewrite', path: l.path, row: 'claude' });
+    }
+    if (rewrites.length) add(rewrites, rewrites.map((e) => e.path));
+  }
+  /* the repoint, after the rewrite and before any move or delete; a tool's cite it leaves holds its folder */
+  if (!stopped && gates.some((g) => g.go)) {
+    const rep = repoint(work, { log, manifest, gone: gates, at: t, git, repo, edited: edits.map((x) => x.f) });
+    if (rep.rewritten.length) add(rep.rewritten.map((x) => ({ op: 'repoint', path: x.file })), rep.rewritten.map((x) => x.file));
+    for (const x of rep.failed) skipped.push({ path: x.file, why: 'repoint: ' + x.why });
+    repointGaps(cov, rep);
+    gates = gatesOf(plan, cov, repo, { goes: mine });
+  }
+  /* each unit that passes its gate: a loader retires before the folders it reads */
+  const units = gates.filter((x) => (x.end === 'move' || GONE.includes(x.end) || x.end === POINT) && mine(x.path)).sort((a, b) => Number(b.end === 'retire') - Number(a.end === 'retire'));
+  for (const g of stopped ? [] : units) {
     if (stopped) break;
-    if (batch === 'cards') {
-      const entries = [];
-      for (const c of (plan.cards || []).filter((x) => mine(x.target) && !done('write', x.target))) {
-        const item = (plan.items || []).find((x) => x.id === c.item);
-        if (!item) { skipped.push({ path: c.target, why: 'its item ' + c.item + ' is not in the plan' }); continue; }
-        if (existsSync(join(dir, c.target)) && dirty(c.target)) { skipped.push({ path: c.target, why: 'it has uncommitted changes' }); continue; }
-        const w = writeCard(dir, cardRow(item, c.target));
-        /* a card already in the repo as written needs no commit */
-        if (!dirty(w.path)) continue;
-        git(['add', '--', w.path]);
-        entries.push({ op: 'write', path: w.path, item: c.item, paths: [w.path] });
-      }
-      if (land(batch, entries, plan.label + ': procedure cards from the old how-tos (' + entries.length + ')', restore(entries.map((e) => e.path))) && !copy) {
-        const r = await cliRunner(cli)(['proc', 'scan', '--project', dir], { env });
-        imp.steps.push({ step: 'proc-scan@handover', op: 'proc scan', kind: KIND['proc scan'], id: r.ok ? 'ok' : null, ...(r.ok ? {} : { why: clip(r.why, 200) }) });
-        writeJson(t.manifest, manifest);
-        log(r.ok ? 'proc scan --project ' + dir + ': the cards are on the board' : 'proc scan refused: ' + clip(r.why, 200));
-      }
-    } else if (batch === 'claude') {
-      const entries = [];
-      const ledgers = (plan.claude || []).map((x) => keptBack(x, gates));
-      stays = ledgers.filter((x) => mine(x.ledger.path)).flatMap((x) => x.back);
-      if (stays.length) log('Clauses that stay while what they load is held (' + stays.length + '):\n  ' + stays.map((s) => s.path + ': ' + s.why).join('\n  '));
-      for (const l of ledgers.map((x) => x.ledger).filter((x) => mine(x.path) && !done('rewrite', x.path))) {
-        if (!l.clauses.some((c) => c.fate === 'carried' || c.fate === 'dropped' || c.fate === 'split') && l.path !== section) continue;
-        const c = (cov.claude || []).find((x) => x.path === l.path);
-        if (c && c.blocked) { skipped.push({ path: l.path, why: c.gaps.length + ' clauses with no fate or backing (apply.mjs --coverage lists them)' }); continue; }
-        if (repo.changed.has(l.path)) { skipped.push({ path: l.path, why: 'it has uncommitted changes, which a commit of its path would carry' }); continue; }
-        /* never a new instruction file (a CLAUDE.md would hide an AGENTS.md Claude reads), and only one git keeps */
-        const was = readText(join(dir, l.path));
-        if (was === null) { skipped.push({ path: l.path, why: 'it is not in the repo, and the handover makes no instruction file' }); continue; }
-        /* a private file (CLAUDE.local.md, or one git ignores) is never committed: its skip is expected, not a failure */
-        const priv = /(^|\/)CLAUDE\.local\.md$/i.test(l.path) || !repo.untracked.includes(l.path);
-        if (!repo.tracked.has(l.path)) { skipped.push({ path: l.path, why: 'git does not track it, so its words would have no copy: edit it by hand on the user\'s word', ...(priv ? { expected: true } : {}) }); continue; }
-        let text;
-        try { text = eolLike(join(dir, l.path), claudeText(was, l, l.path === section ? boardIds(manifest, plan, t.rehearsal ? (readJson(t.results, {})['stand-ins'] || {}).map : undefined, was) : null)); } catch (e) { skipped.push({ path: l.path, why: e.message }); continue; }
-        const left = l.path === section ? stateProblems(text.slice(text.lastIndexOf('## AskerDo')), { state: 10240, line: 400 }) : [];
-        if (left.length) { skipped.push({ path: l.path, why: 'the board paragraph does not fit: ' + left.join('; ') }); continue; }
-        /* a rewrite that changes nothing (a doctor run that moves no clause) has nothing to commit */
-        if (text === readFileSync(join(dir, l.path), 'utf8')) continue;
-        writeFileSync(join(dir, l.path), text);
-        git(['add', '--', l.path]);
-        entries.push({ op: 'rewrite', path: l.path, item: 'claude', paths: [l.path] });
-      }
-      const n = (f) => ledgers.flatMap((l) => l.ledger.clauses).filter((c) => c.fate === f).length;
-      land(batch, entries, plan.label + ': ' + (entries.map((e) => e.path).join(', ') || 'the instruction files') + ' point' + (entries.length === 1 ? 's' : '') + ' at the board ('
-        + n('carried') + ' clauses moved to rule lines, ' + n('split') + ' split, ' + n('dropped') + ' gone, ' + n('kept') + ' kept)', restore(entries.map((e) => e.path)));
-      /* Codex reads the converted AGENTS.md and the rules the write made at once, not at the next session start */
-      if (!stopped && !copy && mine('AGENTS.md')) {
-        try { override = await refreshAgentsOverride(dir, { env }); } catch (e) { override = { did: 'failed', why: oneLine(e && e.message) }; }
-        if (override.did === 'wrote') log((override.created ? 'created ' : 'rewrote ') + override.path + ' for Codex: AGENTS.md\'s text, the rules for agents, the procedure cards and the decisions on its files and commands' + (override.left ? ', with ' + override.leftBy + ' in ' + override.rest + ' for its size limit' : ''));
-        else if (override.did === 'left' || override.did === 'failed') skipped.push({ path: 'AGENTS.override.md', why: override.did === 'left' ? 'AskerDo did not write it, so it stays as it is' : 'the rules read failed: ' + override.why });
-      }
-    } else if (batch === 'repoint') {
-      /* after the CLAUDE.md rewrite, before any move or delete; a tool's cite it leaves blocks the folder of the file */
-      if (!gates.some((g) => g.go)) continue;
-      const before = imp.repo.length;
-      const rep = repoint(work, { board, file: null, log, manifest, gone: gates, dir, at: t });
-      if (rep.refused) { stopped = { batch, ...rep.refused }; break; }
-      if (rep.commit && imp.repo.length > before) commits.push({ batch, commit: rep.commit, summary: 'repoint', files: imp.repo.length - before });
-      for (const x of rep.failed) skipped.push({ path: x.file, why: 'repoint: ' + x.why });
-      repointGaps(cov, rep);
-      gates = gatesOf(plan, cov, repoState(dir), { goes: mine });
+    if (done(g.end === POINT ? POINT : g.end === 'move' ? 'move' : 'delete', g.path)) continue;
+    if (!g.go) { (g.hold === 'kept' ? held : skipped).push({ path: g.path, why: g.why }); continue; }
+    if (g.end === POINT) {
+      /* after the cards, so the card it names is in the tree */
+      const skill = g.path + '/SKILL.md';
+      const text = existsSync(join(dir, g.to)) ? pointerSkill(readText(join(dir, skill)), g.to, g.description) : null;
+      if (!text) { skipped.push({ path: g.path, why: existsSync(join(dir, g.to)) ? skill + ' has no frontmatter name' : 'its card ' + g.to + ' is not in the tree' }); continue; }
+      const others = [...repo.tracked].filter((x) => under(x, g.path) && x !== skill);
+      writeFileSync(join(dir, skill), eolLike(join(dir, skill), text));
+      add([{ op: POINT, path: g.path, to: g.to, files: g.files }], [skill, ...others]);
+      const r = stopped || !others.length ? { status: 0 } : gitBatch(git, work, ['rm', '-q'], others);
+      if (r.status !== 0) stop(POINT, 'git rm refused: ' + clip(gitWhy(r), 300));
+    } else if (g.end === 'move') {
+      mkdirSync(dirname(join(dir, g.to)), { recursive: true });
+      const r = git(['mv', '--', g.path, g.to]);
+      if (r.status !== 0) { skipped.push({ path: g.path, why: 'git mv refused: ' + gitWhy(r) }); continue; }
+      add([{ op: 'move', path: g.path, to: g.to, files: g.files }], [g.path, g.to]);
     } else {
-      const end = batch === 'moves' ? 'move' : 'delete';
-      /* a loader retires before the folders it reads, so a refused commit never leaves it loading nothing */
-      const ours = gates.filter((x) => (end === 'move' ? x.end === 'move' : GONE.includes(x.end)) && mine(x.path)).sort((a, b) => Number(b.end === 'retire') - Number(a.end === 'retire'));
-      for (const g of ours) {
-        if (stopped) break;
-        if (done(end, g.path)) continue;
-        if (!g.go) { (g.hold === 'kept' ? held : skipped).push({ path: g.path, why: g.why }); continue; }
-        if (end === 'move') {
-          mkdirSync(dirname(join(dir, g.to)), { recursive: true });
-          const r = git(['mv', '--', g.path, g.to]);
-          if (r.status !== 0) { skipped.push({ path: g.path, why: 'git mv refused: ' + gitWhy(r) }); continue; }
-          land(batch, [{ op: 'move', path: g.path, to: g.to, files: g.files, paths: [g.path, g.to] }], plan.label + ': ' + unit(g) + ' moves to ' + g.to + (g.file ? '' : '/') + ' (' + g.files + ' files): ' + clip(g.why, 160), () => {
-            const a = gitBatch(git, work, ['reset', '-q'], [g.path, g.to]);
-            try { renameRetry(join(dir, g.to), join(dir, g.path)); } catch (e) { return 'moving it back: ' + e.message; }
-            return a.status !== 0 ? gitWhy(a) : null;
-          });
-        } else {
-          /* the settings entries that run it leave in the same commit; so do the .gitignore lines
-             that un-ignore only it */
-          let set = [];
-          let ign = { files: [], left: [] };
-          try { set = unhook(dir, g); ign = unignore(dir, g, repo.tracked, dirty); } catch (e) { restore([...(g.unhook || []).map((u) => u.file), ...ign.files])(); skipped.push({ path: g.path, why: 'its settings entries could not be taken out: ' + oneLine(e.message) }); continue; }
-          for (const f of ign.left) skipped.push({ path: f, why: 'its lines un-ignoring ' + unit(g) + ' stay: it has uncommitted changes' });
-          const edits = [...set, ...ign.files];
-          const added = edits.length ? gitBatch(git, work, ['add'], edits) : { status: 0 };
-          const r = added.status !== 0 ? added : gitBatch(git, work, ['rm', '-r', '-q'], [g.path]);
-          if (r.status !== 0) { stopped = { batch, files: g.files, why: 'git ' + (r === added ? 'add' : 'rm') + ' refused: ' + clip(gitWhy(r), 300) + ((restore([g.path, ...edits])()) ? '; putting it back failed too' : '') }; break; }
-          land(batch, [{ op: 'delete', path: g.path, files: g.files, paths: [g.path, ...edits] }], plan.label + ': ' + unit(g) + (g.end === 'retire' ? ' retires with what it loads' : ' goes') + ', git keeps it (' + g.files + ' files)'
-            + (set.length ? ', its entries out of ' + set.join(', ') : '') + (ign.files.length ? ', its un-ignore lines out of ' + ign.files.join(', ') : '') + ': ' + clip(g.why, 160), restore([g.path, ...edits]));
-        }
-      }
+      /* the settings entries that run it leave with it; so do the .gitignore lines that un-ignore only it */
+      let set = [];
+      let ign = { files: [], left: [] };
+      try { set = unhook(dir, g); ign = unignore(dir, g, repo.tracked, (f) => repo.changed.has(f)); } catch (e) { stop('deletes', g.path + ': its settings entries could not be taken out: ' + oneLine(e.message)); for (const f of (g.unhook || []).map((u) => u.file)) touched.add(f); break; }
+      for (const f of ign.left) skipped.push({ path: f, why: 'its lines un-ignoring ' + unit(g) + ' stay: it has uncommitted changes' });
+      add([{ op: 'delete', path: g.path, files: g.files, ...(set.length ? { unhook: set } : {}) }], [...set, ...ign.files]);
+      touched.add(g.path);
+      const r = stopped ? { status: 0 } : gitBatch(git, work, ['rm', '-r', '-q'], [g.path]);
+      if (r.status !== 0) stop('deletes', 'git rm refused: ' + clip(gitWhy(r), 300));
     }
   }
-  /* each file the handover rewrote at its new blob and each card's source with its card, so the next run
-     reads none of the conversion's own edits as a change; then each folder's end, at the commit that made it */
+  /* the one commit, its subject the counts and its body each change */
+  let commit = null;
+  if (!stopped && entries.length) {
+    const paths = [...touched];
+    const n = (op) => entries.filter((e) => e.op === op).length;
+    const subject = plan.label + ': hand over to the board (' + [n('write') && counted(n('write'), 'card'), n(LINES) && counted(n(LINES), 'file') + ' line-edited', n('rewrite') && counted(n('rewrite'), 'instruction file') + ' rewritten',
+      n('repoint') && counted(n('repoint'), 'file') + ' repointed', n(POINT) && counted(n(POINT), 'pointer skill'), n('move') && counted(n('move'), 'move'), n('delete') && counted(n('delete'), 'unit') + ' gone'].filter(Boolean).join(', ') + ')';
+    const body = entries.map((e) => '- ' + (e.op === 'delete' ? unit({ path: e.path, file: repo.tracked.has(e.path) }) + ' goes, git keeps it (' + counted(e.files, 'file') + ')' + (e.unhook ? ', its entries out of ' + e.unhook.join(', ') : '')
+      : e.op === 'move' ? e.path + ' moves to ' + e.to : e.op === POINT ? e.path + ' points at its card ' + e.to : e.op === 'write' ? 'card ' + e.path : e.op === 'rewrite' ? e.path + ' from its ledger' : e.path + ' (' + e.op + ')')).join('\n');
+    const r = gitBatch(git, work, ['commit', '-q', '-m', subject, '-m', body], paths);
+    if (r.status !== 0) stop('commit', 'git commit refused: ' + clip(gitWhy(r), 300));
+    else {
+      commit = String(git(['rev-parse', 'HEAD']).stdout).trim();
+      const at = new Date().toISOString();
+      for (const e of entries) imp.repo.push({ kind: 'repo', ...e, batch: 'handover', commit, at });
+      writeJson(t.manifest, manifest);
+      log(commit.slice(0, 8) + ' ' + subject);
+    }
+  }
+  if (stopped) { const left = putBack(); if (left) stopped.why += '; putting it back failed too: ' + left; }
+  /* Codex reads the converted AGENTS.md and the rules the write made at once, not at the next session start */
+  if (commit && mine('AGENTS.md')) {
+    try { override = await refreshAgentsOverride(dir, { env }); } catch (e) { override = { did: 'failed', why: oneLine(e && e.message) }; }
+    if (override.did === 'wrote') log((override.created ? 'created ' : 'rewrote ') + override.path + ' for Codex: AGENTS.md\'s text, the rules for agents, the procedure cards and the decisions on its files and commands' + (override.left ? ', with ' + override.leftBy + ' in ' + override.rest + ' for its size limit' : ''));
+    else if (override.did === 'left' || override.did === 'failed') skipped.push({ path: 'AGENTS.override.md', why: override.did === 'left' ? 'AskerDo did not write it, so it stays as it is' : 'the rules read failed: ' + override.why });
+  }
+  /* the cards are scanned as the handover left them; the conversion vouches for those it wrote and for each that
+     read current before its commit, so its own commit never reads as a change */
+  if (commit && existsSync(join(dir, 'docs', 'procedures'))) {
+    let r;
+    try { r = await cliRunner(cli)(['proc', 'scan', '--project', dir, '--vouch', commit, '--since', since], { env }); } catch (e) { r = { ok: false, why: oneLine(e && e.message) }; }
+    imp.steps.push({ step: 'proc-scan@handover', op: 'proc scan', kind: KIND['proc scan'], id: r.ok ? 'ok' : null,
+      ...(r.ok ? { undo: ['proc', 'scan', '--project', dir, '--unvouch', commit] } : { why: clip(r.why, 200) }) });
+    writeJson(t.manifest, manifest);
+    log(r.ok ? 'proc scan --project ' + dir + ': the cards are on the board, verified at ' + commit.slice(0, 8) : 'proc scan refused: ' + clip(r.why, 200));
+  }
+  if (commit) await mapHandover(cliRunner(cli), env, dir, work, { plan, imp, cov, repo, held, git, manifest, log });
+  if (skipped.length) log('Skipped (' + skipped.length + '), each left as it is:\n  ' + skipped.map((s) => s.path + ': ' + s.why).join('\n  '));
+  if (held.length) log('Folders that stay (' + held.length + '); tell the user:\n  ' + held.map((s) => s.path + ': ' + s.why).join('\n  '));
+  if (stopped) log('Stopped at the ' + stopped.batch + ' step: ' + stopped.why + '. Every edit is put back as it was; nothing is committed. Fix the cause and run --handover again.');
+  else if (!commit && !skipped.length && !held.length) log('Nothing left to hand over' + (file ? ' on ' + file : '') + '.');
+  if (commit || stopped) {
+    const report = join(work, 'report.md');
+    writeFileSync(report, runReport(work, { plan, manifest, commit: commit || (imp.repo.find((e) => e.commit) || {}).commit || null, skipped, held, stopped }));
+    log('The run report: ' + report + (commit ? '. The undo: git revert ' + commit + ', with apply.mjs ' + work + ' --undo for the board' : ''));
+  }
+  return { commit, skipped, held, lined, ...(stays.length ? { stays } : {}), ...(override ? { override } : {}), ...(stopped ? { stopped } : {}) };
+}
+/* each file the handover rewrote at its new blob and each card's source with its card, so the next run reads
+   none of the conversion's own edits as a change; then each folder's end, anchored at the commit before the handover */
+async function mapHandover(run, env, dir, work, { plan, imp, cov, repo, held, git, manifest, log }) {
   const cards = (plan.cards || []).filter((c) => existsSync(join(dir, c.target)))
     .map((c) => ({ source: ((((plan.items || []).find((x) => x.id === c.item) || {}).source) || {}).file, record: c.target, item: c.item })).filter((c) => c.source);
-  const own = new Set([...imp.repo.filter((e) => e.op === 'rewrite' || e.op === 'repoint').map((e) => e.path), ...cards.map((c) => c.source)]);
-  const restamp = !copy && own.size ? await mappedFiles(cliRunner(cli), env, dir, own) : [];
-  const rows = mapRows(plan, imp, { ...mapState(dir, work), cards, restamp, cov });
+  const own = new Set([...imp.repo.filter((e) => e.op === 'rewrite' || e.op === 'repoint' || e.op === LINES).map((e) => e.path), ...imp.repo.filter((e) => e.op === POINT).map((e) => e.path + '/SKILL.md'), ...cards.map((c) => c.source)]);
+  /* a file row naming a whole folder reads its tree, which any handover edit inside it changes */
+  const handed = [...new Set(imp.repo.flatMap((e) => [e.path, e.to]).filter(Boolean).map(folderKey))];
+  const holds = (src) => handed.some((p) => p.startsWith(folderKey(src) + '/'));
+  const edited = (p) => own.has(p) || holds(p);
+  const onMap = own.size || handed.length ? await mapNow(run, env, dir, log) : [];
+  const restamp = mappedFiles(onMap, own, holds);
+  const st = mapState(dir, work, git);
+  const rows = mapRows(plan, imp, { ...st, cards, restamp, cov });
+  const fresh = new Map(((rows.run[0].detail || {}).judged || []).filter((j) => j.hash).map((j) => [j.key, j.hash]));
+  const rerun = restampedRun(onMap, plan.made, fresh, edited);
+  const base = handoverBase(git, manifest, plan);
+  /* an answered call's file subjects the handover edited take their new hashes, so the call is not asked again */
+  const hashNow = (p) => (st.dirty(p) || !st.tree.has(p) ? st.blobs([p]).get(p) || NONE : st.tree.get(p));
+  /* a folder subject's sig counts its uncommitted files, so it takes its new tree only while it has none */
+  const sigNow = (p, h) => { const k = folderKey(p); return [...(st.loose || [])].some((f) => f.startsWith(k + '/')) ? h : folderSig(st.tree.get(k)) || h; };
+  const recalls = onMap.filter((x) => x.kind === 'call' && Object.keys((x.detail && x.detail.subjects) || {}).some(edited))
+    .map((x) => ({ source: x.source, kind: 'call', answer: x.answer, sha: base, records: x.records || [],
+      detail: { ...x.detail, subjects: Object.fromEntries(Object.entries(x.detail.subjects).map(([p, h]) => [p, !edited(p) ? h : isFolder(p) ? sigNow(p, h) : hashNow(p)])) } }));
   /* a single file's end keeps its source row's records, hash and lines, since it takes that row's place */
   const fileRow = (p) => { const r = rows.file.find((x) => x.source === folderKey(p)); return r ? { records: r.records, ...(r.hash ? { hash: r.hash } : {}), ...(r.detail ? { detail: r.detail } : {}) } : {}; };
   const asFile = (p) => repo.tracked.has(folderKey(p));
-  const ends = imp.repo.filter((e) => e.op === 'move' || e.op === 'delete').map((e) => ({ source: asFile(e.path) ? folderKey(e.path) : e.path.replace(/\/*$/, '/'), kind: asFile(e.path) ? 'file' : 'folder', fate: e.op, sha: e.commit,
+  const ends = imp.repo.filter((e) => e.op === 'move' || e.op === 'delete').map((e) => ({ source: asFile(e.path) ? folderKey(e.path) : e.path.replace(/\/*$/, '/'), kind: asFile(e.path) ? 'file' : 'folder', fate: e.op, sha: base,
     ...(asFile(e.path) ? fileRow(e.path) : {}),
     why: ((plan.folders || []).find((f) => folderKey(f.path) === folderKey(e.path)) || {}).why || null, ...(e.to ? { detail: { to: e.to } } : {}) }))
-    .concat(held.map((h) => ({ source: asFile(h.path) ? folderKey(h.path) : h.path.replace(/\/*$/, '/'), kind: asFile(h.path) ? 'file' : 'folder', fate: 'keep', why: h.why, ...(asFile(h.path) ? fileRow(h.path) : {}) })));
-  const files = rows.file.filter((r) => own.has(r.source) && !ends.some((e) => e.source === r.source));
+    .concat(held.map((h) => ({ source: asFile(h.path) ? folderKey(h.path) : h.path.replace(/\/*$/, '/'), kind: asFile(h.path) ? 'file' : 'folder', fate: 'keep', why: h.why, ...(asFile(h.path) ? fileRow(h.path) : {}) })))
+    /* a pointer skill's folder stays, so each file its commit deleted under it gets a row of its own, which the doctor's cite check reads */
+    .concat(imp.repo.filter((e) => e.op === POINT && e.commit).flatMap((e) => String(git(['diff-tree', '--no-commit-id', '--name-only', '--diff-filter=D', '-r', '-z', e.commit]).stdout || '').split('\0').filter((f) => f && under(f, e.path))
+      .map((f) => ({ source: f, kind: 'file', fate: 'delete', sha: base, ...fileRow(f), why: 'the pointer skill ' + e.path + ' keeps its SKILL.md and names its card ' + e.to + '; its other files go' }))));
+  const files = rows.file.filter((r) => (own.has(r.source) || (holds(r.source) && r.hash)) && !ends.some((e) => e.source === r.source)).map((r) => ({ ...r, sha: base }));
   /* the new hashes ride a run of their own, so the undo gives back each row as the write or an earlier run left it */
-  if (!copy && files.length) await putMap(cliRunner(cli), env, dir, plan.made + RESTAMPED, { file: files }, log);
-  if (!copy && ends.length) await putMap(cliRunner(cli), env, dir, plan.made, { folder: ends }, log);
-  if (skipped.length) log('Skipped (' + skipped.length + '), each left as it is:\n  ' + skipped.map((s) => s.path + ': ' + s.why).join('\n  '));
-  if (held.length) log('Folders that stay (' + held.length + '); tell the user:\n  ' + held.map((s) => s.path + ': ' + s.why).join('\n  '));
-  if (stopped) log('Stopped at the ' + stopped.batch + ' batch: ' + stopped.why + '. Its ' + stopped.files + ' files are as they were before it; each commit before it is in the manifest. Fix the cause and run --handover again.');
-  else if (!commits.length && !skipped.length && !held.length) log('Nothing left to hand over' + (file ? ' on ' + file : '') + '.');
-  /* the real tree against the copy the fresh reader read */
-  const diff = copy ? null : againstCopy(work, dir, plan, log);
-  return { commits, skipped, held, ...(stays.length ? { stays } : {}), ...(override ? { override } : {}), ...(stopped ? { stopped } : {}), ...(diff ? { diff } : {}) };
+  if (files.length || rerun || recalls.length) await putMap(run, env, dir, plan.made + RESTAMPED, { file: files, call: recalls, run: rerun ? [rerun] : [] }, log);
+  if (ends.length) await putMap(run, env, dir, plan.made, { folder: ends }, log);
 }
 
-/* before the go, the handover on a copy of the repo against the scratch board, so the fresh
-   reader reads the project as a new session would start in it, never the proposal. The copy is the working tree as
-   it stands (uncommitted and untracked files, the ignored CLAUDE.local.md and settings.local.json) with the repo's
-   line ends; its commits stay in the copy. */
-/* an earlier rehearsal's copy, reader file and copy.json, so no fresh reader reads a copy the board no longer matches */
-function dropCopy(work, t) {
-  const base = t.manifest.replace(/-manifest[.]json$/, '');
-  const before = readJson(join(dirname(base), 'copy.json'), null);
-  if (!before || !before.dir || resolve(dirname(before.dir)) !== resolve(dirname(base))) return;
-  rmSync(before.dir, { recursive: true, force: true, maxRetries: 3 });
-  if (before.reader) rmSync(before.reader, { force: true });
-  rmSync(join(dirname(base), 'copy.json'), { force: true });
-}
-export async function rehearseHandover(work, { board, cli = DEFAULT_CLI, log = console.log } = {}) {
-  const t = target(work, board);
-  if (!t || !t.rehearsal) throw new Error('the copy is a rehearsal\'s: --board file:<db>');
-  const plan = loadPlan(work);
-  const real = plan.project.dir;
-  const git = gitIn(real);
-  if (git(['rev-parse', '--show-toplevel']).status !== 0) { log('No copy for the fresh reader: ' + real + ' is not a git repo, so the handover makes no edits there'); return null; }
-  const manifest = readJson(t.manifest, null);
-  if (!manifest) throw new Error('no manifest at ' + t.manifest + ': the copy follows the rehearsal write');
-  const base = t.manifest.replace(/-manifest\.json$/, '');
-  const copy = { dir: base + '-copy', manifest: base + '-copy-manifest.json', idmap: base + '-copy-idmap.json', repoint: base + '-copy-repoint.json' };
-  /* one copy at a time: an earlier rehearsal's goes with this one's */
-  const before = readJson(join(dirname(base), 'copy.json'), null);
-  for (const d of new Set([copy.dir, ...(before && before.dir && resolve(dirname(before.dir)) === resolve(dirname(copy.dir)) ? [before.dir] : [])])) rmSync(d, { recursive: true, force: true, maxRetries: 3 });
-  const conf = (k) => String(git(['config', '--get', k]).stdout || '').trim();
-  /* the copy's commits are scratch: never signed, never the project's hooks */
-  const cfg = [['core.autocrlf', conf('core.autocrlf')], ['core.eol', conf('core.eol')], ['user.name', conf('user.name') || 'AskerDo rehearsal'],
-    ['user.email', conf('user.email') || 'rehearsal@askerdo.invalid'], ['commit.gpgsign', 'false']].filter(([, v]) => v).flatMap(([k, v]) => ['-c', k + '=' + v]);
-  const c = spawnSync('git', ['clone', '-q', '--shared', ...cfg, real, copy.dir], { encoding: 'utf8', windowsHide: true, env: { ...process.env, GIT_LFS_SKIP_SMUDGE: '1' } });
-  if (c.status !== 0) { log('No copy for the fresh reader: git clone refused: ' + clip(gitWhy(c), 300)); return null; }
-  const repo = repoState(real);
-  const ignored = String(git(['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--', ':(glob)**/CLAUDE.local.md', '.claude/settings.local.json']).stdout || '').split('\0').filter(Boolean);
-  for (const f of [...repo.changed, ...repo.untracked, ...ignored]) {
-    const from = join(real, f);
-    const to = join(copy.dir, f);
-    if (existsSync(from)) { mkdirSync(dirname(to), { recursive: true }); copyFileSync(from, to); } else rmSync(to, { recursive: true, force: true });
-  }
-  for (const i of manifest.imports) delete i.repo;
-  writeJson(copy.manifest, manifest);
-  writeJson(copy.idmap, readJson(t.idmap, {}) || {});
-  rmSync(copy.repoint, { force: true });
-  const h = await handover(work, { board, cli, log: () => {}, copy });
-  const view = readerView(copy.dir, plan, { board: t.name, env: t.env, cli, handed: h });
-  const reader = base + '-reader.md';
-  writeFileSync(reader, view.text);
-  const out = { dir: copy.dir, board: t.name, reader, made: new Date().toISOString(), commits: h.commits.map((x) => ({ batch: x.batch, summary: x.summary, files: x.files })),
-    held: h.held, ...(h.stays ? { stays: h.stays } : {}), skipped: h.skipped, ...(h.stopped ? { stopped: h.stopped } : {}), loads: view.loads, top: view.top, kept: view.kept };
-  writeJson(join(dirname(base), 'copy.json'), out);
-  log('The handover on a copy, for the fresh reader: ' + h.commits.length + ' commits in ' + copy.dir + (h.held.length ? ', ' + h.held.length + ' folders stay' : '')
-    + (h.stays ? ', ' + h.stays.length + ' instruction clauses stay with what they load' : '')
-    + (h.stopped ? ', stopped at the ' + h.stopped.batch + ' batch' : '') + '; what it reads: ' + reader);
-  return out;
-}
-
-/* What the fresh reader is pointed at: the copy, the scratch board, what a session starting there loads (the
-   instruction files Claude reads, what is left under .claude/, what the settings run), the top folders, and each
-   kept folder with its why and README. */
+/* what one fresh reader pass reads, on the user's ask after the handover: the project as a new session
+   starts in it, the board, what a session there loads (the instruction files Claude reads, what is left under .claude/,
+   what the settings run), the top folders, and each kept folder with its why and README. */
 const README = /^(?:readme|index|_index)\.(?:md|markdown|txt)$/i;
 const n = (k, w) => k + ' ' + w + (k === 1 ? '' : 's');
-export function readerView(dir, plan, { board = null, env = null, cli = DEFAULT_CLI, handed = null } = {}) {
+/* a board id a line names: a question (with its answer token), a record, a task, track or workstream */
+const CITED_ID = /(?<![\w-])(Q\d+|[KT]-\d+|TR-\d+|WS-\d+)(?![\w-])/g;
+/* what an id stands for in the plan's board snapshot, or null when the snapshot does not hold it */
+function statementOf(id, snap) {
+  const find = (k) => ((snap && snap[k]) || []).find((x) => x && x.id === id);
+  const q = find('questions');
+  if (q) return '"' + oneLine(q.title) + '"' + (q.answer ? ', answered "' + clip(q.answer, 200) + '"' : ', open');
+  const d = find('decisions');
+  if (d) return 'decision: "' + oneLine(d.title) + '"';
+  const k = find('knowledge');
+  return k ? 'knowledge (' + (k.type || 'fact') + '): "' + oneLine(k.name || k.title) + '"' : null;
+}
+export function readerView(dir, plan, { cli = DEFAULT_CLI, snapshot = null } = {}) {
   const r = gitIn(dir)(['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
   const files = String(r.stdout || '').split('\0').filter((f) => f && existsSync(join(dir, f)));
   const have = new Set(files);
@@ -1546,19 +1701,17 @@ export function readerView(dir, plan, { board = null, env = null, cli = DEFAULT_
   };
   const counts = new Map();
   for (const f of files) { const k = f.includes('/') ? f.slice(0, f.indexOf('/') + 1) : f; counts.set(k, (counts.get(k) || 0) + 1); }
-  const top = [...counts].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([path, n]) => ({ path, ...(path.endsWith('/') ? { files: n } : {}) }));
-  const stays = [...((handed && handed.held) || []), ...((handed && handed.skipped) || [])];
-  const kept = (plan.folders || []).filter((f) => f.end === 'keep' || stays.some((s) => folderKey(s.path) === folderKey(f.path))).map((f) => {
+  const top = [...counts].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([path, k]) => ({ path, ...(path.endsWith('/') ? { files: k } : {}) }));
+  /* a unit the plan ended that is still in the tree stayed: its gate held it */
+  const kept = (plan.folders || []).filter((f) => f.end === 'keep' || (f.end !== POINT && files.some((x) => under(x, folderKey(f.path))))).map((f) => {
     const p = folderKey(f.path);
-    const s = stays.find((x) => folderKey(x.path) === p);
     const readme = files.find((x) => x.startsWith(p + '/') && !x.slice(p.length + 1).includes('/') && README.test(x.slice(p.length + 1)));
-    return { path: f.path, end: f.end, why: s ? 'it stays: ' + s.why : f.why || '', ...(f.shape ? { shape: f.shape } : {}), files: files.filter((x) => under(x, p)).length, ...(readme ? { readme } : {}) };
+    return { path: f.path, end: f.end, why: f.end === 'keep' ? f.why || '' : 'it stays: its gate held it', ...(f.shape ? { shape: f.shape } : {}), files: files.filter((x) => under(x, p)).length, ...(readme ? { readme } : {}) };
   });
-  const seams = env ? Object.entries(env).map(([k, v]) => k + '=' + v).join(' ') + ' ' : '';
-  const text = ['# What the fresh reader reads: ' + (plan.label || 'the conversion'), '',
-    'The project as a new session would start in it after the handover, which ran on a copy of the repo against the scratch board. Read the copy and search the board; nothing else (never the proposal or rehearsal.md).', '',
+  const body = ['# What the fresh reader reads: ' + (plan.label || 'the conversion'), '',
+    'The project as a new session starts in it after the handover. Read the project and search the board; nothing else (never the proposal or rehearsal.md).', '',
     '- Your brief: ' + join(dirname(fileURLToPath(import.meta.url)), 'fresh-reader.md').replace(/\\/g, '/'),
-    '- The copy: ' + dir, '- The board: `' + seams + 'node ' + cli + ' <verb>`' + (board && !seams ? ' (' + board + ')' : '') + '; it knows the project as ' + plan.project.dir, '',
+    '- The project: ' + dir, '- The board: `node ' + cli + ' <verb>`', '',
     '## What a session here loads', '',
     ...loads.instructions.map((x) => '- ' + x.file + ': ' + (x.read === 'start' ? 'read at the start' : x.read === 'nested' ? 'read when a session works in its folder' : 'not read (' + (x.why || 'no') + ')')),
     ...loads.claude.map((x) => '- ' + x.file + ' (' + x.kind + (x.paths ? ', on paths ' + x.paths.join(', ') : '') + ')'),
@@ -1567,77 +1720,20 @@ export function readerView(dir, plan, { board = null, env = null, cli = DEFAULT_
     '## The top folders', '', ...top.map((x) => '- ' + x.path + (x.files ? ' (' + n(x.files, 'file') + ')' : '')), '',
     '## Kept folders, with why', '', ...kept.map((k) => '- ' + k.path + ': ' + k.why + (k.shape ? ' (' + k.shape + ')' : '') + '; ' + n(k.files, 'file') + (k.readme ? '; read ' + k.readme : '')),
     ...(kept.length ? [] : ['None.']), ''].join('\n');
-  return { text, loads, top, kept };
+  /* every id the lines above name, with what it stands for on the board */
+  const ids = [...new Set([...body.matchAll(CITED_ID)].map((m) => m[1]))].sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+  const cited = ids.map((id) => ({ id, statement: statementOf(id, snapshot) })).filter((c) => c.statement);
+  const text = body + (cited.length ? ['## The board records named above', '', ...cited.map((c) => '- ' + c.id + ': ' + c.statement), ''].join('\n') : '');
+  return { text, loads, top, kept, cited };
 }
-
-/* the report's account of the copy */
-function copyLines(copy) {
-  const out = ['## The handover on a copy', '', 'The handover ran on a copy of the repo against this scratch board, before any go: ' + copy.commits.length + ' commits in ' + copy.dir + '.'
-    + ' The fresh reader reads that copy as a new session would start in it, pointed at it by ' + copy.reader + '; after the go, the handover compares the real tree with it.', ''];
-  for (const x of copy.commits) out.push('- ' + x.batch + ': ' + x.summary);
-  for (const x of copy.held || []) out.push('- stays: ' + x.path + ': ' + x.why);
-  for (const x of copy.skipped || []) out.push('- skipped: ' + x.path + ': ' + x.why);
-  if (copy.stopped) out.push('- stopped at the ' + copy.stopped.batch + ' batch: ' + copy.stopped.why);
-  return out;
-}
-
-/* the real tree after the handover against the copy the fresh reader read. A path is the same
-   when its blob is, or its text is once board ids and commit hashes are masked (the two boards and histories differ). */
-function treeOf(dir) {
-  const git = gitIn(dir);
-  const out = new Map();
-  for (const l of String(git(['ls-files', '-s', '-z']).stdout || '').split('\0')) { const m = /^\d+ ([0-9a-f]+) 0\t(.+)$/s.exec(l); if (m) out.set(m[2], m[1]); }
-  const { changed, untracked } = repoState(dir);
-  for (const f of changed) if (!existsSync(join(dir, f))) out.delete(f);
-  const loose = [...changed, ...untracked].filter((f) => { try { return statSync(join(dir, f)).isFile(); } catch { return false; } });
-  if (loose.length) {
-    const h = String(git(['hash-object', '--stdin-paths'], loose.join('\n') + '\n').stdout || '').trim().split('\n');
-    loose.forEach((f, i) => out.set(f, h[i]));
-  }
-  return out;
-}
-const MASK = /\b(?:WS|TR|T|K|P)-\d+(?:\.\d+)?\b|\bQ\d+\b|\b[0-9a-f]{7,40}\b/g;
-const maskedText = (p) => { try { if (statSync(p).size > 2 << 20) return null; } catch { return null; } const t = readText(p); return t === null ? null : t.replace(MASK, '#'); };
-export function treeDiff(real, copy) {
-  const a = treeOf(real);
-  const b = treeOf(copy);
-  const here = [];
-  const gone = [];
-  const changed = [];
-  for (const [f, h] of a) {
-    if (!b.has(f)) { here.push(f); continue; }
-    if (b.get(f) === h) continue;
-    const x = maskedText(join(real, f));
-    if (x === null || x !== maskedText(join(copy, f))) changed.push(f);
-  }
-  for (const f of b.keys()) if (!a.has(f)) gone.push(f);
-  return { here, gone, changed };
-}
-/* paths named by the plan's folder they sit in, the rest one by one */
-function byUnit(paths, units) {
-  const out = [];
-  let rest = paths;
-  for (const u of units) {
-    const of = rest.filter((p) => under(p, u));
-    if (!of.length) continue;
-    out.push(of.length === 1 && of[0] === u ? u : u + '/ (' + of.length + ' files)');
-    rest = rest.filter((p) => !under(p, u));
-  }
-  return [...out, ...rest.slice(0, 8), ...(rest.length > 8 ? ['and ' + (rest.length - 8) + ' more'] : [])];
-}
-function againstCopy(work, dir, plan, log) {
-  const rec = readJson(join(work, 'rehearsal', 'copy.json'), null);
-  if (!rec || !existsSync(rec.dir)) { log('No rehearsal copy to compare with: the fresh reader reads the real tree before the run is recorded.'); return { copy: null, rerun: true }; }
-  const d = treeDiff(dir, rec.dir);
-  const units = (plan.folders || []).map((f) => folderKey(f.path)).filter(Boolean);
-  const out = { copy: rec.dir, reader: rec.reader, here: byUnit(d.here, units), gone: byUnit(d.gone, units), changed: byUnit(d.changed, units) };
-  out.rerun = Boolean(d.here.length || d.gone.length || d.changed.length);
-  writeJson(join(work, 'handover-diff.json'), out);
-  log(!out.rerun ? 'The real tree matches the rehearsal copy the fresh reader read (' + rec.dir + ').'
-    : 'The real tree differs from the rehearsal copy the fresh reader read (' + rec.dir + '): ' + [out.here.length ? 'still here, gone in the copy: ' + out.here.join(', ') : null,
-      out.gone.length ? 'gone here, still in the copy: ' + out.gone.join(', ') : null, out.changed.length ? 'not as in the copy: ' + out.changed.join(', ') : null].filter(Boolean).join('; ')
-      + '. The fresh reader runs again on the real tree before the run is recorded.');
-  return out;
+/* the one reader pass's file, in the work folder */
+export function readerFile(work, { cli = DEFAULT_CLI, log = console.log } = {}) {
+  const plan = loadPlan(work);
+  const view = readerView(plan.project.dir, plan, { cli, snapshot: (readFacts(work) || {}).board || plan.board || null });
+  const file = join(work, 'reader.md');
+  writeFileSync(file, view.text);
+  log('What the fresh reader reads: ' + file);
+  return { file, ...view };
 }
 
 /* The live write runs quiet: the local server's own notification pause (the tray menu's and the
@@ -1706,94 +1802,189 @@ const writeInChild = () => new Promise((done) => {
   c.on('exit', (code) => done(code === null ? 1 : code));
 });
 
-/* a decision leaves only by a withdraw the user allows: an import's decisions in one request, so one press */
-export function withdrawInput(ids, label) {
-  return { kind: 'withdraw', summary: 'Withdraw the ' + ids.length + ' decision' + (ids.length === 1 ? '' : 's') + ' the ' + label + ' import wrote: the import was undone',
-    reason: 'written by the ' + label + ' import, which was undone: the board never ruled them; the project\'s old record still holds them', items: ids.map((record) => ({ record })) };
+/* an import's decisions and knowledge records leave only by a withdraw the user allows, all in one request, so one press */
+const counted = (n, one) => n + ' ' + one + (n === 1 ? '' : 's');
+/* a ruling is what the board's measure calls one, a record of type decision, when the board was read; else the step's kind */
+const byKind = (s) => s.kind === 'decision';
+const recordsSaid = (steps, ruling = byKind) => {
+  const r = steps.filter(ruling).length;
+  return [r ? counted(r, 'decision') : '', steps.length - r ? counted(steps.length - r, 'knowledge record') : ''].filter(Boolean).join(' and ');
+};
+/* group: the answer a group drop came from, which leaves the import standing */
+export function withdrawInput(steps, label, ruling = byKind, group = null) {
+  const why = group ? 'the answer to ' + group + ' dropped ' + (steps.length === 1 ? 'it' : 'them') : 'the import was undone';
+  const reason = group ? 'written by the ' + label + ' import from items the answer to ' + group + ' dropped since; the rest of the import stays'
+    : 'written by the ' + label + ' import, which was undone; the project\'s old record still holds what they say';
+  return { kind: 'withdraw', summary: 'Withdraw the ' + recordsSaid(steps, ruling) + ' the ' + label + ' import wrote: ' + why, reason, items: steps.map((s) => ({ record: s.id })) };
 }
 
-export async function undoImport(work, { board, cli = DEFAULT_CLI, all = false, session, dry: asked = false, log = console.log } = {}) {
+/* what an undo takes back is deleted by the board's purge, not left under an ended status;
+   a fix and a rule line still go back by their own verbs */
+const PURGED = ['task create', 'track new', 'register', 'ws create'];
+const KIND_WORD = { knowledge: 'knowledge record' };
+const purgedKinds = (steps) => {
+  const n = {};
+  for (const s of steps) { const k = s.kind || s.op; n[k] = (n[k] || 0) + 1; }
+  return Object.entries(n).map(([k, c]) => counted(c, KIND_WORD[k] || k)).join(', ');
+};
+
+export async function undoImport(work, { board, cli = DEFAULT_CLI, all = false, group = null, session, dry: asked = false, log = console.log } = {}) {
   const t = target(work, board || 'live');
   const manifest = readJson(t.manifest, null);
   if (!manifest || !manifest.imports.length) throw new Error('no manifest at ' + t.manifest + ': nothing was written there');
   const imps = manifest.imports.filter((i) => !i.undone);
-  const pick = all ? imps : imps.slice(-1);
+  /* a group a later answer dropped takes back only its items' records, from every live import; the import stays */
+  const rows = group ? new Set((loadPlan(work).items || []).filter((x) => x.dropped === group).map((x) => x.id)) : null;
+  if (rows && !rows.size) throw new Error('the plan drops no item by ' + group + ': write the drop answer into the proposal and run plan.mjs again');
+  const pick = all || group ? imps : imps.slice(-1);
+  const inGroup = (s) => !rows || rows.has(s.row);
   const env = { ...process.env, ...t.env };
   /* --dry reads the manifest of the board it is given, a rehearsal's included */
   const dry = !board || asked;
-  const rulings = pick.flatMap((i) => i.steps).filter((s) => s.kind === 'decision' && !s.undoneAt);
-  if (!dry && rulings.length && !session) throw new Error('the undo files a withdraw request for its ' + rulings.length + ' decisions, which takes --session <own id>');
+  const withdrawn = (s) => s.kind === 'decision' || s.kind === 'knowledge';
+  const records = pick.flatMap((i) => i.steps).filter((s) => withdrawn(s) && !s.undoneAt && inGroup(s));
+  if (!dry && records.length && !session) throw new Error('the undo files a withdraw request for its ' + recordsSaid(records) + ', which takes --session <own id>');
   const run = dry ? null : cliRunner(cli);
   log((dry ? 'Dry run of the undo' : 'Undo on ' + t.name) + ': ' + pick.length + ' import(s) of ' + manifest.label);
-  const kept = [];
-  const finished = [];
   const filed = [];
+  const requests = [];
   const failed = [];
   const stays = [];
   const waiting = [];
+  const held = [];
+  /* the amended pointers a session read, and the fix request that puts their text back */
+  const inUse = [];
+  const fixes = [];
+  /* the steps that keep their import open: refused, held back from the purge, or a task left open */
+  const bad = new Set();
   /* an undone run's rows leave the map, so the next run reads those sources again */
   const mapDir = manifest.project && manifest.project.dir;
-  if (rulings.length && dry) log('  askerdo override request --kind withdraw --session <own id>, its ' + rulings.length + ' decisions on stdin: ' + rulings.map((s) => s.id).join(', '));
-  else if (rulings.length) {
-    /* one already withdrawn is done; one a record outside the import superseded is no longer in force, so it stays */
-    const recs = await showMany(run, rulings.map((s) => s.id), unread(env));
-    const ids = new Set(rulings.map((s) => s.id));
+  const typed = new Map();
+  const ruling = (s) => (typed.has(s.id) ? typed.get(s.id) === 'decision' : byKind(s));
+  const word = (s) => (ruling(s) ? 'decision ' : 'knowledge record ') + s.id;
+  /* the records the purge deletes, once no record waits on the user's press */
+  const purge = [];
+  let unsettled = 0;
+  if (records.length && dry) log('  askerdo override request --kind withdraw --session <own id>, its ' + recordsSaid(records) + ' on stdin: ' + records.map((s) => s.id).join(', '));
+  else if (records.length) {
+    /* one withdrawn goes to the purge; one a record outside the import superseded is no longer in force, so it stays.
+       A retired fact goes too: the undo takes back every record the write made */
+    const recs = await showMany(run, records.map((s) => s.id), unread(env));
+    const ids = new Set(records.map((s) => s.id));
     const now = new Date().toISOString();
     const ask = [];
-    rulings.forEach((s, i) => {
+    records.forEach((s, i) => {
       const r = recs[i];
-      if (!r) { failed.push('decision ' + s.id + ': the board could not show it'); return; }
-      if (r.status === 'withdrawn') { s.undoneAt = now; return; }
-      if (r.status === 'superseded' && !ids.has(r.supersededBy)) { stays.push('decision ' + s.id + ' (superseded by ' + r.supersededBy + ')'); Object.assign(s, { undoneAt: now, stays: true }); return; }
+      if (!r) { failed.push(word(s) + ': the board could not show it'); unsettled++; return; }
+      if (r.type) typed.set(s.id, r.type);
+      if (r.status === 'withdrawn') { purge.push(s); return; }
+      if (r.status === 'superseded' && !ids.has(r.supersededBy)) { stays.push(word(s) + ' (superseded by ' + r.supersededBy + ')'); Object.assign(s, { undoneAt: now, stays: true }); return; }
       ask.push(s);
     });
     if (ask.length) {
-      /* a decision leaves only on the user's Withdraw, so a filed request leaves the import open; asked again, the
+      /* these leave only on the user's Withdraw, so a filed request leaves the import open; asked again, the
          board refuses while it waits (naming it) or once the user kept them, and files an expired one anew */
       const before = [...new Set(ask.map((s) => s.withdrawRequest).filter(Boolean))];
-      const r = await run(['override', 'request', '--session', session], { stdin: JSON.stringify(withdrawInput(ask.map((s) => s.id), manifest.label)), env });
+      const r = await run(['override', 'request', '--session', session], { stdin: JSON.stringify(withdrawInput(ask, manifest.label, ruling, group)), env });
       if (r.ok) {
         for (const s of ask) s.withdrawRequest = r.out && r.out.request;
-        filed.push('#' + (r.out && r.out.request) + ' (' + ask.length + ' decisions)');
+        requests.push(r.out && r.out.request);
+        filed.push('#' + (r.out && r.out.request) + ' (' + recordsSaid(ask, ruling) + ')');
+        unsettled += ask.length;
       } else if (before.length && /\bkept\b/i.test(r.why)) {
         for (const s of ask) Object.assign(s, { undoneAt: now, stays: true, kept: true });
-        stays.push(...ask.map((s) => 'decision ' + s.id + ' (the user kept it)'));
-      } else if (before.some((n) => r.why.includes('#' + n))) waiting.push('#' + before.join(', #') + ' (' + ask.length + ' decisions)');
-      else failed.push('the withdraw request for ' + ask.length + ' decisions: ' + clip(r.why, 300));
+        stays.push(...ask.map((s) => word(s) + ' (the user kept it)'));
+      } else {
+        if (before.some((n) => r.why.includes('#' + n))) waiting.push('#' + before.join(', #') + ' (' + recordsSaid(ask, ruling) + ')');
+        else failed.push('the withdraw request for ' + recordsSaid(ask, ruling) + ': ' + clip(r.why, 300));
+        unsettled += ask.length;
+      }
     }
   }
-  for (const imp of pick.reverse()) {
-    let clean = true;
+  /* each imported task's checklist: one holding an open step added since the import stays open, named */
+  const creates = pick.flatMap((i) => i.steps).filter((s) => s.op === 'task create' && !s.fix && !s.undoneAt && s.id && inGroup(s));
+  const lists = new Map(dry || !creates.length ? [] : (await showMany(run, creates.map((s) => s.id), unread(env))).map((r, i) => [creates[i].id, r]));
+  const plan = readJson(join(work, 'plan.json'), null);
+  const left = [];
+  const back = [];
+  for (const imp of pick.slice().reverse()) {
     for (const s of imp.steps.slice().reverse()) {
-      if (s.undoneAt) continue;
-      if (s.kind === 'knowledge') { kept.push(s.id); continue; }
-      /* settled above, in the one request */
-      if (s.kind === 'decision') { if (!dry) clean = false; continue; }
-      /* every undo verb takes --session only to name who undid it */
+      if (s.undoneAt || withdrawn(s) || !inGroup(s)) continue;
+      if (PURGED.includes(s.op) && !s.fix && s.id) {
+        const drop = s.op === 'task create' ? importDrop(s, imp, lists.get(s.id), { plan, label: manifest.label }) : null;
+        if (drop && drop.left) { bad.add(s); left.push(s.id + ' (' + drop.left.map((x) => x.n + '. ' + clip(x.text, 60)).join('; ') + ')'); continue; }
+        purge.push(s);
+        continue;
+      }
+      back.push({ imp, s });
+    }
+  }
+  const going = new Set(purge.map((s) => s.id));
+  /* an undo back to the inbox wakes 14 days from the undo; every undo verb takes --session only to name who undid it */
+  const argsOf = (s) => s.undo && asApproved(withTier([...s.undo.map((a) => (a === '@{' + WAKE_REF + '}' ? wakeIn() : a)), ...(session ? ['--session', session] : [])]), session);
+  if (dry) {
+    for (const { s } of back) { const args = s.fix && going.has(s.id) ? null : argsOf(s); if (args) log('  askerdo ' + args.map(shq).join(' ')); }
+    const all = [...purge, ...records];
+    if (all.length) log('  askerdo purge ' + manifest.label + ' --id ' + all.map((s) => s.id).join(',') + ' --yes --session <own id>: deletes ' + purgedKinds(all) + ', once the user\'s Withdraw lands');
+    if (mapDir && !group) for (const imp of pick) for (const id of [imp.plan + RESTAMPED, imp.plan]) log('  askerdo conversion drop --project ' + shq(mapDir) + ' --run ' + id);
+  } else {
+    const ours = new Set([...purge, ...records].map((s) => s.id));
+    for (const { imp, s } of back) {
+      /* a fix on a record of the import waits with the purge, and goes with the record it deletes */
+      if (s.fix && ours.has(s.id) && (unsettled || going.has(s.id))) { if (!unsettled) s.undoneAt = new Date().toISOString(); continue; }
       /* a reconcile's ref stays while its amend does (no verb takes one back): the redo's plan reads it as done */
       const amended = s.fix && imp.steps.some((x) => x.step === s.step + '@amend' && x.fix && !x.undo);
       if (s.fix && (!s.undo || amended)) { stays.push(s.kind + ' ' + s.id); continue; }
-      /* an undo back to the inbox wakes 14 days from the undo */
-      const args = s.undo && asApproved(withTier([...s.undo.map((a) => (a === '@{' + WAKE_REF + '}' ? wakeIn() : a)), ...(session ? ['--session', session] : [])]), session);
+      const args = argsOf(s);
       if (!args) continue;
-      if (dry) { log('  askerdo ' + args.map(shq).join(' ')); continue; }
       const r = await run(args, { env });
-      /* no verb takes back a finished track: it stays finished, its tasks dropped above */
-      if (!r.ok && s.kind === 'track' && /is already (done|dropped)/.test(r.why)) { if (/done/.test(r.why)) { finished.push(s.id); s.stays = true; } s.undoneAt = new Date().toISOString(); continue; }
-      if (!r.ok) { clean = false; failed.push(s.kind + ' ' + s.id + ': ' + clip(r.why, 200)); continue; }
+      /* a session read the amended pointer, so its old text goes back only by the user's Fix */
+      if (!r.ok && s.op === 'knowledge amend' && /\bis in use\b/.test(r.why)) { bad.add(s); inUse.push(s); continue; }
+      if (!r.ok) { bad.add(s); failed.push(s.kind + ' ' + s.id + ': ' + clip(r.why, 200)); continue; }
       s.undoneAt = new Date().toISOString();
     }
-    if (!dry && clean) {
-      imp.undone = new Date().toISOString();
-      /* its folder ends go with the run: the reverts it prints bring the folders back, and a redo's handover sets them again.
-         a source whose records all stand (knowledge, kept decisions) stays converted, so a rerun reads it unchanged */
-      const keep = mapDir ? await standing(run, env, mapDir, imp, manifest.imports.filter((o) => o !== imp)) : [];
-      /* the handover's new hashes first, which the reverts take back, then the write's rows */
-      for (const [id, k] of [[imp.plan + RESTAMPED, []], [imp.plan, keep]]) {
-        const r = mapDir ? await run(['conversion', 'drop', '--project', mapDir, '--run', id, ...(k.length ? ['--keep', k.join(',')] : [])], { env }) : { ok: true };
-        if (!r.ok) failed.push('the conversion map rows of ' + id + ': ' + clip(r.why, 200));
+    if (inUse.length) {
+      const items = inUse.map((s) => ({ record: s.id, body: s.undo[s.undo.indexOf('--body') + 1] }));
+      const said = counted(inUse.length, 'history pointer') + ' (' + inUse.map((s) => s.id).join(', ') + ')';
+      const r = session ? await run(['override', 'request', '--session', session], { env, stdin: JSON.stringify({ kind: 'fix', items,
+        summary: 'Put back the text of the ' + said + ' the ' + manifest.label + ' import amended: the import was undone',
+        reason: 'the ' + manifest.label + ' import amended them with folders it took out of the tree, and that import was undone' }) }) : { ok: false, why: 'the fix request takes --session <own id>' };
+      if (r.ok) { requests.push(r.out && r.out.request); fixes.push('#' + (r.out && r.out.request) + ' (' + said + ')'); }
+      else if (/already reads as proposed/.test(r.why)) for (const s of inUse) { bad.delete(s); s.undoneAt = new Date().toISOString(); }
+      else if (/\bkept\b/i.test(r.why)) for (const s of inUse) { bad.delete(s); Object.assign(s, { undoneAt: new Date().toISOString(), stays: true, kept: true }); stays.push(s.kind + ' ' + s.id + ' (the user kept it)'); }
+      else if (/already has override #\d+ waiting/.test(r.why)) fixes.push('still ' + said);
+      else failed.push('the fix request for ' + said + ': ' + clip(r.why, 300));
+    }
+    if (purge.length && !unsettled) {
+      const r = await run(['purge', manifest.label, '--id', purge.map((s) => s.id).join(','), '--yes', ...(session ? ['--session', session] : [])], { env });
+      if (!r.ok) failed.push('the purge of ' + purgedKinds(purge) + ': ' + clip(r.why, 300));
+      else {
+        const now = new Date().toISOString();
+        const stopped = new Map((r.out.held || []).map((h) => [h.id, h.why]));
+        for (const s of purge) {
+          if (!stopped.has(s.id)) { s.undoneAt = now; continue; }
+          /* a workstream holding records the import did not write is closed instead */
+          const ws = s.op === 'ws create' && s.undo ? await run(argsOf(s), { env }) : null;
+          if (ws && (ws.ok || /already closed/.test(ws.why))) { Object.assign(s, { undoneAt: now, stays: true }); stays.push('workstream ' + s.id + ' (closed: it ' + stopped.get(s.id) + ')'); continue; }
+          bad.add(s);
+          held.push(s.id + ' ' + stopped.get(s.id));
+        }
+        const gone = purge.filter((s) => s.undoneAt === now && !s.stays);
+        if (gone.length) log('Deleted ' + purgedKinds(gone) + ' the import wrote, with their journals, history and activity');
       }
-    } else if (dry && mapDir) for (const id of [imp.plan + RESTAMPED, imp.plan]) log('  askerdo conversion drop --project ' + shq(mapDir) + ' --run ' + id);
+    }
+  }
+  for (const imp of pick.slice().reverse()) {
+    if (dry || group || unsettled || imp.steps.some((s) => bad.has(s) || ((withdrawn(s) || (PURGED.includes(s.op) && !s.fix && s.id)) && !s.undoneAt))) continue;
+    imp.undone = new Date().toISOString();
+    /* its folder ends go with the run: the reverts it prints bring the folders back, and a redo's handover sets them again.
+       a source whose records all stand (ones the user kept, another record's) stays converted, so a rerun reads it unchanged */
+    const keep = mapDir ? await standing(run, env, mapDir, imp, manifest.imports.filter((o) => o !== imp)) : [];
+    /* the handover's new hashes first, which the reverts take back, then the write's rows */
+    for (const [id, k] of [[imp.plan + RESTAMPED, []], [imp.plan, keep]]) {
+      const r = mapDir ? await run(['conversion', 'drop', '--project', mapDir, '--run', id, ...(k.length ? ['--keep', k.join(',')] : [])], { env }) : { ok: true };
+      if (!r.ok) failed.push('the conversion map rows of ' + id + ': ' + clip(r.why, 200));
+    }
   }
   if (!dry) {
     const gone = new Set(pick.filter((i) => i.undone).flatMap((i) => i.steps.map((s) => s.row)));
@@ -1810,23 +2001,30 @@ export async function undoImport(work, { board, cli = DEFAULT_CLI, all = false, 
      board never writes the real repo's file */
   let override = null;
   if (!dry && !t.rehearsal && mapDir) {
-    try { override = await refreshAgentsOverride(mapDir, { env, agents: agentsBefore(mapDir, pick) }); } catch (e) { override = { did: 'failed', why: oneLine(e && e.message) }; }
+    /* a group undo prints no revert, so AGENTS.md stays as the handover left it */
+    try { override = await refreshAgentsOverride(mapDir, { env, agents: group ? null : agentsBefore(mapDir, pick) }); } catch (e) { override = { did: 'failed', why: oneLine(e && e.message) }; }
     if (override.did === 'wrote') log('Rewrote ' + override.path + ' for Codex from the rules and decisions left on the board');
     else if (override.did === 'failed') log('AGENTS.override.md was not rewritten (the rules read failed: ' + override.why + '); a Claude session started in the project rewrites it');
   }
   if (failed.length) log('Refused (' + failed.length + '), run the undo again once each is fixed:\n  ' + failed.join('\n  '));
+  if (fixes.length) log('Fix request for the text of the records the import amended, waiting on the user\'s Fix or Keep: ' + fixes.join(', ') + '. Run the undo again after the press.');
+  if (left.length) log('Tasks left open (' + left.length + '): each holds an open step added after the import, which the undo never strikes; settle those steps, then run the undo again:\n  ' + left.join('\n  '));
   if (filed.length || waiting.length) log('Withdraw request ' + (filed.length ? 'filed, waiting' : 'still waiting') + ' on the user\'s one Withdraw or Keep: ' + [...filed, ...waiting].join(', ')
     + '. The import reads undone only once it is decided: run the undo again after the press.');
-  else if (dry && rulings.length) log('The ' + rulings.length + ' decisions leave only by a withdraw request the user presses Withdraw on: the undo files one request for them all (--session <own id>).');
-  if (finished.length) log('Finished tracks stay finished, with their handoffs (no verb takes one back; their tasks are dropped): ' + finished.join(', '));
-  if (stays.length) log('Stay as they are (' + stays.length + '), fixes no verb takes back and decisions a later record superseded: ' + stays.join(', '));
-  if (kept.length) log('Knowledge records stay (' + kept.length + '): a withdraw takes only decisions and no verb removes one: ' + kept.join(', '));
-  /* the handover's repo commits, one per folder: named, newest first, never reverted without the user's word */
-  const repo = pick.flatMap((i) => (i.repo || []).map((e, k) => ({ ...e, k }))).filter((e) => e.commit);
+  else if (dry && records.length) log('The ' + recordsSaid(records) + ' leave only by a withdraw request the user presses Withdraw on: the undo files one request for them all (--session <own id>).');
+  if (held.length) log('Held back from the purge (' + held.length + '), run the undo again once each is settled:\n  ' + held.join('\n  '));
+  if (stays.length) log('Stay as they are (' + stays.length + '), fixes no verb takes back and records the user kept or a later record superseded: ' + stays.join(', '));
+  /* the handover's commit, one a run (one per --file run): named, newest first, never reverted without the user's word */
+  const repo = group ? [] : pick.flatMap((i) => (i.repo || []).map((e, k) => ({ ...e, k }))).filter((e) => e.commit);
   const shas = [...new Set(repo.sort((a, b) => String(b.at).localeCompare(String(a.at)) || b.k - a.k).map((e) => e.commit))];
-  if (shas.length) log('The handover\'s repo commits, newest first: revert each with git once the user says so (the undo runs none):\n  ' + shas.map((c) => 'git revert ' + c).join('\n  '));
-  log('Handoffs go with their dropped tracks. Procedure cards stay: they follow their docs/procedures files, so they go when those files do.');
-  return { failed, kept, finished, filed, waiting, stays, ...(override ? { override } : {}) };
+  /* a commit a squash or rebase replaced is no revert to print: the user reverts the commit that holds it */
+  const git = mapDir ? gitIn(mapDir) : null;
+  const lost = git ? shas.filter((c) => git(['merge-base', '--is-ancestor', c, 'HEAD']).status !== 0) : [];
+  const kept = shas.filter((c) => !lost.includes(c));
+  if (kept.length) log('The handover\'s repo commits, newest first: revert each with git once the user says so (the undo runs none):\n  ' + kept.map((c) => 'git revert ' + c).join('\n  '));
+  if (lost.length) log('Not in the branch\'s history (' + lost.length + ', squashed or rebased): revert the commit that holds them once the user says so: ' + lost.map((c) => c.slice(0, 10)).join(', '));
+  log('Handoffs go with their dropped tracks. Procedure cards stay: they follow their docs/procedures files, so they go when those files do; the verified commit the handover recorded on them is withdrawn.');
+  return { failed, filed, requests, waiting, stays, left, held, ...(override ? { override } : {}) };
 }
 /* AGENTS.md as the printed reverts leave it, when a handover commit changed it: the override is git-ignored, so the
    reverts never touch it and Codex would read the converted text the undo takes back */
@@ -1845,12 +2043,12 @@ function agentsBefore(dir, imps) {
 const BOARD_ID = /^(?:[A-Z]{1,3}-\d+(?:\.\d+)?|Q\d+)$/;
 async function standing(run, env, dir, imp, others = []) {
   const own = new Set(imp.steps.map((s) => s.id).filter(Boolean));
-  const back = new Set(imp.steps.filter((s) => s.undoneAt && !s.stays && s.kind !== 'knowledge' && s.id).map((s) => s.id));
+  const back = new Set(imp.steps.filter((s) => s.undoneAt && !s.stays && s.id).map((s) => s.id));
   /* a card the handover wrote goes with the printed reverts, so the source it came from is read again */
   for (const e of imp.repo || []) if (e.op === 'write') back.add(e.path);
   const theirs = new Set(others.flatMap((o) => [...o.steps.map((s) => s.id), ...(o.repo || []).filter((e) => e.op === 'write').map((e) => e.path)]).filter(Boolean));
   const r = await run(['conversion', '--project', dir], { env: unread(env) });
-  const rows = ((r.ok && r.out && r.out.rows) || []).filter((x) => (x.run === imp.plan || x.run === imp.plan + RESTAMPED) && (x.kind === 'file' || x.kind === 'folder') && !x.fate
+  const rows = ((r.ok && r.out && r.out.rows) || []).filter((x) => (x.run === imp.plan || x.run === imp.plan + RESTAMPED) && (x.kind === 'file' || x.kind === 'folder') && (!x.fate || x.fate === 'keep')
     && (x.records || []).length && !(x.gone || []).length && x.records.every((id) => !back.has(id) && !theirs.has(id)));
   const ids = [...new Set(rows.flatMap((x) => x.records).filter((id) => BOARD_ID.test(id)))];
   const shown = new Map((await showMany(run, ids, unread(env))).map((rec, i) => [ids[i], rec]));
@@ -1866,12 +2064,11 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const a = process.argv.slice(2);
   const flag = (n) => { const i = a.indexOf('--' + n); return i >= 0 ? a.splice(i, 2)[1] : undefined; };
   const bool = (n) => { const i = a.indexOf('--' + n); if (i >= 0) a.splice(i, 1); return i >= 0; };
-  const board = flag('board'); const cli = flag('cli') || DEFAULT_CLI; const session = flag('session'); const undo = bool('undo'); const all = bool('all');
-  const cover = bool('coverage'); const hand = bool('handover'); const only = flag('file'); const point = bool('repoint'); const dry = bool('dry');
+  const board = flag('board'); const cli = flag('cli') || DEFAULT_CLI; const session = flag('session'); const undo = bool('undo'); const all = bool('all'); const group = flag('group');
+  const cover = bool('coverage'); const hand = bool('handover'); const only = flag('file'); const reader = bool('reader'); const dry = bool('dry');
   if (!a[0] || a[0] === '--help') { console.log(USAGE); process.exit(a[0] ? 0 : 1); }
   try {
-    /* the repoint needs no CLI: it reads the work folder and edits the repo */
-    if (point) { const r = repoint(a[0], { board: board || 'live', file: only || null }); process.exit(r.refused ? 1 : r.failed.length || r.unresolved.some((u) => u.tool) ? 2 : 0); }
+    if (reader) { readerFile(a[0], { cli }); process.exit(0); }
   } catch (e) { console.error('apply: ' + e.message); process.exit(1); }
   if (!existsSync(cli)) { console.error('apply: no CLI at ' + cli); process.exit(1); }
   try {
@@ -1879,7 +2076,8 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     if (hand) { const h = await handover(a[0], { board: board || 'live', cli, file: only || null }); process.exit(h.stopped ? 1 : h.skipped.some((s) => !s.expected) ? 2 : 0); }
     /* the live write runs in one child, so this process's loop is free to renew the pause while it runs */
     if (!undo && board === 'live' && !process.env[PAUSE_HELD]) process.exit(await quietWrite(writeInChild));
-    const r = undo ? await undoImport(a[0], { board, cli, all, session, dry }) : await applyPlan(a[0], { board, cli });
-    process.exit(r.stopped || (r.failed && r.failed.length) ? 1 : 0);
+    const r = undo ? await undoImport(a[0], { board, cli, all, group: group || null, session, dry })
+      : board && board.startsWith('file:') ? await rehearse(a[0], { board, cli }) : await applyPlan(a[0], { board, cli });
+    process.exit(r.stopped || (r.failed && r.failed.length) || (r.undo && r.undo.failed.length) ? 1 : 0);
   } catch (e) { console.error('apply: ' + e.message); process.exit(1); }
 }

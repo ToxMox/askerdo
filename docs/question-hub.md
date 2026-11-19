@@ -232,7 +232,7 @@ the pick marked, "(a, my pick)", "(b)": the card's head; the hub adds the
 question number at registration, so the stored ask names the options
 with their tokens, "(25a, my pick)", "(25b)"; the CLI refuses a register
 without it), `gist` (why it came up), `projectDir` (the working
-directory; the CLI turns it into the project's shared name, `projectRepo`, 
+directory; the CLI turns it into the project's shared name, `projectRepo`,
 and the board keeps only the name), `session` (this session's id, read from the scratchpad path
 the harness announces), `blocking` (boolean). Optional: `workstream`
 (`WS-n`), `track` (`TR-n`; an old `P-n` or `TH-n` names the track it
@@ -578,16 +578,19 @@ question labelled `placement`, written by the board from the filing, on
 the filing session and its held track, not blocking, and creates
 nothing. Its gist says what was found, why the session asks to move it,
 where it would sit on the held track and where the session asks to put
-it. The options are always a, do it on this track; b, put it where
+it. The options are a, do it on this track; b, put it where
 asked (the pick, since that is what the session asks for); c, let's talk
-where it fits; d, drop it. The question's `placement` key carries the
+where it fits; d, drop it. When nothing on the held track waits on the
+work (the filing names no `here`), the first row is left out: a, put it
+where asked (the pick); b, let's talk; c, drop it. The question's `placement` key carries the
 draft (or the task being moved), both places, where it came from, and
 after the answer `outcome` (`here`, `asked`, `talk`, `drop` or `stale`)
 and `created`.
 
 The answer creates the task wherever it is given (the band, a card,
-`/askerdo 345b`, the `answer` tool, the CLI), with no model turn: a at
-the held track's place, b at the place asked for. Talk, drop, a quiet
+`/askerdo 345b`, the `answer` tool, the CLI), with no model turn: do it
+on this track at the held track's place, put it where asked at the
+place asked for. Talk, drop, a quiet
 drop, a note with no press or a snooze creates nothing; after a talk
 the session files the settled place with `question` and the user's
 settling words, which the board lets through once. A place whose tasks

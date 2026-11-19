@@ -66,7 +66,7 @@ export function usedBy(db, e) {
 
 /* The two-line refusal a used record's in-place change gets. */
 export const inUseRefusal = (id, why) => id + ' is in use (' + why + '): amend it (knowledge amend ' + id + ' --body "...") or supersede it (knowledge supersede ' + id + ').'
-  + '\nAn override is only for text a bug wrote, a ruling never made, or a secret: override request ' + id
+  + '\nAn override is only for text a bug wrote, a ruling never made, a record an undone import wrote, or a secret: override request ' + id
   + ' --kind fix|withdraw|scrub --reason "..." --summary "..." --session <own-id>.';
 
 /* read(db, { ids, site, session }): the mod's reads, the decision-applies toast

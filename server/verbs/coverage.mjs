@@ -171,8 +171,9 @@ const STOOD = `(r.status = 'done' OR (r.status <> 'dropped' AND EXISTS (SELECT 1
   AND json_extract(a.line, '$.changes.status[0]') IN ('done', 'completed'))))`;
 
 /* THE COVERAGE RULE: a code task is covered when a completed (or reopened) review's cover
-   reaches through_at at or after every one of its counted commits. `ignore` is review.ignore's. */
-export function coveredState(db, taskKey, ignore = []) {
+   reaches through_at at or after every one of its counted commits. `ignore` is review.ignore's;
+   `skip` names a review whose own covers do not count. */
+export function coveredState(db, taskKey, ignore = [], skip = null) {
   const rows = countedCommits(db, taskKey, ignore);
   const added = rows.reduce((n, r) => n + r.added, 0);
   const removed = rows.reduce((n, r) => n + r.removed, 0);
@@ -182,7 +183,7 @@ export function coveredState(db, taskKey, ignore = []) {
   const last = Math.max(...rows.map((r) => ms(r.at) ?? Infinity));
   /* a row from a record that is no longer a review (its label came off) counts for nothing */
   const covers = db.stmt(`SELECT c.review, c.through, c.through_at, r.fields FROM covers c JOIN records r ON r.key = c.review
-    WHERE c.task = ? AND ${STOOD}`).all(taskKey).filter((c) => ms(c.through_at) !== null && ms(c.through_at) >= last && isReview(JSON.parse(c.fields)));
+    WHERE c.task = ? AND ${STOOD}`).all(taskKey).filter((c) => c.review !== skip && ms(c.through_at) !== null && ms(c.through_at) >= last && isReview(JSON.parse(c.fields)));
   if (!covers.length) return base;
   const best = covers.reduce((a, b) => (ms(a.through_at) >= ms(b.through_at) ? a : b));
   return { ...base, covered: true, by: labelOf(db, best.review), through: best.through };
@@ -310,7 +311,8 @@ function projectReviews(db, wsKeys) {
 function defaultList(db, review, c) {
   const cut = cutOf(db, review, c);
   const { ignore } = reviewSettings(db, review.key);
-  const open = (t) => { const s = coveredState(db, t.key, ignore); return s.code && !s.covered; };
+  /* its own covers do not count: a completed review asked again keeps what it read */
+  const open = (t) => { const s = coveredState(db, t.key, ignore, review.key); return s.code && !s.covered; };
   /* new since a read: completed after it, or counted work linked after it (a hotfix) */
   const since = (t, prev) => ms(t.closed) > prev || lastLinked(db, t.key, ignore) > prev;
   if (scopeOf(review.fields) === 'project') {

@@ -207,7 +207,7 @@ Type `/askerdo` in the prompt; the typeahead lists every subcommand with one lin
 | `/askerdo proc ran <name> deviated "note" --fixed <commit>`, `--one-off "why"` or `--filed T-n` | Records a run that left the steps, how, and what happens next: the steps fixed in a commit, a one-off with the steps standing, or work filed under the found work rule. | `/askerdo proc ran release deviated "skipped the tray rebuild" --one-off "no tray change this release"` |
 | `/askerdo proc scan` | Reads the project's procedure files again and updates their cards. | `/askerdo proc scan` |
 | `/askerdo proc scan --check` | Checks the procedure files of this checkout, a worktree's branch included, and writes nothing to the board. | `/askerdo proc scan --check` |
-| `/askerdo withdraw K-n` | Your Withdraw on the withdraw request for that record; `fix K-n` and `scrub K-n` press a fix's or a scrub's. A word that is not the request's own applies nothing. | `/askerdo withdraw K-12` |
+| `/askerdo withdraw K-n` | Your Withdraw on the withdraw request for that record (a ruling you never made, or a decision or knowledge record an undone import wrote); `fix K-n` and `scrub K-n` press a fix's or a scrub's. A word that is not the request's own applies nothing. | `/askerdo withdraw K-12` |
 | `/askerdo keep K-n` | Your Keep: the record stays as written. | `/askerdo keep K-12` |
 | `/askerdo unscrub K-n` | Puts back text a scrub removed, within 7 days. | `/askerdo unscrub K-12` |
 | `/askerdo help` | Lists every subcommand with a line each, and names the Guide tab. | `/askerdo help` |

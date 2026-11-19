@@ -53,7 +53,7 @@ import { answeringOf } from '../../lib/mod-core.mjs'
 import { actLabel, callPressText, parseOverride } from '../../lib/mod-core.mjs'
 import { briefDecisionIds, forgedFiling, hubAnswers, namesQuestion, placedRelay, userMarked, isHubFactWrite, isHubOverride, isHubTaskWrite, overrideArgs, overrideCard, overrideOn, overrideResult, overrideTold } from '../../lib/mod-core.mjs'
 import { FG_SHOW_MS, LIVE_AGENT, agentsModel, heldOver, heldWaitOf, agentsSegment, backgroundModel, bgRebuilt, flightsKept, flightsRebuilt, handoffOthers, handoffWrites, runningNames, runningWork, taskEnds } from '../../lib/mod-core.mjs'
-import { blockSettled, continueLineOf, dispatchRunBlock, heldRunsRefusal, liveRunIds, replyAsks, reportsIn, runEndHow, settleWords, stateNoteNamed, stopReadyWords, stopSettleWords } from '../../lib/mod-core.mjs'
+import { blockSettled, continueLineOf, dispatchRunBlock, heldRunsRefusal, keptStateNote, liveRunIds, replyAsks, reportsIn, runEndHow, settleWords, stateNoteNamed, stopReadyWords, stopSettleWords } from '../../lib/mod-core.mjs'
 import { closedInbox, commitsIn, dueAway, hubRan, inboxLeft, offTrackSlip } from '../../lib/mod-core.mjs'
 import { leftCalls, leftNote } from '../../lib/mod-core.mjs'
 import { noteHolder, noteWaits } from '../../lib/sender-words.mjs'
@@ -74,7 +74,7 @@ import type { GuidePage } from './guide.tsx'
 import type { PaneView, TracksTrim } from './pane.tsx'
 import { firstTellingTree, pinnedOf, questionsLoading, questionsTree, ringKey } from './questions.tsx'
 import type { QuestionsActions, QuestionsTrim, QuestionsView } from './questions.tsx'
-import { COMMAND_TOOLS, FILE_TOOLS, checkText, findText, matchCall, parseProc, procNote, procToast, ranText, recordsRun, scanText } from '../../lib/proc-match.mjs'
+import { COMMAND_TOOLS, FILE_TOOLS, checkText, findText, matchCall, parseProc, procNote, procToast, ranText, recordsRun, scanText, testRun } from '../../lib/proc-match.mjs'
 import { READ_TOOLS, SEARCH_TOOLS, callSubject, decisionHits, turnCommands } from '../../lib/decision-match.mjs'
 import { decideArgs, factArgs, decidedText, decisionsBlock, pointerNotes, pointerToast, withDecisions } from '../../lib/mod-core.mjs'
 import { taskBlocks } from '../../lib/mod-core.mjs'
@@ -1025,7 +1025,7 @@ const VERIFY_ENTRY = {
 const TIER_LINES = 'tier 2: the track this session holds, at a real place: after is what it needs and before the tasks on it that must not finish without it; it files at once. '
   + 'Asking to put it last on that track (last, with why), on another track or a parked one an event opens (tier 3: track, or unparkWhen with newTrack), '
   + 'in another workstream or project (tier 4: workstream with a track there, or wake for its inbox; a date wake says why that date in unplaced), '
-  + 'or for a later session (wake next-session) creates nothing: it asks the user, with the reason and with here naming the real place on the held track it would otherwise take, and their press creates it or not.'
+  + 'or for a later session (wake next-session) creates nothing: it asks the user, with the reason and with here naming the real place on the held track it would otherwise take (left out when nothing there waits on it), and their press creates it or not.'
 const PLACE_ANSWER = {
   tier: { type: 'integer', enum: [2, 3, 4], description: 'Where the work goes. ' + TIER_LINES },
   track: { type: 'string', description: 'TR-n: tier 3, another track in this workstream; tier 4, a track in the workstream named' },
@@ -1036,9 +1036,9 @@ const PLACE_ANSWER = {
     + 'Tier 4 with no track: the event that brings it back in that workstream\'s inbox; a date YYYY-MM-DD (tier 2 or 4) only with unplaced' },
   unplaced: { type: 'string', description: 'With a date wake: why that date, one line' },
   whyElsewhere: { type: 'string', description: 'Tier 3 or 4 from a session that holds a track: why the held track\'s real place does not fit, one line, shown to the user in the placement question' },
-  last: { type: 'string', description: 'Tier 2: asks to put it last on the held track (before its closing review), with why nothing there needs it sooner, one line, shown to the user in the placement question; here still names the real place' },
+  last: { type: 'string', description: 'Tier 2: asks to put it last on the held track (before its closing review), with why nothing there needs it sooner, one line, shown to the user in the placement question; here still names the real place, when one waits' },
   here: { type: 'object', additionalProperties: false, description: 'With a place that asks (last, tier 3 or 4, a wake): the real place on the held track the work would otherwise take, '
-    + 'after what it needs and before the tasks that must not finish without it; the question offers it beside the place asked for',
+    + 'after what it needs and before the tasks that must not finish without it; the question offers it beside the place asked for. Left out when nothing on the held track waits on the work: the question then has no do-it-on-this-track press',
     properties: { after: { type: 'array', items: { type: 'string' } }, before: { type: 'array', items: { type: 'string' } } } },
 }
 
@@ -1082,7 +1082,8 @@ const toolsFor = (n: string) => [
   {
     name: 'override_request',
     description: 'Ask ' + n + ' to override a record already in use, the one way to change it beyond an amend: fix (text a bug or an import wrote), '
-      + 'withdraw (a ruling ' + n + ' never made) or scrub (a secret or personal detail); never for wording, scope or a change of mind (amend or supersede those). '
+      + 'withdraw (a ruling ' + n + ' never made, or a knowledge record an undone import wrote) or scrub (a secret or personal detail); never for wording, scope or a change of mind (amend or supersede those). '
+      + 'Any other knowledge record that stops being true ends by knowledge retire K-n --reason, with no press. '
       + 'The session decides whether its change qualifies; a subagent never calls it and reports to its session instead. '
       + 'One record with its corrected fields, or a batch as items. '
       + 'Answers with the block to put in the reply as written, which ' + n + ' answers on the card under it with the request\'s act (Withdraw, Fix or Scrub) or Keep; a fix or withdraw of a ruling is a reversal, its block and card leading with it.',
@@ -1092,7 +1093,7 @@ const toolsFor = (n: string) => [
         kind: { type: 'string', enum: ['fix', 'withdraw', 'scrub'] },
         record: { type: 'string', description: 'T-n or K-n: the one record; or items for a batch' },
         summary: { type: 'string', description: 'What ' + n + ' decides, at most 200 characters; never the text a scrub removes' },
-        reason: { type: 'string', description: 'Why it qualifies: the bug that wrote the text, the ruling never made, or the secret' },
+        reason: { type: 'string', description: 'Why it qualifies: the bug that wrote the text, the ruling never made, the import undone, or the secret' },
         name: { type: 'string', description: 'fix: the corrected name' },
         description: { type: 'string', description: "fix: a task's corrected Description" },
         intent: { type: 'string', description: "fix: a task's corrected Intent" },
@@ -1302,7 +1303,8 @@ const toolsFor = (n: string) => [
     name: 'handoff_write',
     description: 'Write the next handoff of the track this session holds (or the track named; with none held, name a workstream and a track named from the focus is started there). '
       + STOP_FIRST + ' Then: focus one line of at most 400 characters, '
-      + 'state at most 10 KB (a line over 400 characters is wrapped onto an indented continuation line), whereWeWere at most 4 KB in your own words (where the conversation with ' + n + ' stood), '
+      + 'state at most 10 KB (a line over 400 characters is wrapped onto an indented continuation line), whereWeWere at most 4 KB in your own words (where the conversation with ' + n + ' stood); '
+      + 'a field over its budget is stored as sent and the result names the handoff_update patch that shortens it, never a second write; '
       + 'rulings: only those ' + n + ' made in chat that decide could not record, '
       + 'and verifyFirst with one entry per repo, '
       + 'its files list naming only untracked files new since the last handoff and kept ones whose review date has passed, each commit, ignore, delete, keep (with a reason) or undecided, '
@@ -1371,9 +1373,9 @@ const toolsFor = (n: string) => [
     name: 'handoff_update',
     description: 'Patch the handoff this session wrote, in place, while it waits or is parked: it keeps its id (TR-n.m) and its depth. '
       + 'When a turn changes state after its handoff, patch it before that turn ends with what the next leg needs; a turn that only answered or read needs no patch. '
-      + 'ops, applied in order: state replaces the section under its "## " heading, or appends it when new (the steps left stay tasks on the track, never a Next list); '
-      + 'whereWeWere adds one line; waitingOnUser adds or drops one line of what waits on ' + n + '; verifyFirst snapshots one repo again as the write does, its untracked files, worktrees and merged branches. '
-      + 'The write\'s budgets and prose order apply to the patched text. '
+      + 'ops, applied in order: focus replaces the focus (one line of at most 400 characters); state replaces the section under its "## " heading, or appends it when new (the steps left stay tasks on the track, never a Next list); '
+      + 'whereWeWere adds one line (line), or replaces it whole (text); waitingOnUser adds or drops one line of what waits on ' + n + '; verifyFirst snapshots one repo again as the write does, its untracked files, worktrees and merged branches. '
+      + 'The write\'s prose order applies to the patched text; a field still over its budget is stored and the result names it. '
       + 'Once the track is resumed the update is refused, naming the session holding it: put what changed in a note on the track (note, id TR-n), which reaches that session at its next prompt.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['ops'],
@@ -1383,11 +1385,15 @@ const toolsFor = (n: string) => [
           type: 'array',
           items: {
             anyOf: [
+              { type: 'object', additionalProperties: false, required: ['op', 'text'], properties: {
+                op: { type: 'string', enum: ['focus'] }, text: { type: 'string', description: 'The focus, one line of at most 400 characters, replacing it' } } },
               { type: 'object', additionalProperties: false, required: ['op', 'heading', 'text'], properties: {
                 op: { type: 'string', enum: ['state'] }, heading: { type: 'string', description: 'The section\'s heading, one line starting "## "' },
                 text: { type: 'string', description: 'The section\'s body under its heading, with no "## " line in it' } } },
               { type: 'object', additionalProperties: false, required: ['op', 'line'], properties: {
                 op: { type: 'string', enum: ['whereWeWere'] }, line: { type: 'string', description: 'One line in your own words, added to whereWeWere' } } },
+              { type: 'object', additionalProperties: false, required: ['op', 'text'], properties: {
+                op: { type: 'string', enum: ['whereWeWere'] }, text: { type: 'string', description: 'The whole of whereWeWere, shorter, replacing it' } } },
               { type: 'object', additionalProperties: false, required: ['op'], properties: {
                 op: { type: 'string', enum: ['waitingOnUser'] }, add: { type: 'string', description: 'One line to add' },
                 drop: { type: 'string', description: 'A line already there, as written, to drop' } } },
@@ -6647,6 +6653,7 @@ async function handoffTool($: any, input: any, agentId?: string, useId?: string)
       + (r.json.superseded && r.json.superseded.length ? ', superseding ' + r.json.superseded.join(', ') : '') + '.'
       + (r.json.released ? ' This session let ' + id + ' go with it.' : '')
       + (v.wrapped ? '\n' + wrappedLine(v.wrapped) : '')
+      + (r.json.overLine ? '\n' + r.json.overLine : '')
       + (readBack ? '\nThe local server answered late, so this was read back from the board: the handoff landed once. The write\'s own lines (removals, leftovers, inbox) are not here; `askerdo track show ' + r.json.id + '` prints the handoff.' : '')
       + (laidOutNote(r.json.laidOut, id) ? '\n' + laidOutNote(r.json.laidOut, id, r.json.parkedTracks) : '')
       + (r.json.leavesLine ? '\n' + r.json.leavesLine : '')
@@ -6739,6 +6746,7 @@ async function updateTool($: any, input: any): Promise<any> {
   return {
     result: 'Updated ' + j.id + ' (' + j.status + ') on ' + j.track + ' in place, keeping its id: ' + (said.join('; ') || 'nothing changed') + '.'
       + fails.map((v: any) => '\nverify first: ' + v.path + ' FAILS: ' + (v.problems || []).join('; ')).join('')
+      + (j.overLine ? '\n' + j.overLine : '')
       + (files ? '\n' + files : ''),
   }
 }
@@ -7535,14 +7543,16 @@ type SpawnRun = { tasks: string[]; job: string; stateNote: string; place: any }
 async function spawnRun($: any, e: any): Promise<SpawnRun | null> {
   try {
     const briefs: string[] = []
+    /* a -state.md file read as a brief is another run's record, whose head names its own note */
+    const noteBriefs: string[] = []
     for (const f of briefPaths(e.prompt, await projectDir($))) {
-      try { const t = await $.fs.read(f); if (typeof t === 'string') briefs.push(t) } catch {}
+      try { const t = await $.fs.read(f); if (typeof t === 'string') { briefs.push(t); if (!/-state\.md$/i.test(f)) noteBriefs.push(t) } } catch {}
     }
     const job = String(e.name || e.description || '').trim().slice(0, 200)
     const tasks = tasksOfDispatch(e, briefs, laneTagged(e))
     /* an isolated spawn carries no cwd (measured) and its worktree is cut later: its open reads it */
     const place = !tasks.length ? {} : !e.cwd && isolated.has(String(e.tool_use_id)) ? { isolated: true } : await gitPlace($, e.cwd)
-    return { tasks, job, stateNote: stateNoteNamed([e.prompt, ...briefs]), place }
+    return { tasks, job, stateNote: stateNoteNamed([e.prompt, ...noteBriefs]), place }
   } catch { return null }
 }
 const topSpawn = (e: any): boolean => !e.parentAgentId && !e.workflow && !e.resume
@@ -7734,7 +7744,7 @@ async function runEnd($: any, agentId: string, answer: string, word?: string, ru
   if (r.result && r.result.ended && ended) await settleAfter($, ended, sid, word === 'killed' || word === 'stopped').catch(() => {})
   /* the bound's end judges no lane size: the agent waited, it did not run out */
   if (!(r.result && r.result.ended) || !a || !a.tokens || word === 'held') return
-  const body = laneNote(a.tokens, ended && ended.job, handed)
+  const body = laneNote(a.tokens, ended && ended.job, handed, ended && ended.stateNote)
   for (const t of runTaskIds(ended)) {
     await cli($, ['note', t, '--session', sid || kept.session, '--json'], body)
     lanes.byTask.delete(t)
@@ -9005,8 +9015,20 @@ async function agentFlag($: any, input: any, top = false): Promise<string> {
   const r = await readRules($).catch(() => null)
   if (!(r && r.values)) return missed
   const name = String(input.description || input.subagent_type || 'an agent').slice(0, 60)
-  flagSlips($, 'the dispatch of ' + name, agentChecks(input, { briefs, rules: r.values, inject: r.inject !== false, lanes: await laneSizes($, tasks).catch(() => []) }))
+  const slips = agentChecks(input, { briefs, rules: r.values, inject: r.inject !== false, lanes: await laneSizes($, tasks).catch(() => []) })
+  flagSlips($, 'the dispatch of ' + name, slips.filter((s: any) => !laneSaid(s)))
   return missed
+}
+
+/* a task's lane flag is said once a turn, on the first dispatch; the line under it is
+   written then, so the later ones count only in the turn's note */
+function laneSaid(slip: any): boolean {
+  if (!/^lane /.test(String(slip && slip.id))) return false
+  const first = checks.agents.flatMap((x: any) => x.slips).find((s: any) => s && s.id === slip.id)
+  if (!first) return false
+  first.n = (first.n || 1) + 1
+  first.say = String(first.base || (first.base = first.say)) + ' (' + first.n + ' dispatches this turn carry it on)'
+  return true
 }
 
 /* a desktop session driven while its window is not attached composes with no
@@ -9135,7 +9157,8 @@ async function procWatch($: any, e: any, ran: any[] = []): Promise<string[]> {
   const cards = await procCards($)
   if (!cards.length) return out
   const hits = matchCall(cards, { tool: e.tool, input: toolInput(e), cwd: await projectDir($) })
-  ran.push(...hits.filter((h) => recordsRun(h.card, e.tool)))
+  const test = hits.some((h) => recordsRun(h.card, e.tool)) && testRun(toolInput(e).command, await shellDirs($, e))
+  ran.push(...hits.filter((h) => recordsRun(h.card, e.tool) && !test))
   for (const h of hits) {
     const k = (e.agentId || 'main') + ' ' + h.card.id
     if (procs.told.has(k)) continue
@@ -9144,9 +9167,27 @@ async function procWatch($: any, e: any, ran: any[] = []): Promise<string[]> {
       procs.toasted.add(h.card.id)
       toast($, procToast(h.card), 'ambient', 8000)
     }
-    out.push(procNote(h.card, h.why, { agent: !!e.agentId, recorded: recordsRun(h.card, e.tool) }))
+    out.push(procNote(h.card, h.why, { agent: !!e.agentId, recorded: recordsRun(h.card, e.tool), test }))
   }
   return out
+}
+
+/* where a command runs: the main loop's shell, or an agent's run place (its worktree); an agent with
+   no run found by its id in the worktree list, kept once looked up, a miss too ('': an agent with no
+   worktree), since the engine cuts an agent's worktree before its first call and it never moves */
+const agentDirs = new Map<string, string>()
+async function shellDirs($: any, e: any): Promise<string[]> {
+  if (e.agentId === undefined) { try { return [String(await $.session.cwd() || '')] } catch { return [] } }
+  const id = String(e.agentId)
+  const run = runTick.open.find((r: any) => r && r.agentId === id)
+  if (run && run.repo) return [String(run.repo)]
+  if (!agentDirs.has(id)) {
+    const wt = await agentWorktree($, id).catch(() => ({}))
+    agentDirs.set(id, wt.repo ? String(wt.repo) : '')
+    if (agentDirs.size > 50) agentDirs.delete(agentDirs.keys().next().value as string)
+  }
+  const dir = agentDirs.get(id) as string
+  return dir ? [dir] : []
 }
 
 /* A matched command that exited 0 (no error, not interrupted, not sent to the background)
@@ -9203,8 +9244,11 @@ async function decisionWatch($: any, e: any): Promise<string[]> {
   const rows = await decisionRows($)
   if (!rows.length) return out
   const input = toolInput(e), cwd = await projectDir($)
+  /* a shell's relative paths resolve where its cd left it; an agent's shell is not the session's */
+  let shellCwd = cwd
+  if (COMMAND_TOOLS.includes(e.tool) && e.agentId === undefined) try { shellCwd = String(await $.session.cwd() || cwd) } catch {}
   const t0 = performance.now()
-  const hits = decisionHits(rows, { tool: e.tool, input, cwd })
+  const hits = decisionHits(rows, { tool: e.tool, input, cwd, shellCwd })
   matchTimed(e.agentId !== undefined, performance.now() - t0)
   let factsOn: boolean | undefined
   /* the call's hits gathered first, then told as one: notes, one toast, one read */
@@ -9835,6 +9879,7 @@ export const register: Register = (on: any) => {
     const [r, { ruled, held, labels }, { taken, found }] = await Promise.all([readRules($).catch(() => null), dispatchContext($, e).catch(() => ({ ruled: '', held: '', labels: [] as string[] })),
       spawnHeld($, s)])
     if (taken) return { deny: taken }
+    if (s && !s.stateNote) s.stateNote = keptStateNote(found)
     /* the agents' block, without the lines for the session alone; with the lines
        for each role it plays (its subagent type, its tasks' labels); each task's block after the rulings,
        then each task's last run and the run details, task data that rides with the rules off too */

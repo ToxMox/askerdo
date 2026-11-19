@@ -56,6 +56,7 @@ export function cardView(front) {
     runs: front.runs || 0, cleanRuns: front.cleanRuns || 0, badge: b.badge, reasons: b.reasons,
     ...(front.everywhere ? { everywhere: true } : {}), ...(front.live ? { live: true } : {}),
     ...(front.record === 'command' ? { record: 'command' } : {}),
+    ...(front.vouched ? { vouched: front.vouched } : {}),
     ...(front.openTasks && front.openTasks.length ? { openTasks: front.openTasks } : {}),
   };
 }

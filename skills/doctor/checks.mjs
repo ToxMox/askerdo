@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /* the doctor's checks, for a project already on the board. Gathers onboarding's facts, then runs
-   the record checks and the reconcile on the board's records, and writes checkup.json: each finding as an item
-   of kind fix with its proposed fix, and a call where only the user can settle it. The session judges them and
-   writes the fixes it agrees with into proposal.json, for plan.mjs and apply.mjs.
-   node checks.mjs <project dir> [--work <dir>] [--cli <path>] [--who <the user's name>] */
+   the record checks on the board's records, and writes checkup.json: each finding as an item of kind fix with its
+   proposed fix, and a call where only the user can settle it. The session judges them and writes the fixes it
+   agrees with into proposal.json, for plan.mjs and apply.mjs. Small by default; --depth adds the knowledge
+   check, the task rewrites and the reconcile's ref and amend rows.
+   node checks.mjs <project dir> [--work <dir>] [--cli <path>] [--who <the user's name>] [--depth] */
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, posix, resolve } from 'node:path';
@@ -15,10 +17,13 @@ import { DEFAULT_CLI, DORMANT_DAYS, cliJson, matchRules, sameSubject, survey, su
 import { clausesOf, covers } from '../onboard/coverage.mjs';
 import { kebab } from '../onboard/cites.mjs';
 import { folderKey, owedStep, readFacts } from '../onboard/plan.mjs';
-import { projectRoots, resolver } from '../onboard/instructions.mjs';
+import { IN_GIT, projectRoots, resolver } from '../onboard/instructions.mjs';
 import { coveredBy, linesHold, seedCovers } from '../onboard/map.mjs';
 
-export const CHECKS = ['rules', 'shape', 'tasks', 'knowledge', 'cards', 'repo', 'kept', 'earlier', 'source', 'gone', 'reconcile'];
+/* the checks of what a session meets run by default; the knowledge check runs at depth */
+export const CHECKS = ['rules', 'shape', 'tasks', 'cards', 'repo', 'source', 'reconcile'];
+export const DEPTH_CHECKS = ['knowledge'];
+export const checksAt = (depth) => (depth ? [...CHECKS, ...DEPTH_CHECKS] : CHECKS);
 const LINE_MAX = 400;
 const SHOW_BATCH = 50;
 const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -39,31 +44,45 @@ export function checkRow(check, target, { title, where, record, evidence, fix = 
   };
 }
 
-/* A finding's call: run the fix or leave it. A track pick offers each live track, the option adding the fix
-   with that track; a fix with no args waits on the session's words after a keep. */
+/* A group's members as fix items, one per member, each with its own command: an option's `add` */
+const memberFix = (x, m, suffix, fix) => ({ id: x.id + '@' + m.id + (suffix ? '@' + suffix : ''), kind: 'fix', title: m.name, text: '', cut: false, covered: null, source: null,
+  fields: { check: x.fields.check, record: m.id, evidence: x.fields.evidence, fix: { target: m.id, ...fix } } });
+/* a group's one call, its count and three examples in the ask; every option but leave adds a fix per member */
+function groupCallOf(x) {
+  const f = x.fields;
+  const g = f.group;
+  const letter = (k) => String.fromCharCode(97 + Math.min(k, 25));
+  const opts = g.kind === 'unplaced'
+    ? (f.tracks || []).slice(0, 24).map((t) => ({ label: 'put all ' + g.members.length + ' on ' + t.id + ' ' + t.name, add: g.members.map((m) => memberFix(x, m, t.id, { op: 'task edit', args: ['task', 'edit', m.id, '--track', t.id], was: m.was })) }))
+    : g.kind === 'asleep' ? [{ label: 'wake them all', add: g.members.map((m) => memberFix(x, m, 'wake', { op: 'wake', args: ['wake', m.id], was: m.was })) },
+      { label: 'drop them all', add: g.members.map((m) => memberFix(x, m, 'drop', { op: 'drop', args: ['drop', m.id, '--note', 'asleep since ' + day(m.created) + ': dropped on the doctor\'s group call'], was: m.was })) }]
+    : g.kind === 'dup' ? [{ label: 'supersede each older record its newer one holds whole (' + g.members.length + ')', add: g.members.map((m) => memberFix(x, m, null, { op: 'knowledge supersede', args: ['knowledge', 'supersede', m.id, '--by', m.by] })) }]
+    : [];
+  const options = opts.map((o, i) => ({ letter: letter(i), label: o.label, effect: { keep: [], drop: [x.id], folders: {}, add: o.add } }));
+  const leave = letter(options.length);
+  options.push({ letter: leave, label: 'leave them', effect: { keep: [], drop: [x.id], folders: {} } });
+  const examples = g.members.slice(0, 3).map((m) => m.id + ' ' + clip(m.name, 60));
+  return { id: x.id, ask: x.title + ' (' + examples.join('; ') + (g.members.length > 3 ? '; and ' + (g.members.length - 3) + ' more' : '') + '): ' + oneLine(x.why), options, pick: leave, answer: null, count: g.members.length, examples };
+}
+
+/* A finding's call: run the fix or leave it; a fix with no args waits on the session's words after a keep. */
 export function callOf(x) {
   const f = x.fields || {};
+  if (f.group) return groupCallOf(x);
   const fx = f.fix || {};
-  const options = [];
-  const letter = (k) => String.fromCharCode(97 + Math.min(k, 25));
-  const tracks = fx.pick === '--track' ? f.tracks || [] : [];
-  for (const t of tracks.slice(0, 24)) {
-    options.push({ letter: letter(options.length), label: 'put it on ' + t.id + ' ' + t.name,
-      effect: { keep: [], drop: [x.id], folders: {}, add: [{ ...x, id: x.id + '@' + t.id, cut: false, fields: { ...f, fix: { ...fx, pick: undefined, args: ['task', 'edit', fx.target, '--track', t.id] } } }] } });
-  }
-  if (!tracks.length) {
-    const ready = fx.args || fx.after || (fx.op === 'profile rule-add' && fx.text);
-    options.push({ letter: 'a', label: ready ? 'run the fix as shown' : 'act on it: the session writes the fix from the answer', effect: { keep: [x.id], drop: [], folders: {} } });
-  }
-  const leave = letter(options.length);
-  options.push({ letter: leave, label: 'leave it', effect: { keep: [], drop: [x.id], folders: {} } });
-  return { id: x.id, ask: x.title + ' (' + oneLine(f.evidence) + '): ' + oneLine(x.why), options, pick: x.cut || tracks.length ? leave : 'a', answer: null };
+  const ready = fx.args || fx.after || (fx.op === 'profile rule-add' && fx.text);
+  const options = [{ letter: 'a', label: ready ? 'run the fix as shown' : 'act on it: the session writes the fix from the answer', effect: { keep: [x.id], drop: [], folders: {} } },
+    { letter: 'b', label: 'leave it', effect: { keep: [], drop: [x.id], folders: {} } }];
+  return { id: x.id, ask: x.title + ' (' + oneLine(f.evidence) + '): ' + oneLine(x.why), options, pick: x.cut ? 'b' : 'a', answer: null };
 }
 
 /* Files a line names, under a folder or a bare name with an extension the repo would hold; a folder
-   alone (`config/` in a rule) names a place, never a file that could be gone. */
+   alone (`config/` in a rule) names a place, never a file that could be gone; one the handover marked in git is history. */
 const PATHISH = /(?<![\w/.:@~-])((?:[\w.-]+\/)+[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{1,8}|[\w-]+(?:\.[\w-]+)*\.(?:md|markdown|txt|json|ya?ml|toml|mjs|cjs|py|ps1|sh))(?![\w/-])/g;
-export const pathsIn = (text) => [...new Set([...String(text || '').matchAll(PATHISH)].map((m) => m[1]))];
+export const pathsIn = (text) => {
+  const s = String(text || '');
+  return [...new Set([...s.matchAll(PATHISH)].filter((m) => !IN_GIT.test(s.slice(m.index + m[0].length))).map((m) => m[1]))];
+};
 /* the repo holds a path: tracked, a folder of tracked files, or a bare file name anywhere */
 export function holder(root, files) {
   const set = new Set(files);
@@ -89,7 +108,7 @@ export function scopeHit(text, { top = [], has = () => false, names = [] } = {})
 }
 
 /* a failed read leaves the checks it feeds unread (`unread`), so none of them prints a clean count */
-export function readDoctor(cli, doc, env = process.env, { knowledge, spawns } = {}) {
+export function readDoctor(cli, doc, env = process.env, { knowledge, spawns, depth = false } = {}) {
   const errors = [];
   const unread = new Set();
   const count = spawns || { n: 0 };
@@ -111,12 +130,13 @@ export function readDoctor(cli, doc, env = process.env, { knowledge, spawns } = 
     /* the inbox a track show carries spans every workstream sharing the project: one read covers them */
     if (spanned) continue;
     const s = get(['track', 'show', t.id], {}, ['shape']);
-    if (s) { spanned = true; for (const x of s.inbox || []) inbox.set(x.id, bs.tasks.find((k) => k.id === x.id) || { id: x.id, name: x.name, status: 'open', workstream: x.workstream && x.workstream.id }); }
+    if (s) { spanned = true; for (const x of s.inbox || []) inbox.set(x.id, { ...(bs.tasks.find((k) => k.id === x.id) || { id: x.id, name: x.name, status: 'open', workstream: x.workstream && x.workstream.id }), ...(x.wake ? { wake: x.wake } : {}) }); }
   }
   let files = [];
   const g = spawnSync('git', ['ls-files'], { cwd: root, encoding: 'utf8', windowsHide: true, maxBuffer: 64 << 20 });
   if (g.status === 0) files = g.stdout.split('\n').filter(Boolean);
-  /* knowledge whole: the project's, and a record with no project whose text names this repo (scopeHit) */
+  /* knowledge whole: its refs say which items an earlier run wrote (the reconcile); at depth, the project's records
+     and those with no project whose text names this repo (scopeHit) are read whole for the knowledge check */
   const all = knowledge || get(['list', '--kind', 'knowledge', '--all'], {}, ['knowledge', 'reconcile']) || [];
   /* a dot folder (`.claude/`) is every repo's tool config, so it names no one project */
   const top = (() => { try { return readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules').map((e) => e.name); } catch { return []; } })();
@@ -124,11 +144,11 @@ export function readDoctor(cli, doc, env = process.env, { knowledge, spawns } = 
   const has = holder(root, files);
   const mine = (k) => (k.projectRepos || []).includes(shared);
   const scopes = new Map();
-  for (const k of all.filter((x) => !(x.projectRepos || []).length && !x.global)) {
+  for (const k of depth ? all.filter((x) => !(x.projectRepos || []).length && !x.global) : []) {
     const hit = scopeHit(k.name + ' ' + (k.description || ''), { top, has, names });
     if (hit) scopes.set(k.id, hit);
   }
-  const judged = all.filter((k) => k.status !== 'withdrawn' && (mine(k) || scopes.has(k.id)));
+  const judged = depth ? all.filter((k) => !['withdrawn', 'retired'].includes(k.status) && (mine(k) || scopes.has(k.id))) : [];
   const records = new Map();
   const uniq = [...new Set(judged.map((k) => k.id))];
   for (let i = 0; i < uniq.length; i += SHOW_BATCH) {
@@ -144,13 +164,6 @@ export function readDoctor(cli, doc, env = process.env, { knowledge, spawns } = 
   const named = [...new Set(bs.tracks.filter((t) => t.state === 'parked' && !t.unpark).map((t) => (UNPARK_ID.exec(t.parkReason || '') || [])[0]).filter((id) => id && !known.has(id)))];
   const states = new Map();
   for (const r of [].concat(named.length ? get(['show', ...named], {}, ['shape']) || [] : [])) if (r && r.id) states.set(r.id, r.status);
-  const runOf = (name) => {
-    const found = get(['proc', 'find', name], {}, ['earlier']);
-    const card = Array.isArray(found) && found[0] && found[0].id;
-    const rec = card ? get(['show', card], {}, ['earlier']) : null;
-    const notes = String((rec && (rec.journal || (rec.sections || {}).Journal)) || '').split(/\n(?=\d{4}-\d\d-\d\d)/).filter((n) => n.includes(root) || n.includes(basename(root)));
-    return notes.length ? notes[notes.length - 1] : null;
-  };
   /* each open task's block: its steps by number, word, labels, track and typed notes since its last rewrite */
   const openIds = bs.tasks.filter((t) => !['done', 'dropped', 'completed'].includes(t.status)).map((t) => t.id);
   const blocks = new Map();
@@ -172,21 +185,35 @@ export function readDoctor(cli, doc, env = process.env, { knowledge, spawns } = 
   const ours = sid ? get(['track', 'mine', '--session', sid], {}, ['tasks']) : null;
   return {
     inbox: [...inbox.values()], knowledge: all, records, scopes, snoozed, cards, files, states, blocks, parked, held: (ours && ours.held && ours.track) || null,
-    lastRun: { doctor: runOf('doctor-a-project'), onboard: runOf('onboard-a-project') },
     errors, unread: [...unread], spawns: count,
   };
 }
 
 /* ---- what earlier runs did, from the project's conversion map, so any PC reads the same ---- */
 
-/* each folder an earlier run deleted or moved, with its commit and new place */
-export const endsOf = (conversion) => ((conversion && conversion.folders) || []).filter((f) => f.fate === 'delete' || f.fate === 'move')
+/* each folder an earlier run deleted or moved, with its commit and new place, and each path a run kept */
+export const endsOf = (conversion) => ((conversion && conversion.folders) || []).filter((f) => f.fate === 'delete' || f.fate === 'move' || f.fate === 'keep')
   .map((f) => ({ path: folderKey(f.folder), fate: f.fate, at: f.at || null, to: f.to ? folderKey(f.to) : null })).filter((e) => e.path);
-/* the end a path went with, and its new place when it moved */
+/* the commit git holds a gone path at: an end's own commit when it holds it (the commit before the handover, which a
+   squash keeps), else its parent (an end stamped with the commit that deleted it) */
+const keptAt = (root) => {
+  const at = new Map();
+  return (c, p) => {
+    const k = c + ':' + p;
+    if (!at.has(k)) {
+      const r = spawnSync('git', ['cat-file', '-e', c + ':' + p], { cwd: root, windowsHide: true });
+      const up = r.status === 0 ? null : spawnSync('git', ['rev-parse', c + '^'], { cwd: root, encoding: 'utf8', windowsHide: true });
+      at.set(k, !up ? c : up.status === 0 ? up.stdout.trim() : c + '^');
+    }
+    return at.get(k);
+  };
+};
+/* the end a path went with, and its new place when it moved; the most specific row wins, so a file kept
+   by its own entry inside a retired folder has no end */
 export function endOf(ends, path) {
   const p = folderKey(path);
-  const e = ends.find((x) => p === x.path || p.startsWith(x.path + '/'));
-  return e ? { ...e, place: e.to ? e.to + p.slice(e.path.length) : null } : null;
+  const e = ends.filter((x) => p === x.path || p.startsWith(x.path + '/')).sort((a, b) => b.path.length - a.path.length)[0];
+  return e && e.fate !== 'keep' ? { ...e, place: e.to ? e.to + p.slice(e.path.length) : null } : null;
 }
 /* the one record a mapped source became: where a line citing it points now */
 const recordOf = (conversion, path) => {
@@ -205,6 +232,7 @@ export function checkRules(doc, extra) {
   const has = holder(root, extra.files || []);
   /* a folder an earlier run retired, named by its path in a line */
   const ends = endsOf(doc.conversion);
+  const heldAt = keptAt(root);
   const owned = new Set((bs.profiles || []).filter((p) => p.here && !p.elsewhere && !p.builtIn).map((p) => p.profile));
   const builtIns = (bs.rules || []).filter((r) => r.source === 'built in');
   const lineOf = (profile, slug) => (((bs.profiles || []).find((p) => p.profile === profile) || {}).lines || []).find((l) => l.slug === slug) || {};
@@ -226,11 +254,16 @@ export function checkRules(doc, extra) {
     /* one finding per line; a gone file under a retired folder is that folder's */
     const cited = new Map();
     for (const p of pathsIn(text).filter((x) => !has(x))) { const e = endOf(ends, p); cited.set(e ? e.path : p, e); }
-    for (const e of ends.filter((x) => text.includes(x.path + '/') || (x.path.includes('/') && text.includes(x.path)))) cited.set(e.path, e);
+    /* a kept path inside a retired folder is no cite of it */
+    const bare = (e) => ends.filter((k) => k.fate === 'keep' && k.path.startsWith(e.path + '/')).reduce((t, k) => t.split(k.path).join(' '), text);
+    for (const e of ends.filter((x) => x.fate !== 'keep')) {
+      const t = bare(e);
+      if (t.includes(e.path + '/') || (e.path.includes('/') && t.includes(e.path))) cited.set(e.path, e);
+    }
     if (cited.size) {
       let words = text;
       for (const [p, e] of cited) { const place = e ? e.to : recordOf(doc.conversion, p); words = place && words ? words.split(p).join(place) : null; }
-      finds.push({ kind: 'cites', evidence: 'cites ' + [...cited].map(([p, e]) => p + (e ? ', which an earlier run ' + (e.fate === 'move' ? 'moved to ' + e.to : 'deleted') + (e.at ? ' at ' + e.at.slice(0, 8) : '') : ', which the repo no longer has')).join('; '),
+      finds.push({ kind: 'cites', evidence: 'cites ' + [...cited].map(([p, e]) => p + (e ? ', which an earlier run ' + (e.fate === 'move' ? 'moved to ' + e.to : 'deleted') + (e.at && e.fate !== 'move' ? ' (in git at ' + heldAt(e.at, p).slice(0, 8) + ')' : '') : ', which the repo no longer has')).join('; '),
         fix: { op: 'profile rule-add', profile, slug: r.rule, for: r.for || null, sourceText: text, target, was, ...(words ? { text: words } : {}) } });
     }
     const conflict = byRuling[i].conflict;
@@ -254,6 +287,12 @@ export function checkRules(doc, extra) {
 
 /* ---- check 2: board shape ---- */
 
+/* one row and one call for a group; its id carries its members, so a changed group is asked again */
+export function groupRow(check, kind, members, { title, evidence, why, tracks }) {
+  const key = createHash('sha1').update(members.map((m) => m.id).sort().join('\n')).digest('hex').slice(0, 8);
+  return checkRow(check, kind + ':' + key, { title, evidence, record: members[0].id, sourceText: members.map((m) => m.id + ' ' + m.name).join('\n'), call: true, def: 'leave', why,
+    extra: { group: { kind, members }, ...(tracks ? { tracks } : {}) } });
+}
 const shareTokens = (a, b) => { const ta = tokens(a); let n = 0; for (const w of tokens(b)) if (ta.has(w)) n++; return n; };
 const UNPARK = { T: 'task-completes', TR: 'track-ends', Q: 'question-answered' };
 const ENDED = ['dropped', 'done', 'folded', 'answered', 'finished'];
@@ -264,15 +303,20 @@ export function checkShape(doc, extra) {
   const latest = doc.history && doc.history.latest;
   const since = (doc.activity && doc.activity.since) || (latest ? new Date(Date.parse(latest) - DORMANT_DAYS * 864e5).toISOString().slice(0, 10) : null);
   const live = (bs.tracks || []).filter((t) => !['finished', 'dropped', 'done'].includes(t.state));
-  for (const t of (extra.inbox || []).filter((x) => ['open', undefined].includes(x.status))) {
+  /* an inbox task with a wake waits there by the placement rule; one with none is the tasks check's nowake row */
+  const unplaced = [];
+  for (const t of (extra.inbox || []).filter((x) => ['open', undefined].includes(x.status) && !x.wake)) {
     const best = live.map((tr) => ({ tr, n: shareTokens(t.name, tr.name) })).filter((x) => x.n >= 2).sort((a, b) => b.n - a.n)[0];
     /* a track moves the task to its own workstream, so the undo needs the one it left */
     const was = { unplaced: t.unplaced || null, ...(t.workstream ? { workstream: t.workstream } : {}) };
-    const base = { title: t.name + ' is on no track', record: t.id, evidence: t.id + ' sits in the inbox', sourceText: t.name };
-    if (best) rows.push(checkRow('shape', t.id, { ...base, fix: { op: 'task edit', args: ['task', 'edit', t.id, '--track', best.tr.id], target: t.id, was }, why: 'its name shares words with ' + best.tr.id + ' ' + best.tr.name }));
-    else rows.push(checkRow('shape', t.id, { ...base, call: true, fix: { op: 'task edit', target: t.id, was, pick: '--track' }, extra: { tracks: live.map((x) => ({ id: x.id, name: x.name })) },
-      why: 'no track shares its words: pick one of ' + (live.map((x) => x.id + ' ' + x.name).join(', ') || 'no live track') + ', or leave it in the inbox' }));
+    if (!best) { unplaced.push({ id: t.id, name: t.name, was }); continue; }
+    rows.push(checkRow('shape', t.id, { title: t.name + ' is on no track', record: t.id, evidence: t.id + ' sits in the inbox', sourceText: t.name,
+      fix: { op: 'task edit', args: ['task', 'edit', t.id, '--track', best.tr.id], target: t.id, was }, why: 'its name shares words with ' + best.tr.id + ' ' + best.tr.name }));
   }
+  /* the rest are one call: all on one live track, or left in the inbox */
+  if (unplaced.length) rows.push(groupRow('shape', 'unplaced', unplaced, { title: unplaced.length + ' inbox task' + (unplaced.length > 1 ? 's' : '') + ' on no track that no track shares words with',
+    evidence: unplaced.map((m) => m.id).join(', ') + ' in the inbox', tracks: live.map((x) => ({ id: x.id, name: x.name })),
+    why: 'put them all on one live track, or leave them in the inbox; the session places one apart from the group with its own fix' }));
   /* the import parks its own plan-section tracks with no condition: its output, not drift */
   const own = (t) => (t.labels || []).includes('import:' + doc.project.slug) || (t.refs || []).some((x) => String(x).startsWith('onboard:'));
   const stateOf = new Map([...(bs.tasks || []).map((x) => [x.id, x.status]), ...(bs.tracks || []).map((x) => [x.id, x.state]), ...(extra.states || new Map())]);
@@ -300,10 +344,11 @@ export function checkShape(doc, extra) {
     rows.push(checkRow('shape', 'no-profile', { title: 'No profile holds this project, while ' + ruled.length + ' rule items wait in the repo', evidence: ruled.length + ' rule items', extra: { info: true, items: ruled.map((r) => r.id) },
       why: 'the conversion\'s rule items make the project\'s profile and hold it: counted here, written once there' }));
   }
-  for (const q of (extra.snoozed || []).filter((x) => !(x.snooze && (x.snooze.until || x.snooze.wakeOn || x.snooze['wake-on'])) && since && day(x.created) < day(since))) {
-    rows.push(checkRow('shape', q.id + ':asleep', { title: q.name + ' has slept since ' + day(q.created), record: q.id, evidence: 'snoozed' + (q.snooze && q.snooze.trigger ? ' until the words "' + q.snooze.trigger + '"' : '') + ', nothing set to wake it',
-      call: true, def: 'leave', sourceText: q.ask || q.name, why: 'long asleep: wake it (wake), drop it (drop with a note), or leave it' }));
-  }
+  const asleep = (extra.snoozed || []).filter((x) => !(x.snooze && (x.snooze.until || x.snooze.wakeOn || x.snooze['wake-on'])) && since && day(x.created) < day(since))
+    /* the snooze each had, which the undo of a wake or a drop puts back */
+    .map((q) => ({ id: q.id, name: q.name, created: q.created, was: { snooze: q.snooze || {} } }));
+  if (asleep.length) rows.push(groupRow('shape', 'asleep', asleep, { title: asleep.length + ' question' + (asleep.length > 1 ? 's' : '') + ' asleep since before ' + day(since) + ' with nothing set to wake ' + (asleep.length > 1 ? 'them' : 'it'),
+    evidence: asleep.map((q) => q.id + ' since ' + day(q.created)).join(', '), why: 'long asleep: wake them all, drop them all, or leave them' }));
   return rows;
 }
 
@@ -365,11 +410,12 @@ export function checkTasks(doc, extra) {
         why: 'from its last note: an edge on what it waits for (edge add), a gate (question edit --add-gate), a wake (task edit --wake, next-session on a track), or a question item when the user owes the answer' }));
     }
     const desc = String((b && b.description) || t.description || '');
-    /* an amend's own why note shares the rewrite's stamp, so only notes after it count as the job moving */
+    /* a rewrite is asked for with depth; an amend's own why note shares the rewrite's stamp, so only
+       notes after it count as the job moving */
     const after = b && b.rewrittenAt ? Date.parse(b.rewrittenAt) : NaN;
     const notes = b ? (b.notes || []).filter((x) => !(Date.parse(x.at) <= after)).reduce((n, x) => n + wordCount(x.body), 0) : 0;
-    const noDone = b && !(close && close.kind === 'when') && !DONE_CLAUSE.test(desc) && !STEP_SHORT.test(desc.trim());
-    const moved = b && wordCount(desc) && notes * 2 >= wordCount(desc);
+    const noDone = extra.depth && b && !(close && close.kind === 'when') && !DONE_CLAUSE.test(desc) && !STEP_SHORT.test(desc.trim());
+    const moved = extra.depth && b && wordCount(desc) && notes * 2 >= wordCount(desc);
     if (noDone || moved) {
       rows.push(checkRow('tasks', t.id + ':rewrite', { title: named(t) + (noDone ? ' says no done clause' : ': its job moved into its notes'), record: t.id,
         evidence: (noDone ? 'its description has no "Done" sentence' : '') + (noDone && moved ? '; ' : '') + (moved ? notes + ' words of notes since its last rewrite against ' + wordCount(desc) + ' in its description' : ''), sourceText: desc,
@@ -410,47 +456,22 @@ const blockAt = (text, line) => {
   for (let j = i + 1; j < ls.length && j < i + 40 && ls[j].trim() && !/^\s*(?:[-*+]|\d+[.)]|#)\s/.test(ls[j]); j++) out.push(ls[j]);
   return out.join('\n');
 };
+/* At depth only: drift from a source still in the repo, duplicates as one group, and the project scope */
 export function checkKnowledge(doc, extra) {
   const rows = [];
   const root = doc.project.dir;
   const shared = doc.project.shared;
   const has = holder(root, extra.files || []);
   const recs = [...(extra.records || new Map()).values()].filter((r) => r.kind === 'knowledge' && r.status === 'active');
-  /* the conversion's own output: the plan judged its coverage and duplicates, the map says where its source went */
+  /* the conversion's own output: the plan judged its coverage and duplicates */
   const label = 'import:' + doc.project.slug;
   const own = (r) => (r.labels || []).includes(label) && (r.refs || []).some((x) => String(x).startsWith('onboard:'));
-  const ends = endsOf(doc.conversion);
-  const parents = new Map();
-  const parentOf = (c) => {
-    if (!parents.has(c)) { const p = spawnSync('git', ['rev-parse', c + '^'], { cwd: root, encoding: 'utf8', windowsHide: true }); parents.set(c, p.status === 0 ? p.stdout.trim() : c + '^'); }
-    return parents.get(c);
-  };
-  /* read by the run's summary and checkup.json: each own record whose source left, and where it went */
-  const judged = { moved: [], inGit: [], retired: [] };
-  extra.own = judged;
   for (const r of recs) {
     const body = bodyOf(r);
     const m = FROM.exec(body);
-    if (!m) continue;
-    const [, file, line, commit] = m;
-    const end = has(file) ? null : endOf(ends, file);
-    if (own(r)) {
-      if (!end) { if (!has(file)) judged.retired.push({ id: r.id, file }); continue; }
-      if (end.place) judged.moved.push({ id: r.id, file, to: end.place });
-      else if (end.at) judged.inGit.push({ id: r.id, file, at: parentOf(end.at) });
-      else judged.retired.push({ id: r.id, file });
-      continue;
-    }
-    /* an earlier run's amend placed it already; the from line itself stays as written */
-    if (body.includes('The source ' + file + (line ? ' line ' + line : '') + ' is ')) continue;
-    if (!has(file)) {
-      const sha = commit || (end && end.at && parentOf(end.at));
-      const place = end && end.place ? 'moved to ' + end.place : 'retired: it is in git' + (sha ? ' at ' + sha : '');
-      rows.push(checkRow('knowledge', r.id + ':from', { title: r.name, record: r.id, evidence: 'its from line names ' + file + ', which the repo no longer has', sourceText: body,
-        fix: { op: 'knowledge amend', args: ['knowledge', 'amend', r.id], body: 'The source ' + file + (line ? ' line ' + line : '') + ' is ' + place + '.', target: r.id }, why: 'the amend says where its source is now' }));
-      continue;
-    }
-    if (!line) continue;
+    if (!m || own(r)) continue;
+    const [, file, line] = m;
+    if (!line || !has(file)) continue;
     const src = blockAt(readText(join(root, file)) || '', Number(line));
     const missing = clausesOf(src).filter((c) => covers(body, c).length);
     if (missing.length) {
@@ -458,26 +479,29 @@ export function checkKnowledge(doc, extra) {
         fix: { op: 'knowledge amend', args: ['knowledge', 'amend', r.id], body: 'From ' + file + ' line ' + line + ': ' + missing.join(' '), target: r.id }, extra: { gaps: missing }, why: 'its source says more than it does: the missing clauses as an amend' }));
     }
   }
-  /* duplicates by title tokens, the older against the newer */
+  /* duplicates by title tokens, the older against the newer, as one list: a pair the newer holds whole is a supersede */
   const mine = recs.filter((r) => (r.projectRepos || []).includes(shared));
   const num = (id) => Number(String(id).replace(/\D/g, ''));
   const seen = new Set();
   const itemsOf = (r) => (r.refs || []).filter((x) => String(x).startsWith('onboard:'));
+  const whole = [];
+  const apart = [];
   for (const a of mine) {
     for (const b of mine) {
       if (num(a.id) >= num(b.id) || seen.has(a.id)) continue;
       /* the plan judged a new record against the board before the go; one item written twice (a redo after an undo) it could not */
       const twice = itemsOf(a).some((x) => itemsOf(b).includes(x));
       if (own(b) && !twice) continue;
-      const n = sameSubject(a.name, b.name);
-      if (!n) continue;
+      if (!sameSubject(a.name, b.name)) continue;
       seen.add(a.id);
-      const holds = clausesOf(bodyOf(a)).every((c) => !covers(bodyOf(b), c).length);
-      const base = { title: a.name + ' and ' + b.id, record: a.id, evidence: 'titles share ' + n + ' words with ' + b.id + ' ' + b.name, sourceText: bodyOf(a) };
-      if (holds) rows.push(checkRow('knowledge', a.id + ':dup', { ...base, fix: { op: 'knowledge supersede', args: ['knowledge', 'supersede', a.id, '--by', b.id], target: a.id }, why: b.id + ' holds every clause of it: it supersedes it' }));
-      else rows.push(checkRow('knowledge', a.id + ':dup', { ...base, call: true, def: 'leave', why: 'the same subject as ' + b.id + ', each with clauses the other lacks: merge them by hand, or leave both' }));
+      if (clausesOf(bodyOf(a)).every((c) => !covers(bodyOf(b), c).length)) whole.push({ id: a.id, name: a.name, by: b.id });
+      else apart.push(a.id + ' and ' + b.id);
     }
   }
+  const merge = apart.length ? apart.length + ' pair' + (apart.length > 1 ? 's' : '') + ' on one subject, each with clauses the other lacks: ' + apart.join(', ') : '';
+  if (whole.length) rows.push(groupRow('knowledge', 'dup', whole, { title: whole.length + ' record' + (whole.length > 1 ? 's' : '') + ' a newer one on the same subject holds whole',
+    evidence: whole.map((m) => m.id + ' by ' + m.by).join(', ') + (merge ? '; ' + merge : ''), why: 'supersede each by its newer one, or leave them' + (merge ? '; the other pairs merge by hand' : '') }));
+  else if (merge) rows.push(checkRow('knowledge', 'dup-apart', { title: merge, evidence: merge, extra: { info: true, pairs: apart }, why: 'merge them by hand, or leave both' }));
   const scopes = extra.scopes || new Map();
   for (const r of recs.filter((x) => !(x.projectRepos || []).length && !x.global && scopes.has(x.id))) {
     rows.push(checkRow('knowledge', r.id + ':project', { title: r.name, record: r.id, evidence: 'no project, and its text names ' + scopes.get(r.id), sourceText: r.name,
@@ -517,7 +541,7 @@ export function checkCards(doc, extra) {
 
 /* each instruction file's clauses (every one the facts list, AGENTS.md as CLAUDE.md, the
    override AskerDo writes aside) against the repo: a gone path is a repoint, a clause whose every cite is gone one
-   finding; and a Project instructions setting that changed since the last run */
+   finding; the rule files' gone and moved cites; and a Project instructions setting that changed since the last run */
 const OVERRIDE = /(^|\/)AGENTS\.override\.md$/;
 /* a cite resolved as the survey resolves a rule file's: from its file's folder, its nested project,
    the root, another nested project, then on disk in its real case */
@@ -565,6 +589,18 @@ export function checkRepo(doc, extra) {
       }
     }
   }
+  /* a rule file a session loads citing a path gone or moved is a repoint; one citing nothing live may be stale */
+  for (const f of doc.ruleFiles || []) {
+    const c = f.cites || {};
+    const gone = c.gone || [];
+    const moved = c.moved || [];
+    if (!gone.length && !moved.length) continue;
+    const dead = !c.ok && !moved.length;
+    const said = [...gone.map((x) => x.path + ' (gone' + (x.since ? ' since ' + x.since : '') + ')'), ...moved.map((x) => x.path + ' (moved to ' + [].concat(x.to || []).join(' or ') + ')')];
+    push(f.file, { title: f.file + (dead ? ' cites nothing live' : ' cites ' + said.length + ' path' + (said.length > 1 ? 's' : '') + ' gone or moved'), where: { file: f.file }, evidence: said.join('; '), sourceText: said.join('\n'),
+      fix: { after: { home: 'fix', path: f.file, edit: 'edit ' + f.file, what: (dead ? f.file + ' cites only paths the repo no longer has: convert or drop it when its subject is gone, else repoint it' : 'repoint ' + f.file + ': ' + said.join('; ')) + ' (the session edits it on the go)' } },
+      why: dead ? 'a rule file whose every cite is gone: its subject may be gone' : 'a rule file citing paths that moved or left' });
+  }
   /* the setting against the one the last run saw: what Claude reads changed, so the ledgers are judged again */
   const was = doc.conversion && doc.conversion.instructions;
   if (ins && ins.setting && was && was.mode) {
@@ -579,46 +615,7 @@ export function checkRepo(doc, extra) {
   return rows;
 }
 
-/* ---- check 5b: what earlier runs kept ---- */
-
-/* a judgment whose evidence no longer holds is judged again, never left; a rule file
-   citing a path that is gone or moved is repointed, and one that cites nothing live may be stale */
-export function checkKept(doc) {
-  const rows = [];
-  for (const j of ((doc.conversion && doc.conversion.judgments) || []).filter((x) => x.state === 'rejudge')) {
-    rows.push(checkRow('kept', j.key, { title: j.subject + (j.clause ? ' "' + clip(j.clause, 80) + '"' : '') + ' was ' + (j.fate === 'drop' ? 'dropped' : 'kept') + (j.why ? ': ' + j.why : ''),
-      where: j.kind === 'folder' ? undefined : { file: j.subject }, evidence: (j.because || []).join('; '), sourceText: j.clause || j.why || '',
-      why: 'its evidence no longer holds: judge it again (convert, drop, or keep with a reason of a named shape and fresh evidence)', extra: { needsWords: true, judgment: j.key } }));
-  }
-  for (const f of doc.ruleFiles || []) {
-    const c = f.cites || {};
-    const gone = c.gone || [];
-    const moved = c.moved || [];
-    if (!gone.length && !moved.length) continue;
-    const dead = !c.ok && !moved.length;
-    const said = [...gone.map((x) => x.path + ' (gone' + (x.since ? ' since ' + x.since : '') + ')'), ...moved.map((x) => x.path + ' (moved to ' + [].concat(x.to || []).join(' or ') + ')')];
-    rows.push(checkRow('kept', f.file, { title: f.file + (dead ? ' cites nothing live' : ' cites ' + said.length + ' path' + (said.length > 1 ? 's' : '') + ' gone or moved'), where: { file: f.file }, evidence: said.join('; '), sourceText: said.join('\n'),
-      fix: { after: { home: 'fix', path: f.file, edit: 'edit ' + f.file, what: (dead ? f.file + ' cites only paths the repo no longer has: convert or drop it when its subject is gone, else repoint it' : 'repoint ' + f.file + ': ' + said.join('; ')) + ' (the session edits it on the go)' } },
-      why: dead ? 'a rule file whose every cite is gone: its subject may be gone' : 'a rule file citing paths that moved or left' }));
-  }
-  return rows;
-}
-
-/* ---- check 6: earlier runs ---- */
-
-export function checkEarlier(doc, extra) {
-  const rows = [];
-  for (const [which, note] of Object.entries(extra.lastRun || {})) {
-    if (!note) continue;
-    for (const l of note.split('\n').filter((x) => /^\s*(?:[-*]\s*)?(Fixed by hand|Deviated)\b/i.test(x))) {
-      rows.push(checkRow('earlier', which + ':' + kebab(l, 30), { title: 'The last ' + which + ' run: ' + oneLine(l), where: { record: which + '-a-project' }, evidence: oneLine(l), call: true, def: 'leave', sourceText: l,
-        why: 'hand work the last run reported: is it on the board? Leave it when it is' }));
-    }
-  }
-  return rows;
-}
-
-/* ---- checks 7 and 8: the records against their sources, from the conversion map ---- */
+/* ---- check 6: the records against their sources, from the conversion map ---- */
 
 /* A mapped record whose source changed since the run that read it: the session reads the source again and amends. */
 export function checkSource(doc) {
@@ -631,23 +628,14 @@ export function checkSource(doc) {
   return rows;
 }
 
-/* A mapped record the board no longer holds while its source stays in the repo: write it again, or leave it. */
-export function checkGone(doc) {
-  const rows = [];
-  for (const s of ((doc.conversion && doc.conversion.sources) || []).filter((x) => x.state !== 'removed' && (x.gone || []).length)) {
-    rows.push(checkRow('gone', s.source, { title: s.source + ' became ' + s.gone.join(', ') + ', which the board no longer holds', where: { file: s.source }, record: s.gone[0],
-      evidence: s.gone.join(', ') + ' gone from the board; ' + s.source + ' is still in the repo', call: true, def: 'leave',
-      why: 'the source still says it: convert it again, or leave it gone', extra: { records: s.gone } }));
-  }
-  return rows;
-}
-
 /* ---- reconcile before create ---- */
 
-/* An item the board holds by its title (the survey's covered, a record id) gains a ref to the item, so the next
-   run skips it, and the clauses the record lacks as an amend; an item an earlier write made is skipped. */
+/* An item the board holds by its title (the survey's covered, a record id) is skipped and named (covered); at depth
+   it gains a ref to the item, so the next run skips it, and the clauses the record lacks as an amend. An item an
+   earlier write made is skipped. */
 export function reconcile(doc, items, extra) {
   const out = [];
+  const named = [];
   const recs = extra.records || new Map();
   const tasks = new Map(((doc.board && doc.board.tasks) || []).map((t) => [t.id, t]));
   /* a record carrying onboard:<item id> holds that item already, and so does the map for a source unchanged since its run */
@@ -666,6 +654,7 @@ export function reconcile(doc, items, extra) {
   for (const r of items) {
     const id = String(r.covered || '');
     if (!/^[KT]-\d+$/.test(id) || held.has(r.id) || r.kind === 'fix') continue;
+    if (!extra.depth) { named.push({ item: r.id, record: id }); continue; }
     const rec = recs.get(id) || tasks.get(id);
     const src = (r.fields && (r.fields.sourceText || r.fields.body)) || r.text || r.title || '';
     const key = id + '\0' + oneLine(src).toLowerCase();
@@ -678,7 +667,7 @@ export function reconcile(doc, items, extra) {
       extra: { already: id, gaps, kind: task ? 'task' : 'knowledge', item: r.id },
       why: (gaps.length ? 'the record gains the clauses it lacks as ' + (task ? 'a note' : 'an amend') + ', and ' : '') + 'a ref to this item, so the next run skips it' }));
   }
-  return { checkup: out, held: held.size };
+  return { checkup: out, held: held.size, covered: named };
 }
 
 /* ---- the run ---- */
@@ -689,8 +678,9 @@ export function onBoard({ workstreams = [], knowledge = [], imported = 0, mapped
   return workstreams.some(mine) || knowledge.some(mine) || imported > 0 || mapped;
 }
 
-/* board false runs the checks on the gathered facts alone, with no board read (the tests' seam) */
-export function doctor(dir, { work, cli = DEFAULT_CLI, board = true, env = process.env, spawns = { n: 0 }, gather = survey, who = null } = {}) {
+/* board false runs the checks on the gathered facts alone, with no board read (the tests' seam); depth adds the
+   knowledge check, the task rewrites and the reconcile's rows, and gathers the facts at depth */
+export function doctor(dir, { work, cli = DEFAULT_CLI, board = true, env = process.env, spawns = { n: 0 }, gather = survey, who = null, depth = false } = {}) {
   const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8', windowsHide: true });
   const root = slashed(top.status === 0 ? top.stdout.trim() : resolve(dir));
   const slug = kebab(basename(root), 30);
@@ -710,7 +700,7 @@ export function doctor(dir, { work, cli = DEFAULT_CLI, board = true, env = proce
     if (!on) return failed.length ? { entry: 'unread', errors: failed } : { entry: 'onboard' };
   }
   /* the facts the session judges with; the checks read the board's records from them, never the repo whole */
-  const gathered = gather(root, { work: workDir, cli, board, env }) || {};
+  const gathered = gather(root, { work: workDir, cli, board, env, depth }) || {};
   const facts = readFacts(workDir) || gathered.facts || {};
   const head = spawnSync('git', ['log', '-1', '--format=%cI'], { cwd: root, encoding: 'utf8', windowsHide: true });
   /* the proposal at hand, if any: its items may be on the board already */
@@ -725,22 +715,21 @@ export function doctor(dir, { work, cli = DEFAULT_CLI, board = true, env = proce
   const fb = facts.board ? { ...facts.board, tasks: facts.board.tasks || facts.board.openTasks || [], ...(whole ? { decisions: whole } : {}) } : null;
   const doc = { project: { dir: root, slug, shared }, board: fb, conversion: facts.conversion || null, history: { latest: head.status === 0 ? head.stdout.trim() || null : null }, proposal,
     instructions: facts.instructions || null, claude, ruleFiles };
-  const extra = board ? readDoctor(cli, doc, env, { knowledge, spawns }) : { inbox: [], records: new Map(), files: [], errors: [], unread: [] };
+  const extra = board ? readDoctor(cli, doc, env, { knowledge, spawns, depth }) : { inbox: [], records: new Map(), files: [], errors: [], unread: [] };
   /* the name the user goes by, which the session knows and the board does not hold */
   extra.who = who;
+  extra.depth = depth;
+  const run = checksAt(depth);
   /* the survey's board reads feed the checks that read its board state */
   const surveyErrors = (doc.board && doc.board.errors) || [];
   const unread = new Set([...(extra.unread || []), ...(surveyErrors.length || !doc.board ? ['rules', 'shape', 'tasks', 'reconcile'] : [])]);
   /* a finding the user left stays left while its subjects are unchanged: the map holds its call answered with leave */
   const answered = new Map(((doc.conversion && doc.conversion.calls) || []).filter((c) => c.state === 'unchanged' && c.answer).map((c) => [c.call, c.answer]));
-  /* or the run row lists it as left with no call, its source unchanged */
-  const leftIds = new Set(((doc.conversion && doc.conversion.left) || []).filter((l) => l.state === 'unchanged').map((l) => l.item));
-  const leftBefore = (x) => { if (leftIds.has(x.id)) return true; if (!x.call || !answered.has(x.id)) return false; const o = callOf(x).options; return answered.get(x.id) === o[o.length - 1].letter; };
-  /* a judgment to make again is never left: its evidence changed since */
-  const markLeft = (xs) => { for (const x of xs.filter((y) => !y.covered && !y.fields.judgment && leftBefore(y))) { Object.assign(x, { cut: true, dropped: 'left last time', leftLast: true, why: 'left last time: ' + (x.why || '') }); delete x.call; } };
+  const leftBefore = (x) => { if (!x.call || !answered.has(x.id)) return false; const o = callOf(x).options; return answered.get(x.id) === o[o.length - 1].letter; };
+  const markLeft = (xs) => { for (const x of xs.filter((y) => !y.covered && leftBefore(y))) { Object.assign(x, { cut: true, dropped: 'left last time', leftLast: true, why: 'left last time: ' + (x.why || '') }); delete x.call; } };
   const found = {
-    rules: checkRules(doc, extra), shape: checkShape(doc, extra), tasks: checkTasks(doc, extra), knowledge: checkKnowledge(doc, extra),
-    cards: checkCards(doc, extra), repo: checkRepo(doc, extra), kept: checkKept(doc), earlier: checkEarlier(doc, extra), source: checkSource(doc), gone: checkGone(doc),
+    rules: checkRules(doc, extra), shape: checkShape(doc, extra), tasks: checkTasks(doc, extra), ...(depth ? { knowledge: checkKnowledge(doc, extra) } : {}),
+    cards: checkCards(doc, extra), repo: checkRepo(doc, extra), source: checkSource(doc),
   };
   const rec = reconcile(doc, proposal.items || [], extra);
   found.reconcile = rec.checkup;
@@ -749,9 +738,9 @@ export function doctor(dir, { work, cli = DEFAULT_CLI, board = true, env = proce
   const calls = items.filter((x) => x.call).map(callOf);
   for (const x of items) delete x.call;
   /* a check whose reads failed has no count: 0 would read as clean */
-  const counts = Object.fromEntries(CHECKS.map((c) => [c, unread.has(c) ? { found: null, unread: true } : { found: found[c].filter((r) => !r.leftLast).length }]));
-  const checkup = { made: new Date().toISOString(), project: doc.project, counts, unread: CHECKS.filter((c) => unread.has(c)), leftLast: items.filter((r) => r.leftLast).length,
-    heldByRef: rec.held, words: items.filter((x) => x.fields.needsWords && !x.cut).length, errors: [...surveyErrors, ...(extra.errors || [])], own: extra.own || null, reads: spawns.n, items, calls };
+  const counts = Object.fromEntries(run.map((c) => [c, unread.has(c) ? { found: null, unread: true } : { found: found[c].filter((r) => !r.leftLast).length }]));
+  const checkup = { made: new Date().toISOString(), project: doc.project, depth, counts, unread: run.filter((c) => unread.has(c)), leftLast: items.filter((r) => r.leftLast).length,
+    heldByRef: rec.held, covered: rec.covered, words: items.filter((x) => x.fields.needsWords && !x.cut).length, errors: [...surveyErrors, ...(extra.errors || [])], reads: spawns.n, items, calls };
   mkdirSync(workDir, { recursive: true });
   const checkupFile = join(workDir, 'checkup.json');
   writeFileSync(checkupFile, JSON.stringify(checkup, null, 2) + '\n');
@@ -762,10 +751,12 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const a = process.argv.slice(2);
   const flag = (n) => { const i = a.indexOf('--' + n); return i >= 0 ? a.splice(i, 2)[1] : undefined; };
   const work = flag('work'); const cli = flag('cli'); const who = flag('who');
-  if (!a[0] || a[0] === '--help') { console.log('node checks.mjs <project dir> [--work <dir>] [--cli <path>] [--who <name>]'); process.exit(a[0] ? 0 : 1); }
+  const depth = a.includes('--depth');
+  if (depth) a.splice(a.indexOf('--depth'), 1);
+  if (!a[0] || a[0] === '--help') { console.log('node checks.mjs <project dir> [--work <dir>] [--cli <path>] [--who <name>] [--depth]'); process.exit(a[0] ? 0 : 1); }
   if (!existsSync(a[0])) { console.error('checks: no folder ' + a[0]); process.exit(1); }
   const started = Date.now();
-  const d = doctor(a[0], { work, cli: cli || DEFAULT_CLI, who: who || null });
+  const d = doctor(a[0], { work, cli: cli || DEFAULT_CLI, who: who || null, depth });
   if (d.entry === 'onboard') { console.log('not on the board yet: run askerdo:onboard'); process.exit(1); }
   if (d.entry === 'unread') { console.error('checks: the board reads failed, so the doctor cannot tell whether the project is on the board: ' + d.errors.join('; ')); process.exit(2); }
   console.log('Doctor of ' + d.project.dir + ' (' + d.project.shared + ')');
@@ -774,14 +765,12 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const c = d.checkup;
   const calls = c.calls.filter((x) => !x.answer).length;
   console.log((c.unread.length ? 'Checkup incomplete (' + c.unread.join(', ') + ' not read): ' : 'Checkup: ')
-    + CHECKS.map((k) => k + ' ' + (c.counts[k].unread ? 'not read' : c.counts[k].found)).join(', ') + '; calls for the user ' + calls + (c.leftLast ? '; left last time ' + c.leftLast : ''));
+    + checksAt(c.depth).map((k) => k + ' ' + (c.counts[k].unread ? 'not read' : c.counts[k].found)).join(', ') + '; calls for the user ' + calls + (c.leftLast ? '; left last time ' + c.leftLast : '')
+    + (c.depth ? '; at depth' : '; --depth adds ' + DEPTH_CHECKS.join(', ') + ', task rewrites and the reconcile\'s refs and amends'));
+  if (c.covered.length) console.log('Already on the board, skipped: ' + c.covered.map((x) => x.item + ' (' + x.record + ')').join(', '));
   if (c.errors.length) console.log('Reads that failed: ' + c.errors.join('; '));
   const off = await import('../../lib/pc-health.mjs').then((m) => m.promptOffNote()).catch(() => '');
   if (off) console.log('This PC: ' + off);
-  const own = c.own;
-  const ownN = own ? Object.values(own).reduce((n, l) => n + l.length, 0) : 0;
-  if (ownN) console.log('The import\'s own records whose source left (no finding; checkup.json own lists them): ' + own.moved.length + ' moved, ' + own.inGit.length + ' in git at their delete, '
-    + own.retired.length + ' retired by the import');
   if (c.words) console.log('Fixes waiting on the session\'s words: ' + c.words);
   console.log('Reads: ' + c.reads + ' CLI calls beyond the survey, ' + ((Date.now() - started) / 1000).toFixed(1) + ' s in all');
   console.log('checkup.json: ' + d.checkupFile + ' (each finding with its fix, and the calls); facts.json: ' + d.work + '/facts.json. Judge each finding with the facts and write the fixes you agree with into proposal.json.');

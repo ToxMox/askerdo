@@ -1,13 +1,18 @@
 /* Handoffs, resume and the kickoff on tracks, through boardCall
    on memory:, one behaviour per test. memory: is one database per process, so
    each test makes its own workstream and its own session names. */
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { childEnv, tempDir } from './helpers/sandbox.mjs';
 import { cliRoute, runCli } from './helpers/cli.mjs';
+import { slicer } from './helpers/shard.mjs';
+
+/* run as two files: the launcher case and the two-PC case each run a quarter minute of git in a loaded suite */
+const mine = slicer(2);
+const test = (...args) => (mine() ? nodeTest(...args) : undefined);
 
 process.removeAllListeners('warning');
 process.env.ASKERDO_SANDBOX_HOME = tempDir('askerdo-handoffs-');
@@ -343,8 +348,11 @@ test('a handoff lays its leftovers out on the track with their edges, each namin
   await assert.rejects(pc.writeTrackHandoff(tr.id, tiered({}), { pc: 'pc1' }), (e) => e.data.offers.some((o) => o.before) && e.data.offers.some((o) => o.last));
   assert.equal((await boardCall('trackHandoffs', { track: tr.id })).handoffs.length, before, 'nothing written');
   /* last, with other work open, is asked of the user with the real place it would otherwise take; nothing is laid out */
-  const tagged = await pc.writeTrackHandoff(tr.id, tiered({ last: 'the release tag is the last thing the line does', here: { before: [fixes.id] } }), { pc: 'pc1' });
+  const tagged = await pc.writeTrackHandoff(tr.id, tiered({ last: 'the release tag is the last thing the line does', after: [fixes.id], here: { before: [fixes.id] } }), { pc: 'pc1' });
   assert.ok(tagged.steps[0].asked.id && !tagged.steps[0].id, JSON.stringify(tagged.steps));
+  /* a last that names after says it once */
+  const askedLine = (await boardCall('show', { id: tagged.steps[0].asked.id })).gist.split(/\n/).find((l) => l.startsWith('**Asked:**'));
+  assert.equal(askedLine.split(fixes.id).length, 2, askedLine);
   assert.ok(!(await boardCall('trackView', { track: tr.id })).tasks.some((t) => t.name === 'Tag the release'));
 
   /* a track with no handoff yet prints its newest notes and points at the rest */
@@ -460,70 +468,6 @@ test('a handoff written through the launcher keeps its loose-file lists on the P
     (e) => /unknown field "waitingOnUser"/.test(e.message) && /plugin update/.test(e.message) && /new session/.test(e.message), 'the board names the stale key and the fix');
 });
 
-test('the kickoff reads the handoff folder through this PC\'s map: a worktree maps its main checkout, the session\'s own checkout comes first, an unmapped project says so', async () => {
-  const root = tempDir('askerdo-handoffs-').replace(/\\/g, '/');
-  const main = root + '/demo';
-  const lane = root + '/demo-lane';
-  mkdirSync(main + '/.git/worktrees/lane', { recursive: true });
-  writeFileSync(main + '/.git/config', '[remote "origin"]\n\turl = https://github.com/example/map-demo.git\n');
-  writeFileSync(main + '/.git/worktrees/lane/commondir', '../..\n');
-  mkdirSync(lane);
-  writeFileSync(lane + '/.git', 'gitdir: ' + main + '/.git/worktrees/lane\n');
-  const data = root + '/data';
-  learnProjects(data, [lane]);
-
-  const kickoffOf = async (projectRepos, s) => {
-    const ws = await boardCall('createRecord', { kind: 'workstream', name: 'Mapped ' + s, description: 'd', projectRepos, handoff: 'docs/handoff' });
-    const tr = await boardCall('newTrack', { name: 'Mapped ' + s, workstream: ws.id, session: s }, { session: s, pc: 'pc1' });
-    return boardCall('trackKickoff', { track: tr.id });
-  };
-  const readOf = (k) => k.kickoff.split('\n').find((l) => l.startsWith('Read: ')) || '';
-  const k = await kickoffOf(['github.com/example/map-demo'], 'f1');
-  assert.ok(readOf(await pc.kickoffHere(k, { cwd: root, dir: data })).includes(main + '/docs/handoff/rules.md'), 'the map names the main checkout');
-  assert.ok(readOf(await pc.kickoffHere(k, { cwd: lane, dir: data })).includes(lane + '/docs/handoff/rules.md'), 'the session\'s worktree first');
-
-  const away = await pc.kickoffHere(await kickoffOf(['github.com/example/elsewhere'], 'f2'), { cwd: lane, dir: data });
-  assert.deepEqual([away.workstream.handoffDir, away.workstream.unmapped], [null, 'github.com/example/elsewhere']);
-  assert.ok(readOf(away).includes('github.com/example/elsewhere') && !readOf(away).includes(root), readOf(away));
-
-  /* a parent scan with clones of one repo maps the one named for it, not the last, and never moves a mapped folder */
-  for (const n of ['map-demo', 'map-demo-old']) {
-    mkdirSync(root + '/' + n + '/.git', { recursive: true });
-    writeFileSync(root + '/' + n + '/.git/config', '[remote "origin"]\n\turl = https://github.com/example/map-demo.git\n');
-  }
-  /* a repo two folders down is found; one inside node_modules is not */
-  for (const [d, repo] of [['/group/nested', 'nested'], ['/tool/node_modules/dep', 'dep']]) {
-    mkdirSync(root + d + '/.git', { recursive: true });
-    writeFileSync(root + d + '/.git/config', '[remote "origin"]\n\turl = https://github.com/example/' + repo + '.git\n');
-  }
-  const fresh = tempDir('askerdo-handoffs-');
-  const scan = scanProjects(fresh, [root]);
-  assert.equal(readMap(fresh)['github.com/example/nested'], root + '/group/nested');
-  assert.equal(readMap(fresh)['github.com/example/dep'], undefined);
-  assert.equal(readMap(fresh)['github.com/example/map-demo'], root + '/map-demo');
-  assert.deepEqual(scan.others.map((o) => o.dir).sort(), [main, root + '/map-demo-old']);
-  scanProjects(data, [root]);
-  assert.equal(readMap(data)['github.com/example/map-demo'], main, 'a mapped folder that exists stays');
-
-  /* the board keeps each PC's map, so a path written on a PC whose folders differ opens here */
-  const away2 = 'Q:/pc-b/work/map-demo';
-  await boardCall('pcMap', { map: { 'github.com/example/map-demo': away2 } }, { pc: 'pc-b' });
-  const { maps } = await boardCall('pcMap', { map: readMap(data) }, { pc: 'pc-a' });
-  const placesOf = (list) => list.flatMap((m) => Object.entries(m.map).map(([repo, dir]) => ({ dir, repo })));
-  assert.equal(rebasePath(away2 + '/docs/x.md', placesOf(maps)), main + '/docs/x.md');
-  assert.equal(rebasePath(away2 + '/docs/x.md', placesOf(maps.filter((m) => m.pc === 'pc-a'))), away2 + '/docs/x.md', 'no map from the other PC, the path as written');
-
-  /* a desktop-app scratch workspace is never learned; a stale entry is marked, and forgotten only when asked */
-  const scratch = root + '/AppData/Roaming/Claude/scratch-workspaces/abc';
-  mkdirSync(scratch + '/.git', { recursive: true });
-  assert.equal(learnProjects(data, [scratch.replace(/\//g, '\\')]).added.length, 0);
-  learnProjects(data, [root + '/map-demo-old'], { replace: true });
-  rmSync(root + '/map-demo-old', { recursive: true });
-  assert.ok(entryDrift('github.com/example/map-demo', readMap(data)['github.com/example/map-demo']).gone);
-  assert.ok(forgetInMap(data, 'github.com/example/map-demo').dropped);
-  assert.equal(readMap(data)['github.com/example/map-demo'], undefined);
-});
-
 test('a handoff written on one PC resumes on another: each repo verified at its checkout there, the handoff folder found there, a repo it lacks named as not here; one naming its next leg\'s PC is taken elsewhere only with --here; an untaken track with ready work is named at both', async () => {
   const root = tempDir('askerdo-handoffs-').replace(/\\/g, '/');
   const run = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -591,6 +535,73 @@ test('a handoff written on one PC resumes on another: each repo verified at its 
   const yes = await pc.resumeTrackSession(tr.id, { session: 'p4', here: true }, { dir: d2, pc: 'pc2' });
   assert.ok(yes.acquired && yes.kickoff.split('\n')[1].includes('pc1'), yes.kickoff.split('\n').slice(0, 2).join('\n'));
   assert.ok(yes.kickoff.split('\n').some((l) => l.startsWith('Untaken') && l.includes(side.id)), yes.kickoff);
+});
+
+test('the kickoff reads the handoff folder through this PC\'s map: a worktree maps its main checkout, the session\'s own checkout comes first, an unmapped project says so', async () => {
+  const root = tempDir('askerdo-handoffs-').replace(/\\/g, '/');
+  const main = root + '/demo';
+  const lane = root + '/demo-lane';
+  mkdirSync(main + '/.git/worktrees/lane', { recursive: true });
+  writeFileSync(main + '/.git/config', '[remote "origin"]\n\turl = https://github.com/example/map-demo.git\n');
+  writeFileSync(main + '/.git/worktrees/lane/commondir', '../..\n');
+  mkdirSync(lane);
+  writeFileSync(lane + '/.git', 'gitdir: ' + main + '/.git/worktrees/lane\n');
+  const data = root + '/data';
+  learnProjects(data, [lane]);
+
+  const kickoffOf = async (projectRepos, s) => {
+    const ws = await boardCall('createRecord', { kind: 'workstream', name: 'Mapped ' + s, description: 'd', projectRepos, handoff: 'docs/handoff' });
+    const tr = await boardCall('newTrack', { name: 'Mapped ' + s, workstream: ws.id, session: s }, { session: s, pc: 'pc1' });
+    return boardCall('trackKickoff', { track: tr.id });
+  };
+  const readOf = (k) => k.kickoff.split('\n').find((l) => l.startsWith('Read: ')) || '';
+  const k = await kickoffOf(['github.com/example/map-demo'], 'f1');
+  assert.ok(readOf(await pc.kickoffHere(k, { cwd: root, dir: data })).includes(main + '/docs/handoff/rules.md'), 'the map names the main checkout');
+  assert.ok(readOf(await pc.kickoffHere(k, { cwd: lane, dir: data })).includes(lane + '/docs/handoff/rules.md'), 'the session\'s worktree first');
+
+  const away = await pc.kickoffHere(await kickoffOf(['github.com/example/elsewhere'], 'f2'), { cwd: lane, dir: data });
+  assert.deepEqual([away.workstream.handoffDir, away.workstream.unmapped], [null, 'github.com/example/elsewhere']);
+  assert.ok(readOf(away).includes('github.com/example/elsewhere') && !readOf(away).includes(root), readOf(away));
+  /* a converted protocol leaves no pointer at its folder */
+  await boardCall('editRecord', { id: away.workstream.id, clearHandoff: true });
+  assert.ok(!(await boardCall('readRecord', { id: away.workstream.id })).handoff);
+
+  /* a parent scan with clones of one repo maps the one named for it, not the last, and never moves a mapped folder */
+  for (const n of ['map-demo', 'map-demo-old']) {
+    mkdirSync(root + '/' + n + '/.git', { recursive: true });
+    writeFileSync(root + '/' + n + '/.git/config', '[remote "origin"]\n\turl = https://github.com/example/map-demo.git\n');
+  }
+  /* a repo two folders down is found; one inside node_modules is not */
+  for (const [d, repo] of [['/group/nested', 'nested'], ['/tool/node_modules/dep', 'dep']]) {
+    mkdirSync(root + d + '/.git', { recursive: true });
+    writeFileSync(root + d + '/.git/config', '[remote "origin"]\n\turl = https://github.com/example/' + repo + '.git\n');
+  }
+  const fresh = tempDir('askerdo-handoffs-');
+  const scan = scanProjects(fresh, [root]);
+  assert.equal(readMap(fresh)['github.com/example/nested'], root + '/group/nested');
+  assert.equal(readMap(fresh)['github.com/example/dep'], undefined);
+  assert.equal(readMap(fresh)['github.com/example/map-demo'], root + '/map-demo');
+  assert.deepEqual(scan.others.map((o) => o.dir).sort(), [main, root + '/map-demo-old']);
+  scanProjects(data, [root]);
+  assert.equal(readMap(data)['github.com/example/map-demo'], main, 'a mapped folder that exists stays');
+
+  /* the board keeps each PC's map, so a path written on a PC whose folders differ opens here */
+  const away2 = 'Q:/pc-b/work/map-demo';
+  await boardCall('pcMap', { map: { 'github.com/example/map-demo': away2 } }, { pc: 'pc-b' });
+  const { maps } = await boardCall('pcMap', { map: readMap(data) }, { pc: 'pc-a' });
+  const placesOf = (list) => list.flatMap((m) => Object.entries(m.map).map(([repo, dir]) => ({ dir, repo })));
+  assert.equal(rebasePath(away2 + '/docs/x.md', placesOf(maps)), main + '/docs/x.md');
+  assert.equal(rebasePath(away2 + '/docs/x.md', placesOf(maps.filter((m) => m.pc === 'pc-a'))), away2 + '/docs/x.md', 'no map from the other PC, the path as written');
+
+  /* a desktop-app scratch workspace is never learned; a stale entry is marked, and forgotten only when asked */
+  const scratch = root + '/AppData/Roaming/Claude/scratch-workspaces/abc';
+  mkdirSync(scratch + '/.git', { recursive: true });
+  assert.equal(learnProjects(data, [scratch.replace(/\//g, '\\')]).added.length, 0);
+  learnProjects(data, [root + '/map-demo-old'], { replace: true });
+  rmSync(root + '/map-demo-old', { recursive: true });
+  assert.ok(entryDrift('github.com/example/map-demo', readMap(data)['github.com/example/map-demo']).gone);
+  assert.ok(forgetInMap(data, 'github.com/example/map-demo').dropped);
+  assert.equal(readMap(data)['github.com/example/map-demo'], undefined);
 });
 
 test('a due review line carries its review step, and the step as printed lays a review task out after the work and before the checkpoint', async () => {

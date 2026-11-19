@@ -19,7 +19,7 @@ export const LABEL_KINDS = Object.freeze({
   plan: { prefix: 'P', sep: '-', ended: ['closed'] },
   task: { prefix: 'T', sep: '-', ended: ['dropped', 'done'] },
   thread: { prefix: 'TH', sep: '-', ended: ['done', 'dropped'] },
-  knowledge: { prefix: 'K', sep: '-', ended: ['superseded', 'withdrawn'] },
+  knowledge: { prefix: 'K', sep: '-', ended: ['superseded', 'withdrawn', 'retired'] },
   procedure: { prefix: 'PR', sep: '-', ended: ['retired'] },
   track: { prefix: 'TR', sep: '-', ended: ['done', 'dropped', 'folded'] },
 });

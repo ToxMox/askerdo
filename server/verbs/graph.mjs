@@ -565,9 +565,24 @@ function placeOf(items, place, id, max) {
 function checklistWrite(db, t, before, actor, note) {
   const c = actorOf(actor);
   const items = itemsOf(db, t.key);
-  bumpVersion(db, t.key);
+  /* a checklist write is a change to the task, so its updated time moves (writeFront bumps the version) */
+  writeFront(db, t, { updated: c.at }, TASK_KEYS);
   logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(t), changes: { checklist: [progressText(before), progressText(items)] }, by: c.by, pc: c.pc, note });
-  return { id: t.fields.id, items, progress: progressText(items) };
+  return { id: t.fields.id, items, progress: progressText(items), did: checklistDid(before, items) };
+}
+
+/* What a checklist write did, counted ("added 3, checked 1"), for a reply that has no other change to name. */
+function checklistDid(before, items) {
+  const was = new Map(before.map((s) => [s.n, s]));
+  const n = { added: 0, checked: 0, unchecked: 0, struck: 0 };
+  for (const s of items) {
+    const b = was.get(s.n);
+    if (!b) n.added++;
+    else if (s.struck !== undefined && b.struck === undefined) n.struck++;
+    else if (s.done && (!b.done || b.struck !== undefined)) n.checked++;
+    else if (!s.done && b.done) n.unchecked++;
+  }
+  return Object.entries(n).filter(([, v]) => v).map(([k, v]) => k + ' ' + v).join(', ');
 }
 
 export function addItem(db, input, actor) {

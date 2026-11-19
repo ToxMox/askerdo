@@ -322,9 +322,9 @@ export function dueLine(inbox, cli = CLI, ws) {
 /* ---- the patch: a live handoff changed in place, keeping its id ---- */
 
 /* each op's own fields; verifyFirst's are the repo entry, checked by each side */
-const OP_FIELDS = Object.freeze({ state: ['heading', 'text'], whereWeWere: ['line'], waitingOnUser: ['add', 'drop'], verifyFirst: null, nextPc: ['pc'] });
+const OP_FIELDS = Object.freeze({ focus: ['text'], state: ['heading', 'text'], whereWeWere: ['line', 'text'], waitingOnUser: ['add', 'drop'], verifyFirst: null, nextPc: ['pc'] });
 export const UPDATE_OPS = Object.freeze(Object.keys(OP_FIELDS));
-export const OPS_HINT = '{ op: "state", heading: "## ...", text }, { op: "whereWeWere", line }, { op: "waitingOnUser", add or drop }, { op: "verifyFirst", path }, { op: "nextPc", pc }';
+export const OPS_HINT = '{ op: "focus", text }, { op: "state", heading: "## ...", text }, { op: "whereWeWere", line or text }, { op: "waitingOnUser", add or drop }, { op: "verifyFirst", path }, { op: "nextPc", pc }';
 /* A handoff's waiting lines; [] when none. */
 export function waitingOf(f) {
   const w = f ? f.waitingOnUser : undefined;
@@ -344,7 +344,7 @@ export function staleToolsLine(installed, before) {
     + ' and keeps the older tool names: start a new session, which takes the installed tools';
 }
 
-/* The ops' shape, as sentences; [] when they pass. `max`: { line } */
+/* The ops' shape, as sentences; [] when they pass. `max`: { line, focus } */
 export function opsProblems(ops, max) {
   if (!Array.isArray(ops) || !ops.length) return ['ops is a list of one or more changes: ' + OPS_HINT];
   const e = [];
@@ -356,13 +356,19 @@ export function opsProblems(ops, max) {
     const { op } = o;
     const fields = OP_FIELDS[op];
     if (fields) for (const k of Object.keys(o)) if (k !== 'op' && !fields.includes(k)) { unknown = true; e.push(at + ' (' + o.op + ') has unknown field "' + k + '"'); }
-    if (op === 'state') {
+    if (op === 'focus') {
+      /* the patch that brings a long focus under its budget */
+      if (!oneLine(o.text) || o.text.trim().length > max.focus) e.push(at + '.text is the focus, one line of at most ' + max.focus + ' characters');
+    } else if (op === 'state') {
       if (!oneLine(o.heading) || !SECTION.test(o.heading.trim()) || o.heading.trim().length > max.line) e.push(at + '.heading is one line starting "## ", at most ' + max.line + ' characters');
       else if (flat(o.heading).toLowerCase() === WHERE_HEAD.toLowerCase()) e.push(at + ': that section is whereWeWere; add a line with op whereWeWere');
       if (!isText(o.text)) e.push(at + '.text is the section\'s body under its heading');
       else if (o.text.split(/\r?\n/).some((l) => SECTION.test(l))) e.push(at + '.text holds a "## " heading; each section is an op of its own');
     } else if (op === 'whereWeWere') {
-      if (!oneLine(o.line)) e.push(at + '.line is one line, added to whereWeWere');
+      /* text replaces it whole, so a long one is shortened without a new handoff */
+      if ((o.line === undefined) === (o.text === undefined)) e.push(at + ' names one of line (added) and text (replaces whereWeWere)');
+      else if (o.line !== undefined && !oneLine(o.line)) e.push(at + '.line is one line, added to whereWeWere');
+      else if (o.text !== undefined && !isText(o.text)) e.push(at + '.text is whereWeWere in your own words, replacing it');
     } else if (op === 'waitingOnUser') {
       if ((o.add === undefined) === (o.drop === undefined)) e.push(at + ' names one of add and drop');
       const l = o.add !== undefined ? o.add : o.drop;
@@ -396,22 +402,29 @@ export function patchSection(state, heading, text) {
   return { state: [...lines.slice(0, start), ...block, ...(tail.length ? ['', ...tail] : [])].join('\n'), replaced: true };
 }
 
-/* The ops on a handoff's text: { state, whereWeWere, waitingOnUser, verify,
+/* The ops on a handoff's text: { focus, state, whereWeWere, waitingOnUser, verify,
    changes (per field, what moved), problems (a line to drop that is not there) }.
    A verifyFirst op is the repo's entry as the caller's side stores it. */
 export function applyOps(h, ops) {
+  let focus = String(h.focus || '');
   let state = String(h.state || '');
   let where = String(h.whereWeWere || '');
   const waiting = [...waitingOf(h)];
   const verify = (h.verify || []).map((v) => ({ ...v }));
-  const said = { state: [], whereWeWere: [], waitingOnUser: [], verifyFirst: [], nextPc: [] };
+  const said = { focus: [], state: [], whereWeWere: [], waitingOnUser: [], verifyFirst: [], nextPc: [] };
   const problems = [];
   for (const o of ops) {
     const { op } = o;
-    if (op === 'state') {
+    if (op === 'focus') {
+      focus = o.text.trim();
+      said.focus.push('replaced');
+    } else if (op === 'state') {
       const r = patchSection(state, o.heading, o.text);
       state = r.state;
       said.state.push((r.replaced ? 'replaced ' : 'added ') + flat(o.heading));
+    } else if (op === 'whereWeWere' && o.text !== undefined) {
+      where = o.text.replace(/\s+$/, '');
+      said.whereWeWere.push('replaced');
     } else if (op === 'whereWeWere') {
       const base = where.replace(/\s+$/, '');
       /* trimmed at the end only: the PC's guard on a "#" line is a leading space */
@@ -435,7 +448,7 @@ export function applyOps(h, ops) {
   }
   const changes = {};
   for (const [k, v] of Object.entries(said)) if (v.length) changes[k] = v.join(', ');
-  return { state, whereWeWere: where, waitingOnUser: waiting, verify, changes, problems };
+  return { focus, state, whereWeWere: where, waitingOnUser: waiting, verify, changes, problems };
 }
 
 /* A handoff's runs whose branch sits only on one PC. Each run of the write's result carries

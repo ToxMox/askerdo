@@ -528,6 +528,11 @@ test('an answer reaches the session holding the question\'s track, and gates add
     await caught(lb, b);
     const amended = (s) => inbox(dir, s).some((l) => l.id === d.id && /Only the v2 routes/.test(lineFor(l) || ''));
     assert.deepEqual([amended('h5'), amended('h4')], [true, false]);
+    /* an edit that moves the stamp back to an earlier amend (an undo) tells no amend */
+    const rec = { type: 'decision', tracks: ['TR-1'], sections: { Body: 'Routes.\n\nAmended 2026-11-01 by s1: first.' } };
+    const edited = (stamps) => tellingsOf({ kind: 'knowledge', verb: 'edit', id: 'K-1', head: { label: 'K-1' }, by: 'session:s1', seq: 4, changes: { amended: stamps } },
+      { question: async () => rec, holder: () => 's2' }).then((t) => t.lines.length);
+    assert.deepEqual(await Promise.all([edited(['2026-11-01T10:00:00Z', '2026-11-02T10:00:00Z']), edited(['2026-11-02T10:00:00Z', '2026-11-01T10:00:00Z'])]), [1, 0]);
     /* the band carries an override's row; its Allow, pressed in another session, reaches the asking one once */
     const k = await post('createKnowledge', { type: 'gotcha', title: 'The port', body: 'The port is 1748.', global: true, session: 'a1' }, { session: 'a1' });
     await post('readRecord', { id: k.id, session: 's2' });

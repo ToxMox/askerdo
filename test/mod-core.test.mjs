@@ -20,8 +20,9 @@ import {
   agentChecks, firstTellingCard, flagLine, flagNote, footerOf, isHubShell, namesBoardId, replyChecks, receiptsOf,
   closedFinished, continueLineOf, handedOn, blockSettled, settleWords, reportsIn, dispatchRunBlock, replyAsks, isHubTaskWrite, isHubFactWrite, forgedFiling, hubAnswers, namesQuestion, userMarked, inboxWaiting, runEndHow, heldOver, heldWaitOf, laneNote, latestLane, tasksOfDispatch, dispatchMissed,homeGraph, callRows, callCard, cardText, agentsModel, flightsRebuilt,
   leftCalls, leftNote, paneMeasure, bgRebuilt, flightsKept, backgroundModel, runningNames, statusModel, hubRan,
-  taskBlocks, withDecisions, decisionsBlock, decisionNote, pointerNotes, pointerToast, heldTrack,
+  taskBlocks, withDecisions, decisionsBlock, decisionNote, pointerNotes, pointerToast, heldTrack, overrideCard, overrideTold,
 } from '../lib/mod-core.mjs';
+import { overBudget, overLine, updateProblems } from '../lib/handoff-payload.mjs';
 import { freshBoard } from './helpers/board-db.mjs';
 
 const ask = (over = {}) => ({
@@ -106,10 +107,18 @@ test('handoff: the tool refuses what the CLI refuses (one shared check), and rul
   assert.ok(lines.length >= 8 && lines[1].startsWith('- ') && lines[2].startsWith('  ') && lines[3].startsWith('  '));
   assert.ok(lines.every((l) => l.length <= 400 || /^(y+|z+)$/.test(l)));
   assert.equal(wrapped.payload.state.split(/\s+/).join(' '), state.split(/\s+/).join(' '));
-  /* bytes, not characters: a two-byte letter counts twice */
-  assert.match(validateHandoff(handoff({ state: '\u00e9'.repeat(5200) })).error, /state is 10400 bytes/);
   assert.match(validateHandoff(handoff({ state: 'a\n## Where we were\nb' })).error, /whereWeWere/);
-  assert.match(validateHandoff(handoff({ focus: 'f'.repeat(401) })).error, /focus is 401 characters/);
+  /* a field over its budget passes the check, and the stored handoff's line names the patch for each */
+  const big = handoff({ focus: 'f'.repeat(450), state: '\u00e9'.repeat(5200), whereWeWere: 'w'.repeat(5000) });
+  assert.equal(validateHandoff(big).error, undefined);
+  const over = overBudget(big);
+  assert.deepEqual(over.map((x) => x.field), ['focus', 'state', 'whereWeWere']);
+  /* bytes, not characters: a two-byte letter counts twice */
+  assert.ok(over[1].size.startsWith('10400'));
+  const fix = overLine(over, 'TR-9');
+  assert.ok(['"op": "focus"', '"op": "state"', '"op": "whereWeWere"', 'TR-9'].every((s) => fix.includes(s)), fix);
+  assert.equal(overLine(overBudget(handoff()), 'TR-9'), '');
+  assert.equal(updateProblems({ ops: [{ op: 'focus', text: 'f'.repeat(300) }, { op: 'whereWeWere', text: 'shorter' }] }).length, 0);
   assert.match(validateHandoff(handoff({ rulings: [{ id: 'R1' }] })).error, /rulings\[0\]\.registered/);
   /* a leftover is named the board's way, its number from 1 and its name */
   const left = validateHandoff(handoff({ leftovers: [{ name: 'One', runBy: 'fork' }, { name: 'Fix the seam' }] })).error;
@@ -362,6 +371,9 @@ test('the open set draws one line per question with its tokens and the pick mark
   const facts = cardText(callCard(call));
   assert.ok(['40 words', 'WS-11', '/override/3', 'rewrites K-3 now'].every((x) => facts.includes(x)), facts);
   assert.equal(call.short, 'Reword K-3.');
+  /* a withdraw of an undone import's rulings and facts leads with what it holds, the facts not called rulings */
+  const mixed = (sections) => overrideCard(overrideTold({ request: 4, kind: 'withdraw', records: ['K-1', 'K-2', 'K-4'], reversal: true, measure: { sections } })).lead;
+  assert.ok(/knowledge record/.test(mixed({ rulings: 2, facts: 1 })) && /2 rulings/.test(mixed({ rulings: 2, facts: 1 })) && /3 rulings/.test(mixed({ rulings: 3 })), mixed({ rulings: 2, facts: 1 }));
 });
 
 test('shelf and track lines: each shelf row with its resume command; a held track with its holder and the three moves', () => {
@@ -990,6 +1002,8 @@ test('agent checks: none with no rules in force, the state note and size rule by
   assert.deepEqual(agentChecks({ prompt: 'Fix it.' }, { ...on, inject: true }).map((s) => s.id), ['state'], 'the injection carries the size rule');
   assert.deepEqual(agentChecks({ prompt: 'Fix it.' }, { ...on, rules: { 'dispatch.stateNote': false } }).map((s) => s.id), ['size']);
   assert.deepEqual(agentChecks({ prompt: 'Keep x-state.md. Final response under 2000 characters.' }, on), []);
+  /* a '<lane>-state.md' placeholder names no note */
+  assert.deepEqual(agentChecks({ prompt: '- State note: `docs/<your lane>-state.md`. Final response under 2000 characters.' }, on).map((s) => s.id), ['state']);
   assert.deepEqual(agentChecks({ prompt: 'Read your brief: docs/briefs/lane-6.md. Reply in at most 300 words.' }, on), []);
   /* the testing rule in the brief's own words passes; a brief with neither clause slips, citing no repo path */
   const ran = 'Keep x-state.md. Final response under 2000 characters. Run the tests.';
@@ -999,7 +1013,7 @@ test('agent checks: none with no rules in force, the state note and size rule by
   assert.ok(!/run-tests\.md/.test(bare[0].say), bare[0].say);
   /* a brief that only names a test session runs no tests */
   assert.deepEqual(agentChecks({ prompt: 'Keep x-state.md. Final response under 2000 characters. A walk waits for the desktop test session.' }, on), []);
-  const slips = agentChecks({ prompt: 'x-state.md' }, on);
+  const slips = agentChecks({ prompt: 'Keep x-state.md.' }, on);
   assert.equal(flagLine('the dispatch of a', slips), 'AskerDo: the dispatch of a: the brief has no output-size rule. Flagged, not rewritten.');
   assert.ok(flagNote([{ what: 'your last reply', slips: [{ say: 'em or en dashes' }] }]).includes('your last reply: em or en dashes.'));
   const twice = flagNote([1, 2].map(() => ({ what: 'the dispatch of Last lane', slips })));
@@ -1007,9 +1021,12 @@ test('agent checks: none with no rules in force, the state note and size rule by
   assert.match(twice, /\b2\b/);
   /* the task's latest lane flags when it handed work on to another agent; a finished one, whatever its size, nothing */
   const ok = { prompt: 'Keep x-state.md. Final response under 2000 characters.' };
-  const lane = (journal) => agentChecks(ok, { ...on, lanes: [{ task: 'T-7', ...latestLane(journal) }] }).map((s) => s.id);
+  const lane = (journal) => agentChecks({ ...ok, description: 'Fix lane 3' }, { ...on, lanes: [{ task: 'T-7', ...latestLane(journal) }] }).map((s) => s.id);
   const past = laneNote(300000, 'Fix lane 3', handedOn('Leg 1 done.\nCONTINUE: docs/fix-state.md'));
   assert.deepEqual(lane(past), ['lane T-7']);
+  /* a leg under a new name carries the job on when its brief names the lane's state note, whatever marks sit round it */
+  const leg = (prompt) => agentChecks({ prompt, description: 'Leg 2' }, { ...on, lanes: [{ task: 'T-7', ...latestLane(laneNote(300000, 'Fix lane 3', true, 'docs/fix-state.md')) }] }).map((s) => s.id);
+  assert.deepEqual([leg('Carry on from **docs/fix-state.md**. Final response under 2000 characters.'), leg('Keep docs/prefix-state.md. Final response under 2000 characters.')], [['lane T-7'], []]);
   assert.deepEqual(lane(laneNote(460000, 'big but done', handedOn('CONTINUE: none'))), []);
   /* a finished lane in other words is finished; a next step is not */
   assert.deepEqual(['CONTINUE: done; nothing left in this lane', 'CONTINUE: lane complete', 'CONTINUE: done with S2; S3 next'].map(handedOn), [false, false, true]);
@@ -1099,7 +1116,7 @@ test('agent checks: none with no rules in force, the state note and size rule by
   assert.deepEqual(tasksOfDispatch({ prompt: 'You are the auditor.\nRead docs/review.md; T-12 asks.' }, [report]), [], 'ids further down never take a heading');
   assert.ok(dispatchMissed({ prompt: 'You are the auditor.\nRead docs/review.md; T-12 asks.' }, []).includes('T-12'));
   assert.deepEqual([dispatchMissed(fixLane, ['T-206']), dispatchMissed({ prompt: 'Look around.' }, [])], ['', '']);
-  assert.deepEqual(agentChecks(ok, { ...on, lanes: tasksOfDispatch(audit, [report]).map((task) => ({ task, ...latestLane(past) })) }).map((s) => s.id), ['lane T-8']);
+  assert.deepEqual(agentChecks({ ...ok, description: 'Fix lane 3' }, { ...on, lanes: tasksOfDispatch(audit, [report]).map((task) => ({ task, ...latestLane(past) })) }).map((s) => s.id), ['lane T-8']);
   /* the brief gets each served task's block after the rulings, once; a task the board could not read is left out */
   /* a ruling's body and its amends ride the brief and the pointer */
   const k1 = { id: 'K-1', name: 'Whole pane', words: 'move it all', gist: 'Rows go first.', amends: ['Amended 2026-11-10 by s1: steps go on the checklist.'] };
@@ -1372,13 +1389,16 @@ test('the drift line reads the conversion map: a dead pointer, a cite into a ret
     { source: 'handoff/', kind: 'folder', fate: 'delete', sha: 'c1' },
     { source: 'handoff/RESULTS.md', kind: 'file', records: ['K-1'] },
     { source: 'docs/', kind: 'folder', fate: 'keep', why: 'the project\'s own docs' },
+    /* a file kept by its own entry inside the retired folder */
+    { source: 'handoff/KEEP.md', kind: 'folder', fate: 'keep', why: 'the user keeps it' },
   ] };
+  files.add('handoff/KEEP.md');
   const rules = (cited, long) => [
     { rule: 'read-the-guide', text: 'Read `' + cited + '` before a change.', source: 'mine on default' },
     { rule: 'wordy', text: 'x'.repeat(long), source: 'mine on default' },
     { rule: 'few-tests', text: 'y'.repeat(500), source: 'built in' },
   ];
-  const off = driftOf({ rules: rules('docs/gone.md', 401), exists: (p) => files.has(p), map, listed: { 'handoff/': ['NEW.md'] } });
+  const off = driftOf({ rules: rules('docs/gone.md', 401), exists: (p) => files.has(p), map, listed: { 'handoff/': ['KEEP.md', 'NEW.md'] } });
   assert.deepEqual(off.dead.map((d) => d.path), ['docs/gone.md']);
   assert.deepEqual(off.long.map((l) => l.slug), ['wordy'], 'a built-in line is never flagged');
   assert.deepEqual(off.fresh, [{ folder: 'handoff/', names: ['NEW.md'] }]);
@@ -1387,6 +1407,7 @@ test('the drift line reads the conversion map: a dead pointer, a cite into a ret
   const cites = driftOf({ rules: rules('handoff/STATE.md', 10), exists: (p) => files.has(p), map, listed: {} });
   assert.deepEqual(cites.dead.map((d) => [d.path, d.retired]), [['handoff/STATE.md', true]], 'a cite into a retired folder');
   assert.equal(driftOf({ rules: rules('docs/guide.md', 400), exists: (p) => files.has(p), map, listed: { 'handoff/': [] } }), null);
+  assert.equal(driftOf({ rules: rules('handoff/KEEP.md', 10), exists: (p) => files.has(p), map, listed: { 'handoff/': ['KEEP.md'] } }), null, 'the kept file is neither retired nor new');
   assert.equal(driftOf({ rules: rules('docs/guide.md', 400), exists: (p) => files.has(p), map: null, listed: {} }), null, 'no map, nothing retired');
 });
 

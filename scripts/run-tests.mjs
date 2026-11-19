@@ -211,6 +211,20 @@ function run(cmd, args, env, shell, log, verbose) {
   });
 }
 
+/* Git for Windows' cmd\git.exe is a launcher that starts the real git, about 20 ms more on each of
+   the suite's thousand-odd git calls. A PATH that finds the launcher first gets the real git's
+   folder and its usr\bin (sh, for hooks) ahead of it, as Git Bash's own PATH has them. */
+export function realGitFirst(path, exists = existsSync) {
+  const dirs = String(path || '').split(';');
+  const at = dirs.findIndex((d) => d && exists(join(d, 'git.exe')));
+  if (at < 0) return path;
+  const found = dirs[at].replace(/[\\/]+$/, '');
+  if (!/[\\/]cmd$/i.test(found)) return path;
+  const root = dirname(found);
+  const bin = ['ucrt64', 'mingw64', 'clangarm64'].map((m) => join(root, m, 'bin')).find((b) => exists(join(b, 'git.exe')));
+  return bin ? [bin, join(root, 'usr', 'bin'), ...dirs].join(';') : path;
+}
+
 /* The named files that are not plugin test files: missing, outside the repo, or not *.test.ts(x). */
 export function notPluginFiles(files, repo = REPO) {
   return files.filter((f) => {
@@ -316,6 +330,10 @@ async function main(argv) {
   const home = mkdtempSync(join(resolve(tmpdir()), 'askerdo-test-home-'));
   const env = { ...process.env, HOME: home, USERPROFILE: home, [TURN_ENV]: String(process.pid) };
   for (const k of DROP) delete env[k];
+  if (process.platform === 'win32') {
+    const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH');
+    if (key) env[key] = realGitFirst(env[key]);
+  }
   say('home ' + home);
   mkdirSync(LOGS, { recursive: true });
   pruneLogs();

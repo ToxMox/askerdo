@@ -7,18 +7,20 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { buildPlan, recordGo, staleFacts, WaitingError, withFacts } from '../skills/onboard/plan.mjs';
-import { applyPlan, asApproved, cliRunner, quietWrite, runCoverage } from '../skills/onboard/apply.mjs';
+import { applyPlan, asApproved, cliRunner, quietWrite, runCoverage, undoArgs } from '../skills/onboard/apply.mjs';
 import { cardRow, cardText } from '../skills/onboard/cards.mjs';
 import { blobsOf, clauseId, markMap } from '../skills/onboard/map.mjs';
-import { recordReader } from '../skills/onboard/coverage.mjs';
+import { coverage, recordReader } from '../skills/onboard/coverage.mjs';
 import { tempDir } from './helpers/sandbox.mjs';
 
 const AT1 = '2026-02-01T10:00:00+00:00';
 const AT2 = '2026-03-01T10:00:00+00:00';
 const src = (file, line, end) => ({ file, line, ...(end ? { end } : {}), commit: null });
+/* the fixture runs at depth, where every check of today waits */
 const proposal = {
   version: 1,
-  project: { dir: 'C:/work/proj', slug: 'proj', remote: 'github.com/someone/proj' },
+  depth: true,
+  project: { dir: 'C:/work/proj', slug: 'proj', remote: 'github.com/someone/proj', head: 'c0ffee1234' },
   workstream: {},
   /* a profile named like the project, held by another one */
   board: { profiles: [{ profile: 'proj', records: ['C:/work/other'], elsewhere: true, rules: [] }] },
@@ -45,7 +47,7 @@ const plain = () => JSON.parse(JSON.stringify(proposal));
 
 test('the proposal becomes the plan: refs in order, old dates and the label carried, cut and covered items held out', async (t) => {
   const plan = buildPlan(plain(), { readVersion: (v) => 'state at ' + v.commit, readFile: () => '', session: 's1' });
-  assert.deepEqual(plan.steps.map((s) => s.op), ['ws create', 'task create', 'task create', 'track new', 'handoff write', 'handoff write', 'decide', 'decide', 'knowledge new',
+  assert.deepEqual(plan.steps.map((s) => s.op), ['ws create', 'task create', 'task create', 'track new', 'handoff write', 'handoff write', 'decide', 'decide', 'knowledge new', 'knowledge new',
     'register', 'profile rule-add', 'knowledge new', 'profile rule-add', 'profile add']);
   /* the superseded entry is written first, so its superseder's decide can mark it */
   const [old, later] = plan.steps.filter((s) => s.op === 'decide');
@@ -79,6 +81,33 @@ test('the proposal becomes the plan: refs in order, old dates and the label carr
   assert.deepEqual(plan.idmap['docs/decisions.md#D2'], { kind: 'decision', step: 'decision:d1', item: 'decision:d1', id: null });
   assert.deepEqual(plan.claude[0].clauses[0].fate, 'carried');
   assert.equal(plan.folders[0].end, 'delete');
+  /* a kept file's line edits: one its line holds plans, one it does not and one on a file that goes wait */
+  const le = plain();
+  le.folders.push({ path: 'docs/', end: 'keep', why: 'live docs', lineEdits: [
+    { file: 'docs/howto.md', kind: 'strike', line: 2, words: ' Ask first.', why: 'a rule the board holds' },
+    { file: 'docs/howto.md', kind: 'replace', line: 1, words: 'Old title', with: 'New title', why: 'renamed' },
+    { file: 'runs/a.md', kind: 'empty', line: 1, head: '', why: 'goes anyway' },
+    /* the same lines of another file under the entry plan; the same lines of one file wait */
+    { file: 'docs/guide.md', kind: 'strike', line: 2, words: ' Ask first.', why: 'a rule the board holds' },
+    { file: 'docs/howto.md', kind: 'empty', line: 2, head: 'Build', why: 'twice' }] });
+  const lp = buildPlan(le, { readVersion: () => '', readFile: (f) => (f.startsWith('docs/') ? '# Howto\r\nBuild it. Ask first.\r\n' : '') });
+  assert.deepEqual([lp.lineEdits.map((e) => [e.file, e.line, e.struck]), lp.pending.map((x) => x.item)],
+    [[['docs/howto.md', 2, ' Ask first.'], ['docs/guide.md', 2, ' Ask first.']], ['lineEdit:docs/howto.md#L1', 'lineEdit:runs/a.md#L1', 'lineEdit:docs/howto.md#L2']]);
+  /* a kept card its edits leave unparsed waits; a card already unparsed and the README there do not. A kept
+     card's line naming a path that goes waits, unless a line edit takes the cite out */
+  const shipCard = ['---', 'name: ship', 'title: Ship it', 'summary: Ships the build.', 'triggers:', '  words: [ship]', '---', '', '# Ship it', '', '## Trigger', '', 'A release.', '', '## Preconditions', '', '- None.',
+    '', '## Steps', '', '### 1. Build', '', '```sh', 'npm run build', '```', '', '## Verify', '', '```sh', 'npm test', '```', '', '- expect: it exits 0 and runs/last.md lists the build', '', '## References', '', '- `runs/notes.md`: the build notes', ''].join('\n');
+  const ce = plain();
+  ce.folders.push({ path: 'docs/', end: 'keep', why: 'live docs', lineEdits: [
+    { file: 'docs/procedures/ship.md', kind: 'replace', line: 37, words: '`runs/notes.md`: the', with: 'The', why: 'the notes go' },
+    ...['old', 'README'].map((n) => ({ file: 'docs/procedures/' + n + '.md', kind: 'strike', line: 1, words: ' Ask first.', why: 'a rule the board holds' }))] });
+  const cp = buildPlan(ce, { readVersion: () => '', readFile: (f) => (f.endsWith('ship.md') ? shipCard : 'Notes. Ask first.\n') });
+  assert.deepEqual([cp.lineEdits.length, cp.pending.map((x) => x.item + ' ' + /References/.test(x.why))], [3, ['lineEdit:docs/procedures/ship.md true', 'cite:docs/procedures/ship.md#L33 false']]);
+  /* a task that waits on an event keeps it; the others take the date wake */
+  const ev = plain();
+  ev.items.find((r) => r.id === 'task:open').fields.wake = 'task-completes T-7';
+  const wakes = buildPlan(ev, { readVersion: () => '', readFile: () => '' }).steps.filter((s) => s.op === 'task create').map((s) => s.stdin.wake);
+  assert.deepEqual(wakes, ['@{wake}', 'task-completes T-7']);
 
   /* a workstream already on the board takes the import; a rule citing a folder that goes waits for new words */
   const p = plain();
@@ -89,6 +118,41 @@ test('the proposal becomes the plan: refs in order, old dates and the label carr
   assert.equal(into.steps.find((s) => s.op === 'track new').args[3], 'WS-4');
   assert.match(into.pending.find((x) => x.item === 'rule:cites').why, /runs/);
 
+  /* the words a record would carry that no session can use wait, each beside one that passes */
+  const tx = plain();
+  const decItem = (id, title, text, fields = {}) => ({ id, kind: 'decision', title, text, fields: { title, ...fields }, source: src('docs/decisions.md', 20) });
+  tx.items.push(
+    decItem('decision:where', 'Ship from main only', 'Ship from main.', { detail: 'Row D04 of docs/decisions.md. rules.md line 12 restates it.' }),
+    decItem('decision:fact', 'Ship tags from main only', 'Tag on main.', { detail: 'Row D05 of docs/decisions.md. The tag job lives in ci/tag.yml.' }),
+    decItem('decision:steps', 'A release bumps the version first', 'To release:\n1. Bump the version.\n2. Build.\n3. Tag it.'),
+    decItem('decision:list', 'API handlers keep three conventions', '1. Validate first.\n2. Log once.\n3. Return the envelope.', { list: 'each line is a convention held at once, not a step' }),
+    decItem('decision:id', 'Builds stay reproducible', 'The pin is row D11 (item decision:docs/decisions.md#L17).'),
+    decItem('decision:ref', 'Builds pin their tools', 'Its pin is @{decision:d0}.'),
+    decItem('decision:gone', 'Logs are read before a rerun', 'Read runs/latest.md before a rerun.'),
+    decItem('decision:history', 'Old logs are history', 'The runs/ folder goes with this conversion.'),
+    decItem('decision:label', 'WS-4: Edges (D02)', '|Edges|2px solid.|'),
+    { id: 'rule:titled', kind: 'rule', title: 'Hold', text: 'Hold one review per wave.', fields: { slug: 'one-review', detail: 'A second reviewer only re-judged the first.' }, source: src('CLAUDE.md', 11) },
+    { id: 'question:go', kind: 'question', title: 'Ship it?', fields: { ask: 'Ship it?' }, source: src('TODO.md', 9) },
+    { id: 'task:ship', kind: 'task', title: 'Ship', text: 'Ship.', fields: { status: 'open', wake: 'question-answered question:go' }, source: src('TODO.md', 8) },
+    { id: 'task:lost', kind: 'task', title: 'Ship later', text: 'Later.', fields: { status: 'open', wake: 'question-answered question:none' }, source: src('TODO.md', 10) },
+    /* a long first clause renders a heading cut at its comma; one that ends a sentence or at a colon first passes */
+    ...[['card:comma', 'Restart the service from the tray icon once the old build has fully released its file locks on disk, then wait for the health probe'],
+      ['card:ended', 'Restart the service from the tray icon once the old build has fully released its file locks on disk. Then, wait for the probe.'],
+      ['card:colon', 'Restart the service from the tray icon once the old build has fully released its file locks on disk: then, wait for the probe.']]
+      .map(([id, text]) => ({ id, kind: 'card', title: id, fields: { slug: id.slice(5), steps: [{ text, run: 'npm run restart' }], verify: 'it exits 0' }, source: src('docs/howto.md', 4) })));
+  tx.folders.push({ path: 'docs/', end: 'keep', why: 'live docs', lineEdits: [
+    { file: 'docs/howto.md', kind: 'strike', line: 2, words: ' Ask first.', why: 'a rule the board holds' },
+    { file: 'docs/notes.md', kind: 'strike', line: 1, words: 'Ask', why: 'a rule the board holds' }] },
+  /* a file kept by its own entry inside a folder that goes takes its edit */
+  { path: 'runs/keep.md', end: 'keep', why: 'the run index', lineEdits: [{ file: 'runs/keep.md', kind: 'strike', line: 1, words: 'Ask', why: 'a rule the board holds' }] });
+  const tp = buildPlan(tx, { readVersion: () => '', readFile: () => ['Ask here.', 'Build it. Ask first.'].join('\n'), tracked: (f) => f !== 'docs/notes.md' });
+  assert.deepEqual([...new Set(tp.pending.map((x) => x.item))].sort(), ['card:comma', 'decision:gone', 'decision:id', 'decision:label', 'decision:steps', 'decision:where', 'lineEdit:docs/notes.md#L1', 'task:lost']);
+  assert.ok(tp.lineEdits.some((e) => e.file === 'runs/keep.md'));
+  assert.match(tp.steps.find((s) => s.id === 'rule:titled@detail').args.join(' '), /Hold one review per wave/, 'a rule line\'s detail is titled by its words');
+  /* a task waits on a question the same write registers, asked before it */
+  const [asks, ships] = ['question:go', 'task:ship'].map((id) => tp.steps.find((s) => s.id === id));
+  assert.ok(asks.n < ships.n && ships.stdin.wake === 'question-answered @{question:go}');
+
   /* an item goes to the workstream it names or its board track's, and a task named onto a board track is placed there;
      a new record on the subject of one the board holds waits until the session judges it */
   const w = plain();
@@ -97,11 +161,18 @@ test('the proposal becomes the plan: refs in order, old dates and the label carr
   w.workstream = { use: 'WS-4' };
   w.items.push({ id: 'task:acct', kind: 'task', title: 'Switch accounts', fields: { status: 'open', track: 'TR-3' }, source: src('acct/NOW.md', 2) },
     { id: 'decision:acct', kind: 'decision', title: 'Drop the old payer', text: 'Drop it.', fields: { workstream: 'WS-5' }, source: src('acct/DECISIONS.md', 3) },
+    { id: 'decision:gates', kind: 'decision', title: 'Gates pass on no new failures', text: 'No count math.', fields: { workstream: 'WS-4', workstreams: ['WS-4', 'WS-5'] }, source: src('acct/RULES.md', 4) },
+    { id: 'decision:far', kind: 'decision', title: 'Another team keeps its own rule', text: 'Theirs.', fields: { workstreams: ['WS-4', 'WS-9'] }, source: src('acct/RULES.md', 6) },
+    { id: 'fact:keys', kind: 'knowledge', title: 'Expired signing keys file', text: 'Keys: see map.', fields: { detail: 'The map goes; the path is in this record.' }, source: src('docs/facts.md', 9) },
     { id: 'fact:pool', kind: 'knowledge', title: 'Upload pool holds four workers', text: 'Four.', fields: {}, source: src('docs/facts.md', 7) });
   const split = buildPlan(w, { readVersion: () => '', readFile: () => '' });
   assert.equal(split.steps.find((x) => x.id === 'task:acct').stdin.workstream, 'WS-5');
   assert.deepEqual(split.steps.find((x) => x.id === 'task:acct@place').args.slice(3, 5), ['--track', 'TR-3']);
   assert.deepEqual(split.steps.find((x) => x.id === 'decision:acct').stdin.workstreams, ['WS-5']);
+  /* a ruling two workstreams share is one record on both; a knowledge item's detail joins its body */
+  assert.deepEqual(split.steps.find((x) => x.id === 'decision:gates').stdin.workstreams, ['WS-4', 'WS-5']);
+  assert.match(split.pending.find((x) => x.item === 'decision:far').why, /WS-9/);
+  assert.match(split.steps.find((x) => x.id === 'fact:keys').body, /the path is in this record/);
   assert.match(split.pending.find((x) => x.item === 'fact:pool').why, /K-40/);
   /* a redo after the undo: K-40 and the rule's detail K-41 are this import's own records, which the undo left standing,
      and K-40 carries the ref of a reconcile whose amend stood, so neither the detail nor the amend is written twice */
@@ -138,6 +209,8 @@ test('the proposal becomes the plan: refs in order, old dates and the label carr
   const ag = buildPlan(withFacts(a, facts), { readVersion: () => '', readFile: () => '' });
   assert.deepEqual([ag.section, ag.claude.map((l) => [l.path, l.clauses.map((c) => c.line)])], ['AGENTS.md', [['AGENTS.md', [3, 5]]]]);
   assert.equal(ag.claude[0].clauses[0].kept, 'The Viewer hosts WebSockets on port 5000.');
+  /* the files the facts know a session loads, whose cites the handover repoints */
+  assert.deepEqual(ag.sessionReads, ['.claude/rules/shaders.md', 'AGENTS.md']);
   assert.match(ag.pending.find((x) => /never edit them/.test(x.title)).why, /kept/, 'a split with no kept words waits');
   const flags = (s, f) => s.args.filter((x, i) => s.args[i - 1] === f);
   /* a `paths:` rule loads on a read too, so its record's globs carry the (read) marker */
@@ -192,6 +265,8 @@ test('the proposal becomes the plan: refs in order, old dates and the label carr
   const rp = buildPlan(withFacts({ ...a, folders: [...a.folders, { path: '.claude/commands/', end: 'keep', shape: 'outside-reader', repoint: true }] }, facts), { readVersion: () => '', readFile: () => '' });
   assert.deepEqual([loaders({ ...a, folders: [...a.folders, { path: '.claude/commands/', end: 'keep', repoint: true }] }), rp.repointed, rp.idmap['.claude/rules/shaders.md'].steps],
     [[], [{ loader: '.claude/commands/shaders.md', files: ['.claude/rules/shaders.md'] }], ['fact:menu']]);
+  /* or it stays as a pointer at its card, which loads nothing */
+  assert.deepEqual(loaders({ ...a, folders: [...a.folders, { path: '.claude/commands/', end: 'point', to: 'docs/procedures/menu.md' }] }), []);
   a.folders.push({ path: '.claude/commands/shaders.md', end: 'retire', why: 'it loads the shader rules' });
   assert.deepEqual(loaders(a), []);
   /* the other way, the command retiring while the rules file it loads stays: the harness still loads that file */
@@ -252,7 +327,7 @@ test('the plan refuses while a call waits; an answer applies its effect to items
   const second = () => {
     const q = JSON.parse(JSON.stringify(p).replace(/"(track:y|task:wanted|task:dormant|fact:a)"/g, '"$1-again"'));
     q.calls[0].answer = null;
-    q.board = { ...q.board, imported: [{ id: 'WS-3', refs: ['onboard:workstream'] }] };
+    q.board = { ...q.board, imported: [{ id: 'WS-3', refs: ['onboard:workstream'] }, { id: 'K-3', refs: ['onboard:history:proj'] }] };
     return q;
   };
   /* an instruction file's items are held by their records, never by its hash, so a re-judged clause is written */
@@ -290,6 +365,62 @@ test('the plan refuses while a call waits; an answer applies its effect to items
   assert.equal(buildPlan(p, { readVersion: () => '', readFile: () => '' }).folders.find((f) => f.path === 'docs/plans/x/').end, 'keep');
   assert.equal(recordGo(p, { session: 's1' }).go.from, 'chat');
   assert.throws(() => recordGo(p, {}));
+});
+
+/* the default proposal (items as kind, source and text; folders as end and why; the ledger; a group call;
+   the oddity label) plans with no wait, its word flaw a warning; at depth the same proposal waits as today */
+test('a default proposal plans clean, a group answer ends its folder whole, and the depth flag keeps the waits', () => {
+  const facts = { project: { dir: 'C:/work/small', slug: 'small', head: 'abc1234def' }, depth: false, board: { workstreams: [{ id: 'WS-9', name: 'Old line' }] }, instructions: { files: [{ file: 'CLAUDE.md', read: 'start' }] },
+    claude: [{ file: 'CLAUDE.md', line: 3, clause: 'Never force-push main.' }, { file: 'CLAUDE.md', line: 5, clause: 'The API listens on port 8080.' }],
+    ruleFiles: [{ file: 'docs/ws-1/handoff/rules.md', kind: 'handoff', loads: [{ by: 'handoff', from: 'docs/ws-1/handoff/README.md:4' }] }, { file: 'notes/loose.md', kind: 'named', loads: [] }] };
+  const small = {
+    items: [
+      { kind: 'rule', text: 'Never force-push main.', source: { file: 'CLAUDE.md', line: 3 } },
+      { kind: 'decision', text: 'The retry stays at three on purpose: the vendor rate-limits a fourth.', oddity: true, fields: { detail: 'Row D4 of docs/decisions.md.' }, source: { file: 'docs/decisions.md', line: 4 } },
+      { kind: 'knowledge', text: 'The build cache survives a clean.', fields: { oddity: true }, source: { file: 'docs/notes.md', line: 2 } },
+      { kind: 'rule', text: 'Opus authors the views.', source: { file: 'docs/ws-1/handoff/rules.md', line: 6 } },
+    ],
+    folders: [{ path: 'notes/', end: 'delete', why: 'old notes', workstream: 'WS-9' }],
+    claude: [{ file: 'CLAUDE.md', line: 3, clause: 'Never force-push main.', fate: 'rule', item: 'rule:CLAUDE.md#L3' }, { file: 'CLAUDE.md', line: 5, clause: 'The API listens on port 8080.', fate: 'keep' }],
+    calls: [{ id: 'history', ask: 'Drop the workstream logs with their folder?', count: 40, folders: ['docs/ws-1/'], pick: 'drop', answer: 'drop' }],
+  };
+  const opts = { readVersion: () => '', readFile: () => '' };
+  const plan = buildPlan(withFacts(small, facts), opts);
+  assert.deepEqual([plan.depth, plan.pending, plan.warnings.map((w) => w.item)], [false, [], ['decision:docs/decisions.md#L4']]);
+  assert.ok(plan.steps.find((s) => s.id === 'decision:docs/decisions.md#L4').stdin.labels.includes('oddity'));
+  const fact = plan.steps.find((s) => s.id === 'knowledge:docs/notes.md#L2').args;
+  assert.ok(fact.some((a, i) => a === 'oddity' && fact[i - 1] === '--label'));
+  /* the group's item leaves on the answer, its folder ends whole and is read by nobody; a file nothing loads is never read */
+  const group = 'rule:docs/ws-1/handoff/rules.md#L6';
+  assert.deepEqual([plan.left, plan.items.find((x) => x.id === group).dropped, plan.backed, plan.readWhole, plan.judged, plan.answers[0].group], [[group], 'history', [{ path: 'docs/ws-1', call: 'history' }], undefined, [], 'drop']);
+  const cov = coverage(plan.items.filter((x) => x.dropped), { manifest: { imports: [] }, backed: plan.backed, whole: ['docs/ws-1/handoff/rules.md'], readFile: () => '- Opus authors.\n- Sonnet sweeps.\n' });
+  assert.deepEqual(cov.sources.map((s) => [s.file, s.backed, s.gaps.length]), [['docs/ws-1/handoff/rules.md', 1, 0], ['docs/ws-1/', 1, 0]]);
+  /* one history pointer per workstream, naming its folders that leave and the commit that holds them;
+     a later keep that empties one drops it with the group, so --undo --group takes it back */
+  const pointers = plan.steps.filter((s) => s.id.startsWith('history:'));
+  assert.deepEqual(pointers.map((s) => [s.id, s.args.filter((a, i) => s.args[i - 1] === '--file')]), [['history:WS-9', ['(read) notes/**']], ['history:small', ['(read) docs/ws-1/**']]]);
+  assert.match(pointers[0].body, /git show abc1234def:<file>[\s\S]*`notes`: old notes/);
+  assert.deepEqual(plan.items.find((x) => x.id === 'history:WS-9').source, { commit: 'abc1234def' });
+  /* a doctor fix sending a folder to history gets its line in the pointer too */
+  const sent = { id: 'checkup:repo:scratch', kind: 'fix', title: 'scratch/', fields: { fix: { after: { home: 'history', path: 'scratch', what: 'stale runs' } } } };
+  const doc = buildPlan(withFacts({ ...small, items: [...small.items, sent] }, facts), opts).steps.find((s) => s.id === 'history:small');
+  assert.ok(doc.args.includes('(read) scratch/**') && /`scratch`: stale runs/.test(doc.body), doc.body);
+  const kept = buildPlan(withFacts({ ...small, calls: [{ ...small.calls[0], answer: 'keep' }] }, facts), opts);
+  assert.deepEqual([kept.steps.filter((s) => s.id.startsWith('history:')).map((s) => s.id), kept.items.find((x) => x.id === 'history:small').dropped], [['history:WS-9'], 'history']);
+  /* a rerun that retires another folder of a workstream amends its held pointer with that folder alone, and the
+     amend's undo puts back the text apply read before it */
+  const held = { ...facts, board: { ...facts.board, imported: [{ id: 'K-3', refs: ['onboard:history:WS-9'] }], knowledge: [{ id: 'K-3', name: 'pointer', files: ['(read) notes/**'] }] } };
+  const later = buildPlan(withFacts({ ...small, folders: [...small.folders, { path: 'old/', end: 'delete', why: 'old runs', workstream: 'WS-9' }] }, held), opts);
+  const amend = later.steps.find((s) => s.id === 'history:WS-9@amend');
+  const files = later.steps.find((s) => s.id === 'history:WS-9@files');
+  assert.deepEqual([later.steps.some((s) => s.id === 'history:WS-9'), amend.target, files.args.filter((a, i) => files.args[i - 1] === '--add-file')], [false, 'K-3', ['(read) old/**']]);
+  assert.ok(/`old`: old runs/.test(amend.body) && !amend.body.includes('`notes`'), amend.body);
+  assert.ok(!buildPlan(withFacts(small, held), opts).steps.some((s) => s.id.startsWith('history:WS-9')), 'a pointer naming every folder is held as it is');
+  assert.deepEqual([undoArgs({ ...amend, was: { body: 'Old text.' } }, 'K-3', 'import:small'), undoArgs(files, 'K-3', 'import:small')],
+    [['knowledge', 'edit', 'K-3', '--body', 'Old text.'], ['knowledge', 'edit', 'K-3', '--remove-file', '(read) old/**']]);
+  /* at depth the word flaw waits, the kept clause is judged and the loose file is read whole */
+  const deep = buildPlan(withFacts({ ...small, depth: true }, facts), opts);
+  assert.deepEqual([deep.pending.map((x) => x.item), deep.judged.map((j) => j.kind), deep.readWhole], [['decision:docs/decisions.md#L4'], ['clause'], ['notes/loose.md']]);
 });
 
 test("a task's after and runBy become the track's layout; a question is tied to its track and gates; a parked track waits on a task", () => {
@@ -360,7 +491,7 @@ test('the write runs every step in this one process through the CLI\'s own code,
   const board = 'file:' + join(base, 'board.db').replace(/\\/g, '/');
   const r = await applyPlan(work, { board, cli: join(base, 'cli', 'bin', 'askerdo.mjs'), log: () => {} });
   assert.deepEqual(r.refusals, []);
-  assert.deepEqual([r.timing.steps, r.scratch], [7, []], 'the placement ran on the stand-in track, nothing left out');
+  assert.deepEqual([r.timing.steps, r.scratch], [8, []], 'the placement ran on the stand-in track, nothing left out');
   /* the approved plan files whole, so a placement step carries the user's mark the board never asks about */
   assert.deepEqual(asApproved(['task', 'edit', 'T-1', '--track', 'TR-7', '--tier', '3', '--session', 's1'], 'go').slice(-2), ['--user', 'go']);
   assert.ok(!asApproved(['ws', 'create', '--session', 's1'], 'go').includes('--user'), 'only a filing step');
@@ -384,7 +515,7 @@ test('the write runs every step in this one process through the CLI\'s own code,
   mkdirSync(join(base, 'bodies'));
   writeFileSync(join(base, body), '# X\n\n- Ask the user before a schema migration.\n- Never deploy on a Friday.\n');
   const xRule = (n, slug, text) => ({ id: 'rule:x#L' + n, kind: 'rule', title: text, text, fields: { text, slug }, source: src(body, n) });
-  const fx = { version: 1, project: { dir: p.project.dir, slug: 'fx' }, workstream: {}, calls: [], claude: [], folders: [{ path: 'bodies/', end: 'delete', why: 'converted' }], textFiles: [body],
+  const fx = { version: 1, project: { dir: p.project.dir, slug: 'fx', head: 'c0ffee1234' }, workstream: {}, calls: [], claude: [], folders: [{ path: 'bodies/', end: 'delete', why: 'converted' }], loadedFiles: [body],
     items: [xRule(3, 'ask-before-migration', 'Ask the user before a schema migration.')] };
   const work2 = join(base, 'work2');
   mkdirSync(work2);

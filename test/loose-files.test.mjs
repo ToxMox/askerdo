@@ -1,12 +1,17 @@
 /* Loose files and the gentler repo check, this PC's half: a track
  * handoff's snapshot and stop rules, dispositions kept in the data dir and
  * printed, the kept line a kickoff prints, and the merged agent worktrees a write removes. */
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fixtureCopy, tempDir } from './helpers/sandbox.mjs';
+import { slicer } from './helpers/shard.mjs';
+
+/* run as two files: the worktree case and the snapshot case each take a quarter minute in a loaded suite */
+const mine = slicer(2);
+const test = (...args) => (mine() ? nodeTest(...args) : undefined);
 
 process.removeAllListeners('warning');
 process.env.ASKERDO_SANDBOX_HOME = tempDir('askerdo-loose-');
@@ -75,60 +80,6 @@ test('the snapshot: a dirty file left as it was passes, new commits on top pass,
   execFileSync('git', ['-C', tree, 'checkout', '-q', '-b', 'elsewhere']);
   const off = (await lf.checkSnapshotAsync(e)).problems.join('; ');
   assert.ok(off.includes(tree) && off.includes('elsewhere'), off);
-});
-
-test('dispositions: the payload\'s are kept here, a file left out is undecided with what was seen, and the kickoff names only what is kept, asking nothing', async () => {
-  const dir = tempDir('askerdo-loose-');
-  const rp = repo();
-  rp.put('notes.md', 'first line\nsecond line\n');
-  rp.put('run.log', 'x\n');
-  rp.put('scratch/a.txt', 'a\n');
-  rp.put('new.mjs', 'export {};\n');
-  rp.put('mystery.bin', 'abc');
-  const w = await handOff(dir, rp.dir, [
-    { path: 'notes.md', disposition: 'keep', reason: 'the user reads it Monday' },
-    { path: 'scratch', disposition: 'delete' },
-    { path: 'new.mjs', disposition: 'commit' },
-    { path: 'gone.txt', disposition: 'ignore' },
-  ], atDay(0));
-  const files = w.entries[0].files;
-  assert.deepEqual(files.map((f) => [f.path, f.disposition]), [
-    ['mystery.bin', 'undecided'], ['new.mjs', 'commit'], ['notes.md', 'keep'], ['run.log', 'undecided'], ['scratch/', 'delete'],
-  ]);
-  assert.equal(files.find((f) => f.path === 'notes.md').review, '2026-10-26', 'a kept file is reviewed in 7 days by default');
-  const log = files.find((f) => f.path === 'run.log');
-  assert.equal(log.suggest, 'delete');
-  assert.match(log.note, /^run\.log: 2 bytes, .*"x"$/);
-  assert.deepEqual(w.undecided.map((u) => u.path), ['mystery.bin', 'run.log'], 'the write names what it left undecided');
-  assert.deepEqual(w.unmatched, [rp.dir + ': gone.txt']);
-  /* a resume asks nothing; its one line names what is kept and why */
-  const lines = lf.keptKickoff(w.entries, '2026-10-19');
-  assert.equal(lines.length, 1);
-  assert.ok(lines[0].includes('notes.md (the user reads it Monday)') && !/mystery|new\.mjs|ask tool/.test(lines[0]));
-  const kept = lf.readKept(dir, rp.dir);
-  assert.deepEqual(kept.map((k) => [k.path, k.disposition, k.review]), [
-    ['mystery.bin', 'undecided', '2026-10-26'], ['new.mjs', 'commit', '2026-10-19'], ['notes.md', 'keep', '2026-10-26'],
-    ['run.log', 'undecided', '2026-10-26'], ['scratch/', 'delete', '2026-10-19'],
-  ]);
-  assert.equal(kept[2].reason, 'the user reads it Monday');
-  assert.equal(kept[4].suggest, 'delete');
-  /* the next handoff carries the kept decisions and keeps the review date */
-  const w2 = await handOff(dir, rp.dir, [{ path: 'notes.md', disposition: 'keep', reason: 'still' }], atDay(2));
-  const next = Object.fromEntries(w2.entries[0].files.map((f) => [f.path, f]));
-  assert.equal(next['notes.md'].review, '2026-10-26');
-  assert.equal(next['mystery.bin'].disposition, 'undecided');
-  assert.equal(next['new.mjs'].disposition, 'commit', 'a proposal carries until answered');
-  /* past its review day the kept file is marked for the next handoff to ask about; a file gone since is left out */
-  rmSync(join(rp.dir, 'run.log'));
-  const due = lf.keptKickoff(w2.entries, '2026-10-26')[0];
-  assert.match(due, /notes\.md \(still; [^)]*next handoff/);
-  assert.equal(lf.dueFiles(w2.entries, '2026-10-26').length, 4, 'the pane counts the same');
-  /* a handoff past the review day names the due keep and the proposals, carried with their reasons; kept again, it takes a new date */
-  const w3 = await handOff(dir, rp.dir, null, atDay(8));
-  assert.deepEqual(w3.due.map((f) => [f.path, f.disposition, f.reason || '']), [['new.mjs', 'commit', ''], ['notes.md', 'keep', 'still'], ['scratch/', 'delete', '']]);
-  const w4 = await handOff(dir, rp.dir, [{ path: 'notes.md', disposition: 'keep', reason: 'still' }], atDay(8));
-  assert.equal(w4.entries[0].files.find((f) => f.path === 'notes.md').review, '2026-11-03');
-  assert.ok(!w4.due.some((f) => f.path === 'notes.md'), 'kept again, it is not due');
 });
 
 test('the worktrees and merged branches are grouped and named at the write; the write removes only merged, clean agent ones', async () => {
@@ -216,6 +167,60 @@ test('the worktrees and merged branches are grouped and named at the write; the 
   assert.ok(rp.git('branch', '--list', 'worktree-agent-spare'));
   const outer = await write(rp.dir);
   assert.ok(outer.removed.some((x) => x.branch === 'worktree-agent-spare') && !rp.git('branch', '--list', 'worktree-agent-spare'));
+});
+
+test('dispositions: the payload\'s are kept here, a file left out is undecided with what was seen, and the kickoff names only what is kept, asking nothing', async () => {
+  const dir = tempDir('askerdo-loose-');
+  const rp = repo();
+  rp.put('notes.md', 'first line\nsecond line\n');
+  rp.put('run.log', 'x\n');
+  rp.put('scratch/a.txt', 'a\n');
+  rp.put('new.mjs', 'export {};\n');
+  rp.put('mystery.bin', 'abc');
+  const w = await handOff(dir, rp.dir, [
+    { path: 'notes.md', disposition: 'keep', reason: 'the user reads it Monday' },
+    { path: 'scratch', disposition: 'delete' },
+    { path: 'new.mjs', disposition: 'commit' },
+    { path: 'gone.txt', disposition: 'ignore' },
+  ], atDay(0));
+  const files = w.entries[0].files;
+  assert.deepEqual(files.map((f) => [f.path, f.disposition]), [
+    ['mystery.bin', 'undecided'], ['new.mjs', 'commit'], ['notes.md', 'keep'], ['run.log', 'undecided'], ['scratch/', 'delete'],
+  ]);
+  assert.equal(files.find((f) => f.path === 'notes.md').review, '2026-10-26', 'a kept file is reviewed in 7 days by default');
+  const log = files.find((f) => f.path === 'run.log');
+  assert.equal(log.suggest, 'delete');
+  assert.match(log.note, /^run\.log: 2 bytes, .*"x"$/);
+  assert.deepEqual(w.undecided.map((u) => u.path), ['mystery.bin', 'run.log'], 'the write names what it left undecided');
+  assert.deepEqual(w.unmatched, [rp.dir + ': gone.txt']);
+  /* a resume asks nothing; its one line names what is kept and why */
+  const lines = lf.keptKickoff(w.entries, '2026-10-19');
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].includes('notes.md (the user reads it Monday)') && !/mystery|new\.mjs|ask tool/.test(lines[0]));
+  const kept = lf.readKept(dir, rp.dir);
+  assert.deepEqual(kept.map((k) => [k.path, k.disposition, k.review]), [
+    ['mystery.bin', 'undecided', '2026-10-26'], ['new.mjs', 'commit', '2026-10-19'], ['notes.md', 'keep', '2026-10-26'],
+    ['run.log', 'undecided', '2026-10-26'], ['scratch/', 'delete', '2026-10-19'],
+  ]);
+  assert.equal(kept[2].reason, 'the user reads it Monday');
+  assert.equal(kept[4].suggest, 'delete');
+  /* the next handoff carries the kept decisions and keeps the review date */
+  const w2 = await handOff(dir, rp.dir, [{ path: 'notes.md', disposition: 'keep', reason: 'still' }], atDay(2));
+  const next = Object.fromEntries(w2.entries[0].files.map((f) => [f.path, f]));
+  assert.equal(next['notes.md'].review, '2026-10-26');
+  assert.equal(next['mystery.bin'].disposition, 'undecided');
+  assert.equal(next['new.mjs'].disposition, 'commit', 'a proposal carries until answered');
+  /* past its review day the kept file is marked for the next handoff to ask about; a file gone since is left out */
+  rmSync(join(rp.dir, 'run.log'));
+  const due = lf.keptKickoff(w2.entries, '2026-10-26')[0];
+  assert.match(due, /notes\.md \(still; [^)]*next handoff/);
+  assert.equal(lf.dueFiles(w2.entries, '2026-10-26').length, 4, 'the pane counts the same');
+  /* a handoff past the review day names the due keep and the proposals, carried with their reasons; kept again, it takes a new date */
+  const w3 = await handOff(dir, rp.dir, null, atDay(8));
+  assert.deepEqual(w3.due.map((f) => [f.path, f.disposition, f.reason || '']), [['new.mjs', 'commit', ''], ['notes.md', 'keep', 'still'], ['scratch/', 'delete', '']]);
+  const w4 = await handOff(dir, rp.dir, [{ path: 'notes.md', disposition: 'keep', reason: 'still' }], atDay(8));
+  assert.equal(w4.entries[0].files.find((f) => f.path === 'notes.md').review, '2026-11-03');
+  assert.ok(!w4.due.some((f) => f.path === 'notes.md'), 'kept again, it is not due');
 });
 
 test('dispositions are refused when malformed', () => {

@@ -64,7 +64,7 @@ function countsText(c) {
 function rulingRow(x, now) {
   const what = x.kind === 'question' ? 'answered ' + dayText(x.at, now) : (x.kind === 'decision' ? 'decision' : x.type || 'knowledge') + (x.at ? ', ' + dayText(x.at, now) : '');
   const words = x.words ? ': ' + esc(x.words.length > 220 ? x.words.slice(0, 217).replace(/\s+\S*$/, '') + '...' : x.words) : '';
-  return '<li><div>' + idLink(x.id, x.key) + ' ' + esc(x.name) + (x.status === 'superseded' ? ' <span class="chip">superseded</span>' : '') + '</div>'
+  return '<li><div>' + idLink(x.id, x.key) + ' ' + esc(x.name) + (x.status && x.status !== 'active' ? ' <span class="chip">' + esc(x.status) + '</span>' : '') + '</div>'
     + '<div class="dim" style="font-size:13.5px">' + esc(what) + words + '</div></li>';
 }
 

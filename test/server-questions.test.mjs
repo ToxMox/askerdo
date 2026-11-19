@@ -179,6 +179,13 @@ test('a due snooze date wakes on a read, a trigger stays until woken by hand, an
   assert.deepEqual(ids(q.list(db, { snoozed: true }, null, on('2026-11-30'))), ['Q2'], 'a trigger never wakes by date');
   q.wake(db, { id: 'Q2' }, null, on('2026-11-30'));
   assert.equal(q.show(db, 'Q2', null, on('2026-11-30')).status, 'open');
+  /* a dropped question reopens, snoozed again on the conditions given (the doctor's undo of a drop) */
+  q.snooze(db, { id: 'Q1', wakeOn: 'Q2' }, null, on('2026-11-30'));
+  q.drop(db, { id: 'Q2', note: 'stale' }, null, on('2026-11-30'));
+  /* the drop woke Q1, which the reopen leaves standing and names */
+  assert.deepEqual(w.reopenRecord(db, { id: 'Q2', trigger: 'the build lands' }, null, on('2026-11-30')).stands.woken, ['Q1']);
+  const back = q.show(db, 'Q2', null, on('2026-11-30'));
+  assert.deepEqual([back.status, back.snooze && back.snooze.trigger, back.answered], ['snoozed', 'the build lands', undefined]);
 
   /* a question waits on a track and wakes when it finishes */
   putRecord(db, { key: 'ws000001', kind: 'workstream', fields: { id: 'WS-1', key: 'ws000001', name: 'Board', status: 'open', labelHistory: ['WS-1 2026-10-25'] }, body: '' });

@@ -15,7 +15,7 @@ import { boardSnapshot, workingSet } from './snapshot.mjs';
 import { readHandoff, resumeCutoff, resumeTrack, shelf, trackHandoffs, trackKickoff, updateHandoff, writeHandoff } from './handoffs.mjs';
 import {
   amendKnowledge, closeRecord, createKnowledge, editKnowledge, fileRecord, editRecord, heldTask, listWork, noteRecord, readRecord, reopenRecord, supersedeKnowledge,
-  taskUpdate, waitsOn,
+  reinstateKnowledge, retireKnowledge, taskUpdate, waitsOn,
 } from './work.mjs';
 import {
   answer, drop, editQuestion, list, namesLine, peekOpenQuestions, peekSessionScope, register, show, snooze, subscribe, surface, wake,
@@ -35,6 +35,7 @@ import { overrideDecide, overrideRequest, overrideUnscrub, overrideView } from '
 import { projectsRename } from './projects.mjs';
 import { commitLink, commitMove, coverage, reviewCovers } from './coverage.mjs';
 import { conversionDrop, conversionMap, conversionPut } from './conversion.mjs';
+import { importPurge } from './purge.mjs';
 import { pcMap } from './pc-maps.mjs';
 import { taskBlock } from './task-block.mjs';
 
@@ -63,7 +64,7 @@ const GROUPS = [
   { resolveLabel, resolveLegacy },
   { boardSnapshot, workingSet },
   /* amend, edit while unused, the read log and the text history */
-  { amendKnowledge, editKnowledge, read: markRead, recordHistory },
+  { amendKnowledge, editKnowledge, retireKnowledge, reinstateKnowledge, read: markRead, recordHistory },
   { bandCalls, bandKeep, upkeepDryRun, upkeepSwitch },
   { applyPicture },
   /* the redrawn workstream picture's reads */
@@ -76,6 +77,8 @@ const GROUPS = [
   { commitLink, commitMove, reviewCovers, coverage },
   /* each project's conversion map, keyed by source */
   { conversionMap, conversionPut, conversionDrop },
+  /* the records an undone import or a dropped group wrote, deleted on the user's yes */
+  { importPurge },
   /* each PC's project map, so a link opens on a PC whose folders differ */
   { pcMap },
   /* what a task holds now, for a dispatch or any reader */

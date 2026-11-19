@@ -1,7 +1,7 @@
 /* the forms a workflow file is cited by, in one pure module (no fs, no git) for the survey's grep, the
-   plan's rule pend, the handover's repoint and the doctor. A piece is { file, bare?, heads?, entries? }: bare
+   plan's rule pend, the handover's repoint (on SESSION_READS by default) and the doctor. A piece is { file, bare?, heads?, entries? }: bare
    false when another file shares its name, heads its headings ({ name, line } or strings), entries its log ids.
-   citesIn(text, file, pieces) -> [{ of, line, form, text, anchor, tool, at, match }] */
+   citesIn(text, file, pieces, { root }) -> [{ of, line, form, text, anchor, tool, at, match }] */
 
 const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -12,11 +12,32 @@ const TOOL_LINE = /console\.log|\bprint|\becho\b|Write-Host|stderr/i;
 const ID_SHAPE = /^([A-Za-z]{1,4})(-?)\d+$/;
 /* left of a path or a name: no path character, so a longer path never counts */
 const LEFT = '(?<![\\w/\\\\.-])';
+/* the files a session reads (instruction files, cards, skills, commands, agents and rule files), the
+   only ones the handover's repoint edits by default; cites in code and other documents stay as written */
+export const SESSION_READS = /(?:^|\/)(?:CLAUDE(?:\.local)?\.md|AGENTS\.md)$|^docs\/procedures\/[^/]+\.md$|^\.(?:claude|agents)\/(?:skills|commands|agents|rules)\//i;
 /* the forms in the order they win where two cover the same words */
 export const FORMS = ['path', 'entry', 'section', 'name', 'possessive', 'article'];
 
-/* The patterns of one piece. */
-export function formsOf(piece) {
+/* The project root as a cite writes it before a root path ("C:/repo/docs/a.md"): either slash, a Windows root in
+   either case; its trailing slash included. null for no root. */
+export function rootRe(root) {
+  const segs = String(root || '').replace(/[/\\]+$/, '').split(/[/\\]+/);
+  if (!segs.join('')) return null;
+  const win = /^[A-Za-z]:$/.test(segs[0]);
+  const ci = (s) => (win ? s.replace(/[A-Za-z]/g, (c) => '[' + c.toUpperCase() + c.toLowerCase() + ']') : s);
+  return '(?<![\\w.-])' + segs.map((s) => ci(esc(s))).join('[/\\\\]') + '[/\\\\]';
+}
+/* a path written from the project root: the root as written and the root path after it, or null */
+export function fromRoot(path, root) {
+  const re = rootRe(root);
+  const m = re ? new RegExp('^' + re).exec(String(path)) : null;
+  return m && String(path).length > m[0].length ? { lead: m[0], path: String(path).slice(m[0].length) } : null;
+}
+/* left of a path: LEFT, or the project root right before it (the match leaves the root out, so a rewrite keeps it) */
+const leftOf = (root) => { const re = rootRe(root); return re ? '(?:(?<=' + re + ')|' + LEFT + ')' : LEFT; };
+
+/* The patterns of one piece; `root` reads a path written from the project root too. */
+export function formsOf(piece, { root = null } = {}) {
   const file = String(piece.file);
   const base = file.split('/').pop();
   const stem = base.replace(/\.[^.]+$/, '');
@@ -36,7 +57,7 @@ export function formsOf(piece) {
   heads.sort((a, b) => b.say.length - a.say.length);
   return {
     file, base, stem: cap, heads,
-    path: new RegExp(LEFT + '(?:\\./)?' + esc(file).replace(/\//g, '[/\\\\]') + '(?![\\w/-]|\\.\\w)', 'g'),
+    path: new RegExp(leftOf(root) + '(?:\\./)?' + esc(file).replace(/\//g, '[/\\\\]') + '(?![\\w/-]|\\.\\w)', 'g'),
     name: piece.bare === false ? null : new RegExp(LEFT + esc(base) + '(?![\\w/-]|\\.\\w)', 'g'),
     entry: cap && id ? new RegExp(LEFT + esc(cap) + '[,:]?\\s+(?:entry\\s+)?(' + id + ')(?![\\w-])', 'g') : null,
     bareId: id ? new RegExp('(?<![\\w/.-])(' + id + ')(?![\\w-])', 'g') : null,
@@ -60,20 +81,20 @@ function literals(line) {
 
 /* Every cite of a piece in a text, one per span (the earlier form wins an overlap). `file` is the citing file,
    whose own cites do not count; null checks a text that is no file (a rule line). */
-export function citesIn(text, file, pieces) {
-  return citer(pieces)(text, file);
+export function citesIn(text, file, pieces, opts = {}) {
+  return citer(pieces, opts)(text, file);
 }
 
 /* citesIn over many texts with the same pieces: each piece's patterns are built once, and a text reads only the
    pieces whose stem (else file name) it holds, on the lines that hold it, so a scan scales with the text read
    rather than files times pieces. Every form's match holds the stem whole, bounded on both sides, so each word
    of the stem is a whole word of the text: the words index the pieces. */
-export function citer(pieces) {
+export function citer(pieces, { root = null } = {}) {
   const byWord = new Map();
   const always = [];
   (pieces || []).forEach((piece, order) => {
     if (!piece) return;
-    const f = piece.forms || formsOf(piece);
+    const f = piece.forms || formsOf(piece, { root });
     const tests = [f.path, f.name, f.stem && new RegExp(LEFT + esc(f.stem) + '(?![\\w])')].filter(Boolean).map((re) => new RegExp(re.source));
     const key = f.stem || f.base;
     const words = key.match(/\w+/g) || [];
@@ -142,6 +163,18 @@ export function citer(pieces) {
   };
 }
 
+/* of the going files one bare name may mean, the one the nearest folder above the citing file holds when it
+   holds only one; null when that folder holds several, so nothing settles which */
+export function nearestOf(file, cands) {
+  const segs = String(file).split('/').slice(0, -1);
+  for (let k = segs.length; k >= 0; k--) {
+    const pre = segs.slice(0, k).join('/');
+    const under = cands.filter((c) => !pre || c.startsWith(pre + '/'));
+    if (under.length) return under.length === 1 ? under[0] : null;
+  }
+  return null;
+}
+
 export const MD = /\.(?:md|markdown|mdx)$/i;
 /* markdown's fenced lines, by index */
 export function fencedLines(lines) {
@@ -160,10 +193,11 @@ export const isGlob = (path, rest) => {
 };
 /* a unit that goes, cited by its path; a one-segment name with no dot is also a word ("old"), so it counts
    only with its slash, a path after it, or backticks round it */
-export function folderRe(path) {
+export function folderRe(path, root = null) {
   const p = esc(path);
-  return new RegExp(/^[^/.]+$/.test(path) ? '(?<![\\w/\\\\.-])(?:\\./)?' + p + '/[\\w./-]*(?![\\w-])|(?<=`)(?:\\./)?' + p + '(?=`)'
-    : '(?<![\\w/\\\\.-])(?:\\./)?' + p + '(?:/[\\w./-]*)?(?![\\w-])', 'g');
+  const left = leftOf(root);
+  return new RegExp(/^[^/.]+$/.test(path) ? left + '(?:\\./)?' + p + '/[\\w./-]*(?![\\w-])|(?<=`)(?:\\./)?' + p + '(?=`)'
+    : left + '(?:\\./)?' + p + '(?:/[\\w./-]*)?(?![\\w-])', 'g');
 }
 /* a markdown line's inline links and images: the link's span, and its target's path (no <>, anchor or title)
    at [at, at + len) inside the target's span [at, tEnd) */

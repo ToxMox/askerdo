@@ -89,6 +89,25 @@ describe('the procedure watcher', () => {
     await w.clock.settle()
     const ranArgs = () => w.cliRuns().filter((x: any) => x.args[0] === 'proc' && x.args[1] === 'ran').map((x: any) => x.args)
     expect(ranArgs()).toEqual([])
+    /* a sandboxed run, or one in an agent's worktree, is a test and records nothing */
+    await w.call($, { tool: 'Bash', command: 'ASKERDO_ROOT=/s/askerdo ASKERDO_SANDBOX_HOME=/s/h node --test test/a.test.mjs', agentId: 'ag-8' })
+    expect(pointers(w, 'ag-8').at(-1)).toContain('records no run')
+    await w.call($, { tool: 'Bash', command: 'cd C:/src/proj/.claude/worktrees/agent-ab12 && node --test test/a.test.mjs', agentId: 'ag-9' })
+    /* an agent with no worktree is looked up once, not on each matching call */
+    const lists = () => w.gitRuns.filter((a: string[]) => a.includes('worktree')).length
+    const looked = lists()
+    await w.call($, { tool: 'Bash', command: 'cd C:/src/proj/.claude/worktrees/agent-ab12 && node --test test/b.test.mjs', agentId: 'ag-9' })
+    expect([looked > 0, lists() - looked]).toEqual([true, 0])
+    /* an agent with no run is found in its worktree by its id */
+    const WT = 'C:/src/proj/.claude/worktrees/agent-ag-7'
+    const git = w.git
+    w.git = (argv: string[], cwd?: string) => argv.includes('worktree')
+      ? { exitCode: 0, stdout: 'worktree C:/src/proj\nHEAD ' + 'a'.repeat(40) + '\nbranch refs/heads/main\n\nworktree ' + WT + '\nHEAD ' + 'b'.repeat(40) + '\nbranch refs/heads/worktree-agent-ag-7\n\n', stderr: '' }
+      : argv.includes(WT) ? { exitCode: 0, stdout: WT + '\n' + 'b'.repeat(40) + '\nworktree-agent-ag-7\n', stderr: '' } : git(argv, cwd)
+    await w.call($, { tool: 'Bash', command: 'node --test test/a.test.mjs', agentId: 'ag-7' })
+    w.git = git
+    await w.clock.settle()
+    expect(ranArgs()).toEqual([])
     await w.call($, { tool: 'Bash', command: 'node --test test/a.test.mjs' })
     await w.call($, { tool: 'Bash', command: 'node --test test/b.test.mjs' })
     await w.clock.settle()

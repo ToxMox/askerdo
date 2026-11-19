@@ -959,27 +959,39 @@ function endingOf(db, link, d) {
   return { ending: WAKE_ENDINGS[e.kind].includes(status) ? status : '', ref: e.key, label: e.label };
 }
 
-/* snooze(db, { id, until, trigger, wakeOn }, actor): the three conditions combine. */
-export function snooze(db, input = {}, actor, opts = {}) {
-  const { id, until, trigger, wakeOn } = input;
-  if (until === undefined && trigger === undefined && wakeOn === undefined) throw new UsageError('snooze needs at least one of --until, --trigger or --wake-on');
+/* --until, --trigger and --wake-on, read before the store is; null when none is given */
+function wakeInput({ until, trigger, wakeOn }) {
+  if (until === undefined && trigger === undefined && wakeOn === undefined) return null;
   if (until !== undefined && !DAY_RE.test(until)) throw new UsageError('--until must be YYYY-MM-DD');
   if (trigger !== undefined && !String(trigger).trim()) throw new UsageError('--trigger needs text');
-  const link = wakeOn === undefined ? null : parseWakeOn(wakeOn);
+  return { until, trigger, link: wakeOn === undefined ? null : parseWakeOn(wakeOn) };
+}
+
+/* the snooze a question stores, its link checked against the board */
+function snoozeOf(db, q, w, d) {
+  const link = w.link && { ...w.link };
+  if (link) {
+    const end = endingOf(db, link, d);
+    if (end.ref === q.key) throw new UsageError('--wake-on names ' + q.front.id + ' itself; a question cannot wait on its own ending');
+    if (end.ending) throw new UsageError(end.label + ' is already ' + end.ending + '; a wake trigger names an ending that has not happened yet');
+    link.wakeOn = end.ref;
+  }
+  return { ...(w.until !== undefined ? { until: w.until } : {}), ...(w.trigger !== undefined ? { trigger: String(w.trigger).trim() } : {}), ...(link || {}) };
+}
+
+/* snooze(db, { id, until, trigger, wakeOn }, actor): the three conditions combine. */
+export function snooze(db, input = {}, actor, opts = {}) {
+  const w = wakeInput(input);
+  if (!w) throw new UsageError('snooze needs at least one of --until, --trigger or --wake-on');
   const who = actor || (input.user ? { user: input.user } : {});
   return tx(db, () => {
     const d = today(opts);
-    const q = loadQuestion(db, id, d);
+    const q = loadQuestion(db, input.id, d);
     if (q.front.status !== 'open' && q.front.status !== 'snoozed') throw new UsageError(q.front.id + ' is ' + q.front.status + '; only open questions snooze');
-    if (link) {
-      const end = endingOf(db, link, d);
-      if (end.ref === q.key) throw new UsageError('--wake-on names ' + q.front.id + ' itself; a question cannot wait on its own ending');
-      if (end.ending) throw new UsageError(end.label + ' is already ' + end.ending + '; a wake trigger names an ending that has not happened yet');
-      link.wakeOn = end.ref;
-    }
+    const snoozed = snoozeOf(db, q, w, d);
     const was = snapFront(q.front);
     q.front.status = 'snoozed';
-    q.front.snooze = { ...(until !== undefined ? { until } : {}), ...(trigger !== undefined ? { trigger: String(trigger).trim() } : {}), ...(link || {}) };
+    q.front.snooze = snoozed;
     delete q.front.wokeBy;
     saveQ(db, q);
     log(db, who, { at: stamp(opts), verb: 'snooze', front: q.front, changes: changesOf(was, q.front) });
@@ -999,6 +1011,46 @@ export function wake(db, input = {}, actor, opts = {}) {
     log(db, actor, { at: stamp(opts), verb: 'wake', front: q.front, changes: changesOf(was, q.front) });
     return { id: q.front.id, status: 'open' };
   });
+}
+
+/* A dropped question back to open, or to snoozed with the wake conditions given (the doctor's undo of a drop) */
+export function reopenQuestion(db, input = {}, actor, opts = {}) {
+  const w = wakeInput(input);
+  return tx(db, () => {
+    const d = today(opts);
+    const q = loadQuestion(db, input.id, d);
+    if (q.front.status !== 'dropped') throw new UsageError(q.front.id + ' is ' + q.front.status + ', not dropped; only a dropped question reopens');
+    const snoozed = w ? snoozeOf(db, q, w, d) : null;
+    const stands = dropStands(db, q);
+    const was = snapFront(q.front);
+    q.front.status = snoozed ? 'snoozed' : 'open';
+    if (snoozed) q.front.snooze = snoozed;
+    delete q.front.answered;
+    if (isPlacement(q.front) && q.front.placement.outcome) {
+      const { outcome, ...rest } = q.front.placement;
+      q.front.placement = rest;
+    }
+    saveQ(db, q);
+    putNotes(db, q.key, []);
+    log(db, actor, { at: stamp(opts), verb: 'reopen', front: q.front, changes: changesOf(was, q.front) });
+    return { id: q.front.id, status: q.front.status, ...(snoozed ? { snooze: shownFront(db, q.front).snooze } : {}), ...(stands ? { stands } : {}) };
+  });
+}
+
+/* What the drop's own transaction did to other records, which a reopen leaves standing:
+   the questions it woke, the lines it unparked, the tasks it gated that got its note. */
+function dropStands(db, q) {
+  const drop = db.stmt("SELECT seq, at FROM activity WHERE record = ? AND verb = 'drop' ORDER BY seq DESC LIMIT 1").get(q.key);
+  if (!drop) return null;
+  const cause = q.front.id + ' dropped';
+  const rows = db.stmt("SELECT label, kind, verb, json_extract(line, '$.note') AS note FROM activity WHERE seq > ? AND at = ? ORDER BY seq").all(drop.seq, drop.at);
+  const pick = (hit) => [...new Set(rows.filter(hit).map((r) => r.label))];
+  const out = {
+    woken: pick((r) => r.verb === 'wake' && r.note === 'woken by ' + cause),
+    unparked: pick((r) => r.kind === 'track' && r.note === 'unparked: ' + cause),
+    noted: pick((r) => r.verb === 'note' && r.kind === 'task' && String(r.note).startsWith(q.front.id + ' (') && String(r.note).includes(') was dropped')),
+  };
+  return Object.values(out).some((l) => l.length) ? out : null;
 }
 
 /* Every read wakes the date snoozes now due, one row each at one instant, by the

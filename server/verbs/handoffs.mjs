@@ -19,8 +19,8 @@ import { layLeftovers } from './leftovers.mjs';
 import { workersOf } from './runs.mjs';
 import { boardVersion } from '../version.mjs';
 
-/* Today's budgets (lib/handoff-payload.mjs); the PC checks the same first, so
-   these refusals only meet a caller that skipped it. */
+/* Today's budgets (lib/handoff-payload.mjs). A focus, state or whereWeWere over its
+   budget is stored as sent and the PC's result asks for a patch; the request body bounds them. */
 export const FOCUS_MAX = 400;
 export const LINE_MAX = 400;
 export const STATE_BYTES = 10240;
@@ -36,7 +36,6 @@ export const HANDOFF_KEYS = Object.freeze(['id', 'key', 'track', 'pc', 'status',
 /* remote: the repo's shared name, so a PC that holds it at another path finds it */
 const VERIFY_KEYS = ['path', 'remote', 'branch', 'worktree', 'commit', 'ok', 'problems'];
 
-const bytes = (s) => Buffer.byteLength(s, 'utf8');
 /* blank lines and the end trimmed, never a line's leading space: the PC's heading guard is one */
 const NL = String.fromCharCode(10);
 export const edgeTrim = (s) => { const ls = String(s).trimEnd().split(NL); while (ls.length && !ls[0].trim()) ls.shift(); return ls.join(NL); };
@@ -120,11 +119,9 @@ function checkPayload(input) {
   const odd = Object.keys(input).filter((k) => !WRITE_KEYS.includes(k));
   const before = odd.map((k) => RETIRED_KEYS[k]).find(Boolean);
   if (odd.length) e.push(odd.map((k) => 'unknown field "' + k + '"').join('; ') + '; ' + staleToolsLine(boardVersion(), before));
-  if (!text(input.focus) || /[\r\n]/.test(input.focus) || input.focus.trim().length > FOCUS_MAX) e.push('focus is one line of at most ' + FOCUS_MAX);
+  if (!text(input.focus) || /[\r\n]/.test(input.focus)) e.push('focus is one line');
   if (!text(input.state)) e.push('state is required');
-  else if (bytes(input.state.trim()) > STATE_BYTES) e.push('state is over ' + STATE_BYTES + ' bytes');
-  if (input.whereWeWere !== undefined && input.whereWeWere !== null && input.whereWeWere !== ''
-    && (!text(input.whereWeWere) || bytes(input.whereWeWere.trim()) > WHERE_BYTES)) e.push('whereWeWere is text of at most ' + WHERE_BYTES + ' bytes');
+  if (input.whereWeWere !== undefined && input.whereWeWere !== null && input.whereWeWere !== '' && !text(input.whereWeWere)) e.push('whereWeWere is text');
   const waiting = input.waitingOnUser === undefined ? [] : input.waitingOnUser;
   const dropOf = (w) => (w && typeof w === 'object' && !Array.isArray(w) && Object.keys(w).length === 1 ? w.drop : undefined);
   if (!Array.isArray(waiting) || !waiting.every((w) => oneLine(w) || oneLine(dropOf(w)))) e.push('waitingOnUser is a list of lines of at most ' + LINE_MAX + ', or { drop: a carried line }');
@@ -368,9 +365,11 @@ function writeOn(db, input, actor) {
 
 /* a patch's refusals lead with this, as a write's lead with REFUSED */
 export const UPDATE_REFUSED = 'the board refused this update and changed nothing';
-const MAX = { state: STATE_BYTES, where: WHERE_BYTES, line: LINE_MAX };
+const MAX = { state: STATE_BYTES, where: WHERE_BYTES, line: LINE_MAX, focus: FOCUS_MAX };
+/* the byte budgets ask for a patch rather than refuse one */
+const SOFT = { ...MAX, state: Infinity, where: Infinity };
 const HANDOFF_ID = /^TR-\d+\.\d+$/i;
-const textProblems = (state, where, held) => [...stateProblems(state || '', MAX, held), ...(text(where) ? whereProblems(where, MAX) : [])];
+const textProblems = (state, where, held) => [...stateProblems(state || '', SOFT, held), ...(text(where) ? whereProblems(where, SOFT) : [])];
 
 /* updateHandoff(db, { id, session, pc, ops }, actor): the track's last handoff patched in
    place while it waits or is parked, keeping its id and depth (lib/handoff-payload.mjs
@@ -420,7 +419,7 @@ function updateOn(db, input, actor) {
     if (h.fields.pc && pc && pc !== h.fields.pc && ops.some((o) => o.op === 'verifyFirst')) {
       throw new TrackRefusal('the loose-file, worktree and branch lists of ' + h.fields.id + ' stay on ' + h.fields.pc + ', so its verifyFirst is refreshed there');
     }
-    const p = applyOps({ state: h.state, whereWeWere: h.where_we_were, waitingOnUser: waitingOf(h.fields), verify: h.verify }, ops);
+    const p = applyOps({ focus: h.fields.focus, state: h.state, whereWeWere: h.where_we_were, waitingOnUser: waitingOf(h.fields), verify: h.verify }, ops);
     if (p.problems.length) throw new TrackRefusal(p.problems.join('; '));
     /* the write's budgets and prose-order check on the patched text; what was there already stands,
        a stored line by its text, since a patch above it moves its number */
@@ -433,7 +432,7 @@ function updateOn(db, input, actor) {
     /* the last nextPc op wins; '' clears it */
     const setPc = ops.filter((o) => o.op === 'nextPc').pop();
     const nextPc = !setPc ? h.fields.nextPc : setPc.pc.trim() ? knownPc(db, setPc.pc, pc) : undefined;
-    h.fields = ordered({ ...h.fields, nextPc, waitingOnUser: p.waitingOnUser, updated: c.at });
+    h.fields = ordered({ ...h.fields, focus: p.focus, nextPc, waitingOnUser: p.waitingOnUser, updated: c.at });
     save(db, h);
     line(db, c, 'edit', h, Object.fromEntries(Object.entries(p.changes).map(([k, v]) => [k, [null, v]])));
     return { ...handoffPayload(db, h), changed: p.changes, trackState: stateOf(db, loadRecord(db, rec.key)) };

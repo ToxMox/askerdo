@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /* the onboarding survey gathers facts and judges nothing.
-   It reads one project and never writes it: the entry points, git history
-   and status in one pass each, every folder with its cites and readers, Claude's memory files, the CLAUDE.md clauses
-   and the board. It writes facts.json; the session reads it and writes proposal.json.
-   node survey.mjs <project dir> [--work <dir>] [--cli <path>] [--no-board] [--manifest <file>] */
+   It reads one project and never writes it: git history and status in one pass each, the folders with their file
+   counts and last touch, the instruction files and their ledgers, the rule files and what loads them, the routines in
+   use, Claude's memory files and the board. --depth adds each folder's cites and readers, the entry points'
+   texts, the rule files' citers and the map's judgments. It writes facts.json; the session writes proposal.json.
+   node survey.mjs <project dir> [--work <dir>] [--cli <path>] [--no-board] [--manifest <file>] [--depth] */
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -11,8 +12,9 @@ import { basename, dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataDir } from '../../lib/node-helpers.mjs';
 import { sharedName } from '../../lib/project-id.mjs';
-import { blobsOf, clauseId, earlierImport, folderSig, isFolder, markMap, parseTree, seedsOf } from './map.mjs';
+import { blobsOf, boardRecords, clauseId, earlierImport, folderSig, isFolder, markMap, parseTree, seedsOf } from './map.mjs';
 import { instructionFiles, instructionSetting, managedDir, ruleFiles } from './instructions.mjs';
+import { rootRe } from './cites.mjs';
 
 export const DEFAULT_CLI = join(homedir(), '.claude', 'askerdo', 'cli.mjs');
 const slashed = (p) => String(p).replace(/\\/g, '/');
@@ -262,7 +264,11 @@ function citesOf(ctx, folders, workDir) {
     if (p === '.' || p.startsWith('../')) return '';
     return p + (listed.has(p) || rel.endsWith('/') ? '/' : '');
   });
-  const scan = (f, line, raw) => {
+  /* a path written from the project root ("C:/repo/docs/x") is that root path */
+  const rootAt = rootRe(ctx.root) && new RegExp(rootRe(ctx.root), 'g');
+  const fromRoot = (s) => (rootAt ? s.replace(rootAt, '') : s);
+  const scan = (f, line, at) => {
+    const raw = fromRoot(at);
     const text = raw.includes('./') ? resolveRel(f, raw) : raw;
     const hit = [];
     for (const [seg, pats] of bySeg) {
@@ -290,7 +296,7 @@ function citesOf(ctx, folders, workDir) {
      folder's path, never a mention in prose; the strings go on as written, so scan resolves a relative one */
   const segs = [...bySeg.keys()];
   const jsonValues = (f, t) => (t.match(/"(?:[^"\\]|\\.)*"/g) || []).map((v) => v.slice(1, -1)).filter((v) => {
-    const at = /^\.\.?\//.test(v) ? resolveRel(f, v) : v.replace(/^\//, '');
+    const at = /^\.\.?\//.test(v) ? resolveRel(f, v) : fromRoot(v).replace(/^\//, '');
     return segs.some((g) => at.startsWith(g));
   });
   const scanJson = (f, i, t) => { const v = jsonValues(f, t); if (v.length) scan(f, i, v.join(' ')); };
@@ -356,6 +362,23 @@ function entryPoints(ctx) {
 
 /* ---- outside readers, Claude's memory, the CLAUDE.md clauses ---- */
 
+/* a folder's git common dir read from its .git entry, never by running git there: on Windows git takes
+   about 19 s and starts WSL in a repo another account owns (seen beside Tidewatch). Lowercase, forward slashes. */
+export function commonDirOf(d) {
+  const dotGit = join(d, '.git');
+  let st;
+  try { st = statSync(dotGit); } catch { return null; }
+  let gitDir = dotGit;
+  if (st.isFile()) {
+    const m = /^gitdir:\s*(.+?)\s*$/m.exec(readText(dotGit) || '');
+    if (!m) return null;
+    gitDir = resolve(d, m[1]);
+    const c = (readText(join(gitDir, 'commondir')) || '').trim();
+    if (c) gitDir = resolve(gitDir, c);
+  }
+  return slashed(gitDir).replace(/\/+$/, '').toLowerCase();
+}
+
 /* Files outside the repo that name a folder (this PC's Claude settings and hooks, the guides of the projects beside
    it). A worktree of the project itself is the project. */
 export function readersOf(ctx, folders, projects = []) {
@@ -377,12 +400,11 @@ export function readersOf(ctx, folders, projects = []) {
   const up = dirname(ctx.root);
   let sibs = [];
   try { sibs = readdirSync(up, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => join(up, e.name)); } catch { /* none */ }
-  const common = (d) => { ctx.spawns++; const r = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: d, encoding: 'utf8', windowsHide: true }); return r.status === 0 ? low(r.stdout.trim()) : null; };
-  const mine = ctx.isGit ? common(ctx.root) : null;
+  const mine = ctx.isGit ? commonDirOf(ctx.root) : null;
   const worktrees = [];
   for (const d of new Set([...projects.map((p) => p.dir).filter(Boolean), ...sibs].map(slashed))) {
     if (low(d) === me) continue;
-    if (mine && existsSync(join(d, '.git')) && common(d) === mine) { worktrees.push(d); continue; }
+    if (mine && commonDirOf(d) === mine) { worktrees.push(d); continue; }
     files.push(join(d, 'CLAUDE.md'), join(d, 'AGENTS.md'));
   }
   ctx.readers = { scanned: files.length, worktrees };
@@ -475,7 +497,7 @@ export function cliJson(cli, args, env, { okExit = [] } = {}) {
   try { return { value: JSON.parse(r.stdout) }; } catch { return { error: 'not JSON: ' + clip(r.stdout, 120) }; }
 }
 
-export function boardState(cli, { shared, slug, dir, env = process.env }) {
+export function boardState(cli, { shared, slug, dir, env = process.env, projects = true }) {
   const out = { read: new Date().toISOString(), errors: [] };
   const get = (args) => { const r = cliJson(cli, args, env); if (r.error) out.errors.push(args.join(' ') + ': ' + r.error); return r.value; };
   const mine = (x) => (x.projectRepos || []).includes(shared);
@@ -526,12 +548,12 @@ export function boardState(cli, { shared, slug, dir, env = process.env }) {
     for (const d of get(['decisions', '--workstream', w.id]) || []) if (!decided.has(d.id)) decided.set(d.id, { id: d.id, key: d.key || null, name: d.name, words: d.words, created: d.created, workstream: w.id, question: d.question || null });
   }
   out.decisions = [...decided.values()];
-  out.tasks = out.workstreams.flatMap((w) => (get(['list', '--kind', 'task', '--all', '--workstream', w.id]) || []).map((t) => ({ id: t.id, name: t.name, status: t.status, workstream: w.id, updated: t.updated || null, inHand: t.inHand || null, refs: t.refs || [], unplaced: t.unplaced || null,
+  out.tasks = out.workstreams.flatMap((w) => (get(['list', '--kind', 'task', '--all', '--workstream', w.id]) || []).map((t) => ({ id: t.id, ...(t.key ? { key: t.key } : {}), name: t.name, status: t.status, workstream: w.id, updated: t.updated || null, inHand: t.inHand || null, refs: t.refs || [], unplaced: t.unplaced || null,
     /* what the doctor's task checks read from the list row as stored */
     word: t.word || null, labels: t.labels || [], created: t.created || null, ...(t.close ? { close: t.close } : {}), ...(t.landed ? { landed: t.landed } : {}),
     ...(t.wake ? { wake: t.wake } : {}), ...(t.runBy ? { runBy: t.runBy } : {}) })));
   /* what readersOf reads beside this PC's Claude folder: the project folders this PC maps */
-  out.projects = ((get(['projects']) || {}).projects || []).map((x) => ({ name: x.name, dir: x.dir }));
+  out.projects = projects ? ((get(['projects']) || {}).projects || []).map((x) => ({ name: x.name, dir: x.dir })) : [];
   /* the conversion map; a board without the verb yet reads as no map, never as a failed read */
   const map = cliJson(cli, ['conversion', '--project', dir], env);
   out.map = map.value || null;
@@ -630,11 +652,14 @@ function directOf(ctx, n, k) {
 }
 
 function folderFacts(ctx, n, [subjectsShown, citesShown] = SAMPLE_STEPS[0]) {
+  const some = (k, v) => (v ? { [k]: v } : {});
+  const since = ctx.markOf && ctx.markOf(n.path + '/') ? { since: ctx.markOf(n.path + '/') } : {};
+  /* the default: a folder list, each with its file counts and last touch */
+  if (!ctx.depth) return { path: n.path, ...since, files: n.count, ...some('untracked', n.untracked), ...some('modified', n.modified), last: n.last };
   const { prose, code } = directOf(ctx, n, citesShown);
   const subjects = subjectsShown ? subjectsOf(n.history, subjectsShown) : [];
-  const some = (k, v) => (v ? { [k]: v } : {});
   return {
-    path: n.path, ...(ctx.markOf && ctx.markOf(n.path + '/') ? { since: ctx.markOf(n.path + '/') } : {}), tracked: n.count - n.untracked, ...some('untracked', n.untracked), ...some('modified', n.modified), ...some('prose', n.prose), ...some('code', n.code),
+    path: n.path, ...since, tracked: n.count - n.untracked, ...some('untracked', n.untracked), ...some('modified', n.modified), ...some('prose', n.prose), ...some('code', n.code),
     commits: n.commits, first: n.first, last: n.last, ...(n.lastCommit && n.lastCommit !== n.last ? { lastCommit: n.lastCommit } : {}),
     ...(subjects.length ? { subjects } : {}),
     ...(n.hits ? { cites: { hits: n.hits, files: n.citing.size, ...(prose.length ? { from: prose } : {}) } } : {}),
@@ -655,6 +680,8 @@ function boardFacts(bs) {
     openTasks: bs.tasks.filter((t) => !done.has(t.status)).map((t) => ({ id: t.id, name: t.name, status: t.status, workstream: t.workstream, ...(t.updated ? { updated: t.updated } : {}), ...(t.inHand ? { inHand: t.inHand } : {}),
       ...(t.unplaced ? { unplaced: t.unplaced } : {}), ...(t.refs.length ? { refs: t.refs } : {}), ...(t.word ? { word: t.word } : {}), ...(t.labels.length ? { labels: t.labels } : {}),
       ...(t.created ? { created: t.created } : {}), ...(t.close ? { close: t.close } : {}), ...(t.landed ? { landed: t.landed } : {}), ...(t.wake ? { wake: t.wake } : {}), ...(t.runBy ? { runBy: t.runBy } : {}) })),
+    /* a cut's evidence may name a closed task, which coverage reads here by its status */
+    closedTasks: bs.tasks.filter((t) => done.has(t.status)).map((t) => ({ id: t.id, ...(t.key ? { key: t.key } : {}), status: t.status })),
     questions: bs.questions.map((q) => ({ id: q.id, title: q.name, answer: clip(q.answer, RULING_MAX) })),
     decisions: bs.decisions.map((d) => ({ id: d.id, ...(d.key ? { key: d.key } : {}), title: d.name, ruling: clip(d.words, RULING_MAX), ...(d.question ? { question: d.question } : {}), ...(d.created ? { created: String(d.created).slice(0, 10) } : {}) })),
     knowledge: bs.knowledge,
@@ -669,7 +696,26 @@ function boardFacts(bs) {
 
 const sizeOf = (s) => Buffer.byteLength(s, 'utf8');
 
-export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFile, env = process.env, managed } = {}) {
+/* Each skill and command with the commits on it and on the scripts it names (a routine converts when
+   history shows it in use); `recent` counts the commits in the doctor's window back from the latest commit. */
+export function routinesOf(ctx, rules) {
+  const latest = ctx.history.latest;
+  const from = latest ? new Date(Date.parse(latest) - DORMANT_DAYS * 864e5).toISOString().slice(0, 10) : null;
+  const out = [];
+  for (const e of rules) {
+    const skill = e.kind === 'skills' && /\/SKILL\.md$/.test(e.file);
+    if (!skill && !(e.kind === 'commands' && /\.md$/i.test(e.file))) continue;
+    const unit = skill ? dirOf(e.file) : e.file;
+    const idx = new Set();
+    for (const p of [unit, ...(e.scripts || [])]) for (const i of (ctx.history.per.get(p) || {}).idx || []) idx.add(i);
+    const days = [...idx].map((i) => ctx.history.days[i]).sort();
+    out.push({ file: e.file, kind: skill ? 'skill' : 'command', ...(e.scripts ? { scripts: e.scripts } : {}), commits: days.length, last: days.at(-1) || touchOf(ctx, e.file).day,
+      recent: from ? days.filter((d) => d >= from).length : 0 });
+  }
+  return out;
+}
+
+export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFile, env = process.env, managed, depth = false } = {}) {
   const t0 = Date.now();
   const timings = {};
   let t = t0;
@@ -680,7 +726,7 @@ export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFil
   const slug = kebab(basename(root), 30);
   const shared = (isGit && sharedName(root)) || root.toLowerCase();
   const workDir = slashed(work || join(dataDir(env) || join(homedir(), '.claude', 'askerdo-onboard'), 'onboard', slug));
-  const ctx = { root, isGit, slug, claudeHome: env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), spawns: 1, opened: [], texts: new Map() };
+  const ctx = { root, isGit, slug, depth: Boolean(depth), claudeHome: env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), spawns: 1, opened: [], texts: new Map() };
 
   ctx.list = listing(ctx);
   lap('listing');
@@ -688,9 +734,9 @@ export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFil
   lap('history');
   const nodes = folderTree(ctx);
   const folders = listedFolders(nodes);
-  citesOf(ctx, folders, workDir);
+  if (ctx.depth) citesOf(ctx, folders, workDir);
   lap('cites');
-  const ep = entryPoints(ctx);
+  const ep = ctx.depth ? entryPoints(ctx) : null;
   const fileSet = new Set(ctx.list.files);
   /* the instruction files Claude reads here, each with its own ledger (AGENTS.md's working rules
      convert like CLAUDE.md's), and the rule files around them */
@@ -698,12 +744,13 @@ export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFil
   const instr = instructionFiles(root, [...nodes.keys()], fileSet, setting, { ignored: ctx.list.ignored, memory: [join(ctx.claudeHome, 'CLAUDE.md'), join(managed || managedDir(), 'CLAUDE.md')] });
   const claude = instr.files.filter((x) => !x.file.endsWith('AGENTS.override.md')).flatMap((x) => claudeLedger(ctx, x.file));
   const rules = ruleFiles({ root, files: ctx.list.files, history: ctx.history.per, days: ctx.history.days, lines: ctx.history.lines,
-    touch: (f) => touchOf(ctx, f), open: (f) => open(ctx, f), grep: (pats) => grepLines(ctx, pats, workDir) }, instr);
+    touch: (f) => touchOf(ctx, f), open: (f) => open(ctx, f), grep: (pats) => grepLines(ctx, pats, workDir), ...(ctx.depth ? {} : { citers: false, since: false }) }, instr);
+  const routines = routinesOf(ctx, rules);
   const memory = memoryFiles(ctx);
   lap('entries');
-  const bs = board ? boardState(cli, { shared, slug, dir: root, env }) : null;
+  const bs = board ? boardState(cli, { shared, slug, dir: root, env, projects: ctx.depth }) : null;
   lap('board');
-  readersOf(ctx, folders, bs ? bs.projects : []);
+  if (ctx.depth) readersOf(ctx, folders, bs ? bs.projects : []);
   lap('readers');
   /* blob and tree hashes in one ls-tree pass, no file opened; the map marked against them */
   const tree = ctx.isGit ? parseTree(git(ctx, ['-c', 'core.quotepath=false', 'ls-tree', '-r', '-t', '-z', '--full-tree', 'HEAD'])) : new Map();
@@ -713,7 +760,7 @@ export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFil
   const privates = new Set(instr.files.filter((x) => x.private && !fileSet.has(x.file)).map((x) => x.file));
   const present = (f) => fileSet.has(f) || privates.has(f);
   const mapped = ((bs && bs.map && bs.map.rows) || []).flatMap((r) => (r.kind === 'file' ? [r.source] : r.kind === 'call' ? Object.keys((r.detail && r.detail.subjects) || {})
-    : r.kind === 'run' ? [...((r.detail && r.detail.left) || []).map((l) => l.source), ...((r.detail && r.detail.judged) || []).filter((j) => j.hash).map((j) => j.subject)].filter(Boolean) : []));
+    : r.kind === 'run' ? ((r.detail && r.detail.judged) || []).filter((j) => j.hash).map((j) => j.subject) : []));
   const need = mapped.filter((f) => !isFolder(f) && present(f) && loose(f));
   const texts = blobsOf(root, need);
   if (need.length) ctx.spawns++;
@@ -733,8 +780,9 @@ export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFil
     if (!clauses.has(file)) clauses.set(file, new Set((instr.files.some((x) => x.file === file) ? claude.filter((c) => c.file === file) : claudeLedger(ctx, file)).map((c) => clauseId(file, c.clause))));
     return clauses.get(file).has(key);
   };
-  const events = bs ? { tasks: new Map(bs.tasks.map((x) => [x.id, x.status])), tracks: new Map(bs.tracks.map((x) => [x.id, x])), answered: new Set(bs.questions.map((q) => q.id)) } : {};
-  const marked = bs ? markMap(bs.map, { hashOf, sigOf, exists: present, seeds, reads, clauseHere, board: events }) : null;
+  const events = bs ? { tasks: new Map(bs.tasks.map((x) => [x.id, x.status])), tracks: new Map(bs.tracks.map((x) => [x.id, x])), answered: new Set(bs.questions.map((q) => q.id)),
+    records: boardRecords({ openTasks: bs.tasks, decisions: bs.decisions, knowledge: bs.knowledge, questions: bs.questions }) } : {};
+  const marked = bs ? markMap(bs.map, { hashOf, sigOf, exists: present, seeds, reads, clauseHere, board: events, judge: ctx.depth }) : null;
   ctx.markOf = marked && marked.markOf;
   lap('map');
 
@@ -747,46 +795,51 @@ export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFil
   const facts = {
     version: 1,
     made: new Date().toISOString(),
+    /* what the plan and the write read too, so all three run at one depth */
+    depth: ctx.depth,
     project: {
       dir: root, name: basename(root), slug, shared, remote: isGit ? sharedName(root) || null : null, git: isGit, head: h.head,
       commits: h.commits, first: h.first, latest: h.latest, files: ctx.list.files.length, untracked: ctx.list.untracked.size, modified: ctx.list.dirty.size,
       ignoredHandoffs: [...ctx.list.ignored], recent: subjectsOf(rootNode.history),
       rootFiles: rootFiles.slice(0, ROOT_FILES_SHOWN), ...(rootFiles.length > ROOT_FILES_SHOWN ? { rootFilesMore: rootFiles.length - ROOT_FILES_SHOWN } : {}),
     },
-    survey: { folders: 'to depth ' + FOLDER_DEPTH + ', one deeper under a folder there holding over ' + BIG_FOLDER + ' files', samples: { subjects: SAMPLE_STEPS[0][0], cites: SAMPLE_STEPS[0][1] } },
-    entryPoints: [...ep.entries].map(([file, from]) => {
+    survey: { folders: 'to depth ' + FOLDER_DEPTH + ', one deeper under a folder there holding over ' + BIG_FOLDER + ' files', ...(ctx.depth ? { samples: { subjects: SAMPLE_STEPS[0][0], cites: SAMPLE_STEPS[0][1] } } : {}) },
+    ...(ep ? { entryPoints: [...ep.entries].map(([file, from]) => {
       const text = ctx.texts.get(file) || '';
       return { file, from, last: touchOf(ctx, file).day, names: ep.named.get(file).map((f) => ({ file: f, last: touchOf(ctx, f).day, ...(stateOf(f) ? { state: stateOf(f) } : {}) })),
         text: text.slice(0, ENTRY_MAX), ...(text.length > ENTRY_MAX ? { cut: text.length } : {}) };
-    }),
+    }) } : {}),
     instructions: instr,
     claude,
     ruleFiles: rules,
+    routines,
     memory,
     folders: folders.map((n) => folderFacts(ctx, n)),
-    readers: ctx.readers || null,
+    ...(ctx.depth ? { readers: ctx.readers || null } : {}),
     manifest: manifest ? { file: manifestPath, imports: (manifest.imports || []).length } : null,
     board: boardFacts(bs),
     conversion: marked ? { last: marked.last, counts: marked.counts, sources: marked.sources, folders: marked.folders, calls: marked.calls, left: marked.left,
-      judgments: marked.judgments, ...(marked.instructions ? { instructions: marked.instructions } : {}), ...(bs.mapError ? { error: bs.mapError } : {}) } : null,
+      ...(marked.judgments ? { judgments: marked.judgments } : {}), ...(marked.instructions ? { instructions: marked.instructions } : {}), ...(bs.mapError ? { error: bs.mapError } : {}) } : null,
   };
 
-  /* sized for a session to read: the rulings, then the knowledge titles, go to facts-board.json; then the folders'
-     inline samples shrink, the whole samples kept in facts-folders.json */
+  /* with --depth, sized for a session to read: the rulings, then the knowledge titles, go to facts-board.json; then the
+     folders' inline samples shrink, the whole samples kept in facts-folders.json. The default writes one file */
   mkdirSync(workDir, { recursive: true });
   const factsFile = slashed(join(workDir, 'facts.json'));
   let boardFile = null;
   let samplesFile = null;
   let text = render(facts);
-  if (sizeOf(text) > FACTS_TARGET && facts.board && (facts.board.questions.length || facts.board.decisions.length)) {
+  const target = ctx.depth ? FACTS_TARGET : Infinity;
+  if (sizeOf(text) > target && facts.board && (facts.board.questions.length || facts.board.decisions.length)) {
     boardFile = slashed(join(workDir, 'facts-board.json'));
-    writeFileSync(boardFile, render({ questions: facts.board.questions, decisions: facts.board.decisions }));
-    facts.board.rulings = { file: boardFile, questions: facts.board.questions.length, decisions: facts.board.decisions.length, search: 'by id or words; one record per line' };
+    writeFileSync(boardFile, render({ questions: facts.board.questions, decisions: facts.board.decisions, closedTasks: facts.board.closedTasks || [] }));
+    facts.board.rulings = { file: boardFile, questions: facts.board.questions.length, decisions: facts.board.decisions.length, closedTasks: (facts.board.closedTasks || []).length, search: 'by id or words; one record per line' };
     delete facts.board.questions;
     delete facts.board.decisions;
+    delete facts.board.closedTasks;
     text = render(facts);
   }
-  if (sizeOf(text) > FACTS_TARGET && facts.board && facts.board.knowledge.length) {
+  if (sizeOf(text) > target && facts.board && facts.board.knowledge.length) {
     const ruled = boardFile ? JSON.parse(readFileSync(boardFile, 'utf8')) : {};
     boardFile = slashed(join(workDir, 'facts-board.json'));
     writeFileSync(boardFile, render({ ...ruled, knowledge: facts.board.knowledge }));
@@ -795,7 +848,7 @@ export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFil
     text = render(facts);
   }
   for (const step of SAMPLE_STEPS.slice(1)) {
-    if (sizeOf(text) <= FACTS_TARGET) break;
+    if (sizeOf(text) <= target) break;
     if (!samplesFile) {
       samplesFile = slashed(join(workDir, 'facts-folders.json'));
       writeFileSync(samplesFile, render({ folders: folders.map((n) => {
@@ -810,7 +863,7 @@ export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFil
   /* last, the rule files and the nested instruction files' ledgers go to facts-rules.json */
   let rulesFile = null;
   const nested = claude.filter((c) => c.file.includes('/') && !c.file.startsWith('.claude/'));
-  if (sizeOf(text) > FACTS_TARGET && (rules.length || nested.length)) {
+  if (sizeOf(text) > target && (rules.length || nested.length)) {
     rulesFile = slashed(join(workDir, 'facts-rules.json'));
     writeFileSync(rulesFile, render({ ruleFiles: rules, claude: nested }));
     facts.ruleFiles = { file: rulesFile, count: rules.length, search: 'by file path; one file or clause per line' };
@@ -831,8 +884,8 @@ export function survey(dir, { work, cli = DEFAULT_CLI, board = true, manifestFil
     facts, factsFile, boardFile, samplesFile, rulesFile, sizes, work: workDir, project: facts.project, board: bs,
     history: { commits: h.commits, first: h.first, latest: h.latest },
     counts: {
-      folders: folders.length, files: ctx.list.files.length, untracked: ctx.list.untracked.size, modified: ctx.list.dirty.size, commits: h.commits, entryPoints: ep.entries.size,
-      memory: memory.length, clauses: claude.length, ruleFiles: rules.length, handoffFiles: rules.filter((r) => r.kind === 'handoff' || r.role).length, gitSpawns: ctx.spawns, filesOpened: ctx.opened.length, ms: timings.total,
+      folders: folders.length, files: ctx.list.files.length, untracked: ctx.list.untracked.size, modified: ctx.list.dirty.size, commits: h.commits, ...(ep ? { entryPoints: ep.entries.size } : {}),
+      routines: routines.length, routinesInUse: routines.filter((r) => r.recent).length, depth: ctx.depth, memory: memory.length, clauses: claude.length, ruleFiles: rules.length, handoffFiles: rules.filter((r) => r.kind === 'handoff' || r.role).length, gitSpawns: ctx.spawns, filesOpened: ctx.opened.length, ms: timings.total,
       ...(b ? { workstreams: b.workstreams.length, tracks: b.tracks.length, openTasks: b.openTasks.length, questions: bs.questions.length, decisions: bs.decisions.length,
         /* decisions are knowledge records too: the line counts the facts in force apart from them */
         knowledge: bs.knowledge.filter((k) => k.type !== 'decision' && (!k.status || k.status === 'active')).length, rules: b.rules.length, imported: b.imported.length } : {}),
@@ -855,8 +908,10 @@ export function surveyLines(d) {
   const p = d.project || {};
   const before = [
     'Files: ' + c.files + ' (' + c.untracked + ' untracked, ' + c.modified + ' modified); ' + (p.git ? c.commits + ' commits from ' + p.first + ' to ' + p.latest : 'not a git repo'),
-    'Folders: ' + c.folders + ' listed with their counts, touches, subjects, cites and readers',
-    'Entry points: ' + ((d.facts && d.facts.entryPoints) || []).map((e) => e.file).join(', ') + (c.memory ? '; ' + c.memory + ' Claude memory files' : ''),
+    'Folders: ' + c.folders + (c.depth ? ' listed with their counts, touches, subjects, cites and readers' : ' listed with their file counts and last touch (--depth adds subjects, cites and readers)'),
+    ...(d.facts && d.facts.entryPoints ? ['Entry points: ' + d.facts.entryPoints.map((e) => e.file).join(', ')] : []),
+    ...(c.routines !== undefined ? ['Routines: ' + c.routines + ' skills and commands, ' + c.routinesInUse + ' with commits on them or their scripts in the last ' + DORMANT_DAYS + ' days'] : []),
+    ...(c.memory ? [c.memory + ' Claude memory files'] : []),
     ...(d.facts && d.facts.instructions ? [instructionLine(d.facts.instructions) + '; ' + (c.ruleFiles || 0) + ' rule files with their cites and loaders'
       + (c.handoffFiles ? ', ' + c.handoffFiles + ' of them from handoff protocols (an entry, the files it resumes from, standing rules)' : '')] : []),
     d.board ? 'Board: ' + c.workstreams + ' workstreams, ' + c.tracks + ' tracks, ' + c.openTasks + ' open tasks, ' + c.questions + ' answered questions, ' + c.decisions + ' decisions, '
@@ -879,10 +934,11 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   const a = process.argv.slice(2);
   const flag = (n) => { const i = a.indexOf('--' + n); return i >= 0 ? a.splice(i, 2)[1] : undefined; };
   const work = flag('work'); const cli = flag('cli'); const manifestFile = flag('manifest');
-  const noBoard = a.includes('--no-board'); if (noBoard) a.splice(a.indexOf('--no-board'), 1);
-  if (!a[0] || a[0] === '--help') { console.log('node survey.mjs <project dir> [--work <dir>] [--cli <path>] [--no-board] [--manifest <file>]'); process.exit(a[0] ? 0 : 1); }
+  const bare = (n) => { const i = a.indexOf('--' + n); if (i >= 0) a.splice(i, 1); return i >= 0; };
+  const noBoard = bare('no-board'); const depth = bare('depth');
+  if (!a[0] || a[0] === '--help') { console.log('node survey.mjs <project dir> [--work <dir>] [--cli <path>] [--no-board] [--manifest <file>] [--depth]'); process.exit(a[0] ? 0 : 1); }
   if (!existsSync(a[0])) { console.error('survey: no folder ' + a[0]); process.exit(1); }
-  const d = survey(a[0], { work, cli: cli || DEFAULT_CLI, board: !noBoard, manifestFile });
+  const d = survey(a[0], { work, cli: cli || DEFAULT_CLI, board: !noBoard, manifestFile, depth });
   console.log('Survey of ' + d.project.dir + ' (' + d.project.shared + ')');
   const lines = surveyLines(d);
   for (const l of [...lines.before, ...lines.after]) console.log(l);

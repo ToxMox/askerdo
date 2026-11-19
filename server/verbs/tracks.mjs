@@ -122,23 +122,24 @@ export function realBefore(db, heldRec, before, after, strict = true) {
   }
   return real;
 }
-/* `here` checked as a real place on the held track (an end only when nothing else is open there). */
+/* `here` checked as a real place on the held track (an end only when nothing else is open there);
+   null when nothing on it waits on the work, so the question offers no do-it-here press. */
 function hereOf(db, here, heldRec, skip) {
+  if (here !== undefined && here !== null && (typeof here !== 'object' || Array.isArray(here))) throw new TrackRefusal('here is { after, before }, each a list of T-n ids on ' + heldRec.fields.id);
   const list = (v, what) => {
     if (v === undefined || v === null) return [];
     const l = (Array.isArray(v) ? v : [v]).map((s) => String(s ?? '').trim()).filter(Boolean);
     for (const s of l) if (!TASK_ID.test(s)) throw new TrackRefusal('here.' + what + ' names T-n ids: ' + s);
     return l;
   };
-  const out = { after: list(here.after, 'after'), before: list(here.before, 'before') };
-  const id = heldRec.fields.id;
+  const out = { after: list((here || {}).after, 'after'), before: list((here || {}).before, 'before') };
   try {
     if (realBefore(db, heldRec, out.before, out.after) || nothingElseOpen(db, heldRec.key, skip)) return out;
   } catch (e) {
     if (e instanceof TrackRefusal) throw new TrackRefusal('here: ' + e.message);
     throw e;
   }
-  throw new TrackRefusal('here is the real place on ' + id + ' the work would otherwise take: its before names an open task on ' + id + ' other than the closing review');
+  return null;
 }
 const ASKED_KEYS = ['tier', 'track', 'workstream', 'newTrack', 'unparkWhen', 'wake', 'unplaced', 'last', 'whyElsewhere', 'after', 'before', 'onto'];
 /* An asked filing: the place asked, `here` and the item registered as the placement question; nothing is created.
@@ -150,10 +151,14 @@ export function askFiling(db, f, c, item, from, skip = new Set()) {
   if (Number(asked.tier) === 2 && !asked.track && !asked.onto) asked.track = heldRec.fields.id;
   /* the answer files as a session that may hold no track by then, so a new parked track keeps the held one's workstream */
   if (asked.unparkWhen && !asked.workstream) asked.workstream = labelOf(db, heldRec.fields.workstream);
-  const lacks = placementLacks(f.here, asked, heldRec.fields.id, item.task ? null : item.draft || {});
+  const lacks = placementLacks(asked, heldRec.fields.id, item.task ? null : item.draft || {});
   if (lacks) throw new TrackRefusal(lacks + '. Nothing was filed.');
   const here = hereOf(db, f.here, heldRec, skip);
-  return askPlacement(db, { track: heldRec.fields.id, ...(item.task ? { task: item.task } : { draft: draftOf(item.draft) }), here, asked, from }, c);
+  /* a last on the held track names the tasks it will wait on, read now */
+  const moved = item.task ? resolveRecord(db, String(item.task).trim(), { kinds: ['task'] }) : null;
+  const lastAt = isGiven(asked.last) && asked.track === heldRec.fields.id && !isNextSession(asked.wake) ? lastPlace(db, heldRec.key, moved ? moved.key : null) : null;
+  const lastWords = lastAt ? { after: lastAt.ends.map((e) => e.id), ...(lastAt.tail ? { before: lastAt.tail.id } : {}) } : null;
+  return askPlacement(db, { track: heldRec.fields.id, ...(item.task ? { task: item.task } : { draft: draftOf(item.draft) }), here, asked, from, ...(lastWords ? { lastAt: lastWords } : {}) }, c);
 }
 /* The talk filing: a filing naming a placement question settled in talk, with the user's words, is let
    through once; null when none is named. Refused for any other question. */
@@ -698,7 +703,7 @@ export function ladderPlace(db, f, c, at = {}) {
     throw ladderRefusal((isGiven(f.last) ? 'last says in one line why nothing on ' + id + ' needs the task sooner' + (said ? TEMPLATE_WORDS : '')
       : isGiven(f.before) ? 'before names only the closing review of ' + id + ', which is last: say last with why nothing on ' + id + ' needs it sooner'
         : 'A step on ' + id + ', ' + youHold(heldRec) + ', names before: the tasks on it that must not finish without this one')
-      + '. Only when nothing on ' + id + ' needs it sooner does it say last, with that line, and last is asked of the user with here, the real place it would otherwise take',
+      + '. Only when nothing on ' + id + ' needs it sooner does it say last, with that line, and last is asked of the user with here, the real place it would otherwise take when a task there waits on it',
     heldNext(id, undefined), at.via === 'leftover');
   }
   if (free) return { ...lad, approved: true, ...(line ? { whyElsewhere: line } : {}) };
@@ -708,7 +713,7 @@ export function ladderPlace(db, f, c, at = {}) {
     const reason = said && !unfilled(said) ? said : line;
     if (reason) return { ...lad, ...(line ? { whyElsewhere: line } : {}), ask: { reason } };
     throw ladderRefusal('A step for a later session on ' + id + ', ' + youHold(heldRec) + ', says last with why nothing on ' + id + ' needs it sooner' + (said || stub ? TEMPLATE_WORDS : '')
-      + ', and it is asked of the user with here, the real place it would otherwise take', heldNext(id, f.wake), at.via === 'leftover');
+      + ', and it is asked of the user with here, the real place it would otherwise take when a task there waits on it', heldNext(id, f.wake), at.via === 'leftover');
   }
   /* the same filing sent again with its line, beside the held track's pair; each surface words it */
   const again = (why) => ({ call: 'place', tier: lad.tier, ...Object.fromEntries(['track', 'workstream', 'unparkWhen', 'wake'].filter((k) => isGiven(f[k])).map((k) => [k, oneLineOf(f[k])])), whyElsewhere: why });
@@ -964,26 +969,58 @@ function lastLine(db, trackKey, ask, actor, taskKey) {
 /* The default before (tier 2's answer is at least the closing review): the open review no other
    open review waits on, or once it has started or the step waits on it, the first open step after it. A wave's
    review holds it up like any step. None for a step an open task already waits on; `end` when nothing is left.
-   `ask`: last (its line) and nextSession, which lastLine reads. */
+   `ask`: last (its line) and nextSession, which lastLine reads; a last goes behind the chain's ends (fileLast). */
 export function defaultBefore(db, trackKey, taskKey, actor, ask = {}) {
   const task = loadRecord(db, taskKey);
   if (db.stmt(`SELECT 1 FROM depends d JOIN records r ON r.key = d.task WHERE d."on" = ? AND coalesce(r.status, '') NOT IN ('done', 'dropped') LIMIT 1`).get(taskKey)) return null;
   const said = lastLine(db, trackKey, ask, actor, taskKey);
+  /* a later session's line is the reason it was asked, not a place: it keeps the default before */
+  if (said && !ask.nextSession) return fileLast(db, trackKey, task, said, actor);
   const lastOf = said ? { last: said } : {};
-  const open = db.stmt(`SELECT ti.task AS key, r.label AS id, ${openRunSql('r.key')} AS running, r.fields FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ?
-    AND ti.task <> ? AND coalesce(r.status, '') NOT IN ('done', 'dropped') ORDER BY ti.position`).all(trackKey, taskKey).map((r) => ({ ...r, f: JSON.parse(r.fields) }));
-  const reviews = open.filter((r) => isReview(r.f));
-  const waits = (a, b) => Boolean(pathBetween(db, a, b));
-  /* a station the step comes after (its after) is never its closing review, while another review is left */
-  const last = reviews.filter((r) => !reviews.some((o) => o !== r && pathBetween(db, o.key, r.key)));
-  const closing = last.filter((r) => !waits(taskKey, r.key)).pop() || last.pop();
+  const { open, closing, stations, waits } = closingOf(db, trackKey, taskKey);
   if (!closing) return { end: true, ...lastOf };
-  const stations = reviews.filter((r) => r !== closing).map((r) => r.id);
   const target = closing.running || waits(taskKey, closing.key)
     ? open.find((o) => o !== closing && waits(o.key, closing.key) && !waits(o.key, taskKey) && !waits(taskKey, o.key)) : closing;
   if (!target) return { end: true, closing: closing.id, stations, ...lastOf };
   addEdge(db, { task: target.id, on: task.fields.id, reason: (said ? 'filed last (' + said + '): ' : 'the default before: ') + (target === closing ? 'the closing review' : 'the first step after the closing review ' + closing.id) }, actor);
   return { before: target.id, closing: closing.id, stations, ...lastOf };
+}
+
+/* The open tasks on a track but `taskKey`, its closing review (the open review no other open review waits on;
+   a station the task comes after is never it while another is left) and the other reviews. */
+function closingOf(db, trackKey, taskKey) {
+  const open = db.stmt(`SELECT ti.task AS key, r.label AS id, ${openRunSql('r.key')} AS running, r.fields FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ?
+    AND ti.task <> ? AND coalesce(r.status, '') NOT IN ('done', 'dropped') ORDER BY ti.position`).all(trackKey, taskKey || '').map((r) => ({ ...r, f: JSON.parse(r.fields) }));
+  const reviews = open.filter((r) => isReview(r.f));
+  const waits = (a, b) => Boolean(a && b && pathBetween(db, a, b));
+  const last = reviews.filter((r) => !reviews.some((o) => o !== r && pathBetween(db, o.key, r.key)));
+  const closing = last.filter((r) => !waits(taskKey, r.key)).pop() || last.pop() || null;
+  return { open, closing, stations: closing ? reviews.filter((r) => r !== closing).map((r) => r.id) : [], waits };
+}
+
+/* last is after every open task on the track nothing else there waits on (the chain's ends), and the
+   closing review waits on it only when that review is itself the chain's end and not started. Read only;
+   `taskKey` null for work not made yet. */
+export function lastPlace(db, trackKey, taskKey = null) {
+  const { open, closing, stations, waits } = closingOf(db, trackKey, taskKey);
+  const keys = new Set(open.map((o) => o.key));
+  const waiters = (k) => db.stmt('SELECT task FROM depends WHERE "on" = ?').all(k).map((r) => r.task).filter((t) => keys.has(t));
+  const tail = closing && !closing.running && !waiters(closing.key).length && !waits(taskKey, closing.key) ? closing : null;
+  const ends = open.filter((o) => o !== tail && !waiters(o.key).some((t) => !tail || t !== tail.key) && !waits(o.key, taskKey));
+  return { closing, tail, ends, stations };
+}
+
+function fileLast(db, trackKey, task, said, actor) {
+  const p = lastPlace(db, trackKey, task.key);
+  const why = 'filed last (' + said + '): ';
+  for (const e of p.ends) addEdge(db, { task: task.fields.id, on: e.id, reason: why + 'after the end of the chain' }, actor);
+  /* an end that reaches the review off the track would make a loop: the review then stays where it is */
+  const tail = p.tail && !pathBetween(db, task.key, p.tail.key) ? p.tail : null;
+  if (tail) addEdge(db, { task: tail.id, on: task.fields.id, reason: why + 'the closing review' }, actor);
+  return {
+    ...(p.ends.length ? { after: p.ends.map((e) => e.id) } : {}), ...(tail ? { before: tail.id } : { end: true }),
+    ...(p.closing ? { closing: p.closing.id } : {}), stations: p.stations, last: said,
+  };
 }
 
 /* Up to three open tasks in the workstream sharing the new task's words, from the search index, so one that
@@ -1028,14 +1065,14 @@ export function settlePlace(db, taskKey, lad, actor, opts = {}) {
   const row = db.stmt('SELECT track FROM track_items WHERE task = ?').get(taskKey);
   const tr = row ? loadRecord(db, row.track) : null;
   const d = !tr ? null : opts.defaulted !== undefined ? opts.defaulted : !isGiven(lad.before) && (lad.named || c.session) ? defaultBefore(db, tr.key, taskKey, actor, lad) : null;
-  const filled = [...(lad.filled || []), ...(d && d.before ? ['before'] : [])];
+  const filled = [...(lad.filled || []), ...(d && d.after ? ['after'] : []), ...(d && d.before ? ['before'] : [])];
   let told = null;
   if (tr && lad.tell) {
     const who = c.session ? sessionWords(db, c.session) : c.by;
     addNote(db, tr.key, { at: c.at, actor: c.by, body: task.fields.id + ' ' + oneLineOf(task.fields.name) + ' was filed here at tier ' + lad.tier + ' by ' + who + (d && d.before ? ', before ' + d.before : '') + '.' });
     told = tr.fields.id;
   }
-  const where = tr ? 'on ' + tr.fields.id + (tr.fields.status === 'parked' ? ' (parked)' : '') + (d && d.before ? ', before ' + d.before + (d.before === d.closing ? ', the closing review' : '') : d && d.end ? ', an end' + (isReview(task.fields) ? ', so the closing review' : '') : '') + (lad.nextSession ? ', waiting for the next session' : '')
+  const where = tr ? 'on ' + tr.fields.id + (tr.fields.status === 'parked' ? ' (parked)' : '') + (d && d.after ? ', after ' + d.after.join(', ') : '') + (d && d.before ? ', before ' + d.before + (d.before === d.closing ? ', the closing review' : '') : d && d.end ? ', an end' + (isReview(task.fields) ? ', so the closing review' : '') : '') + (lad.nextSession ? ', waiting for the next session' : '')
     : 'in the inbox of ' + labelOf(db, task.fields.workstream) + (task.fields.wake ? ', wakes ' + wakeWords(db, task.fields.wake) : '');
   /* a tier is the filing session's rung: one derived never overwrites a stored tier, and none is derived with no session */
   const had = isGiven(task.fields.tier) ? task.fields.tier : undefined;
@@ -1051,7 +1088,7 @@ export function settlePlace(db, taskKey, lad, actor, opts = {}) {
   if (diff.tier || diff.whyElsewhere || diff.filedLast || diff.wake) logLine(db, { at: c.at, verb: 'edit', kind: 'task', rec: headOf(task), changes: diff, by: c.by, pc: c.pc, note: 'tier ' + tier + (lad.named ? '' : ' (derived from where it landed)') + ': ' + where });
   const ladder = {
     ...(tier !== undefined ? { tier } : {}), ...(derive ? { derived: true } : {}), ...(why ? { whyElsewhere: why } : {}), ...(tr ? { track: tr.fields.id, ...(tr.fields.goal ? { goal: tr.fields.goal } : {}) } : { inbox: labelOf(db, task.fields.workstream) }),
-    ...(d && d.before ? { before: d.before } : {}), ...(d && d.closing ? { closing: d.closing } : {}), ...(d && d.end ? { end: true } : {}), ...(d && d.last ? { last: d.last } : {}), ...(d && d.stations && d.stations.length ? { stations: d.stations } : {}),
+    ...(d && d.after ? { after: d.after } : {}), ...(d && d.before ? { before: d.before } : {}), ...(d && d.closing ? { closing: d.closing } : {}), ...(d && d.end ? { end: true } : {}), ...(d && d.last ? { last: d.last } : {}), ...(d && d.stations && d.stations.length ? { stations: d.stations } : {}),
     ...(filled.length ? { filled } : {}), ...(told ? { told } : {}), where,
   };
   /* look-alikes are for new work only: an existing task placed is not a duplicate to drop */

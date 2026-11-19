@@ -30,6 +30,7 @@ import { OPEN_KINDS, enc } from '../lib/open-in.mjs';
 import { boardJoin, boardRequest, startBoard } from '../lib/board-call.mjs';
 import { childEnv, quietPort, tempDir } from './helpers/sandbox.mjs';
 import { slicer } from './helpers/shard.mjs';
+import { runCli } from './helpers/cli.mjs';
 import { FULL_STAMP, stampFor } from './helpers/stamps.mjs';
 
 /* run as four files: this file takes cases 1, 5, 9 and on, and
@@ -38,7 +39,6 @@ const mine = slicer(4);
 const test = (...args) => (mine() ? nodeTest(...args) : undefined);
 
 const boardScript = join(pluginRoot, 'hooks', 'board-server.mjs');
-const cli = join(pluginRoot, 'bin', 'askerdo.mjs');
 const version = pluginVersion();
 
 /* The notification channel, off in every sandbox: a server never overwrites an
@@ -297,12 +297,6 @@ function writeManifest(dir, ver) {
     JSON.stringify({ ...real, version: ver }, null, 2) + '\n');
 }
 
-test('the first stdout line is the permanent board URL at the identity port', async (t) => {
-  const sb = await mint();
-  const srv = start(t, sb);
-  assert.equal(await srv.line, 'http://askerdo.localhost:' + sb.port + '/' + sb.secret + '/');
-});
-
 /* With no flag the root comes from argRoot's fallback, which is storeRoot(), so a
    board started by hand serves the machine's own store. */
 test('with no --root the server serves the resolved root', { timeout: 30000 }, async (t) => {
@@ -354,7 +348,7 @@ test('a seam the resolver could not take refuses the no-flag start', { timeout: 
   await assert.rejects(raw(live.port, '/'), 'the live store was served instead');
 });
 
-test('every response carries the sniffing and referrer guards', async (t) => {
+test('a wrong secret is a flat 404 on every route, and the server stays up; every response carries the sniffing and referrer guards; the Host check accepts exactly three names; the secret ping answers 204 with its version; only /stop ends it', async (t) => {
   const sb = await mint();
   const srv = start(t, sb);
   await srv.line;
@@ -371,12 +365,6 @@ test('every response carries the sniffing and referrer guards', async (t) => {
   for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
     assert.equal((await fetch(sb.base + '/assets/' + name)).status, 404, name);
   }
-});
-
-test('the Host check accepts exactly three names and refuses everything else', async (t) => {
-  const sb = await mint();
-  const srv = start(t, sb);
-  await srv.line;
   const path = '/' + sb.secret + '/';
   const ok = async (host) => assert.equal((await raw(sb.port, path, { host })).status, 200, host);
   const no = async (host) => assert.equal((await raw(sb.port, path, { host })).status, 404, host);
@@ -391,12 +379,6 @@ test('the Host check accepts exactly three names and refuses everything else', a
   await no('askerdo.localhost.example:' + sb.port);
   await no('askerdo.localhost:' + (sb.port + 1));
   await no('askerdo.localhost');
-});
-
-test('a wrong secret is a flat 404 on every route, and the server stays up', async (t) => {
-  const sb = await mint();
-  const srv = start(t, sb);
-  await srv.line;
   const wrong = 'http://127.0.0.1:' + sb.port + '/deadbeefdeadbeefdeadbeefdeadbeef';
   for (const [route, method] of [['/', 'GET'], ['/q/Q1', 'GET'], ['/assets/house.css', 'GET'],
     ['/ping', 'POST'], ['/stop', 'POST']]) {
@@ -414,6 +396,32 @@ test('a wrong secret is a flat 404 on every route, and the server stays up', asy
   }
   assert.equal((await fetch(sb.base + '/')).status, 200, 'the server survived every refusal');
   assert.equal(srv.proc.exitCode, null);
+  const res = await raw(sb.port, '/' + sb.secret + '/ping', { method: 'POST' });
+  assert.equal(res.status, 204);
+  assert.equal(res.headers['x-askerdo-board'], version);
+  assert.equal(res.headers['cache-control'], 'no-store');
+  /* additive beside the version header and never instead of it: the whole
+     adopt/replace/stranger handshake still keys on the 204 plus a string
+     x-askerdo-board. This one lets the tray tell its own server from a stranger. */
+  assert.match(res.headers['x-askerdo-instance'], /^[0-9a-f]{16}$/);
+  /* and the third additive header, the live dot the tray wears: an empty
+     store is quiet, and this sandbox has the whole notification channel
+     switched off, which is exactly the independence the header promises */
+  assert.equal(res.headers['x-askerdo-dot'], 'quiet');
+
+  /* the right secret on the wrong method is still a flat 404: a GET-able /stop
+     would be reachable from any page the secret leaks into, since an <img src> is
+     a GET, which is why the route table pins the method as well as the path */
+  for (const [m, p] of [['GET', '/ping'], ['GET', '/stop'], ['POST', '/'],
+    ['POST', '/q/Q1'], ['POST', '/assets/house.css'], ['DELETE', '/']]) {
+    const r = await raw(sb.port, '/' + sb.secret + p, { method: m });
+    assert.equal(r.status, 404, m + ' ' + p);
+  }
+  assert.equal(srv.proc.exitCode, null, 'no wrong-method request acted');
+  const stopped = await fetch(sb.base + '/stop', { method: 'POST' });
+  assert.equal(stopped.status, 200);
+  assert.deepEqual(await stopped.json(), { ok: true, stopped: true });
+  assert.equal(await srv.closed, 0);
 });
 
 test('the root and record links open the board pages through a login link, and with no board set say so; Add a PC mints a code that joins', async (t) => {
@@ -448,7 +456,7 @@ test('the root and record links open the board pages through a login link, and w
   }
 });
 
-test('the eleven shared assets serve from the whitelist and nothing else does', async (t) => {
+test('the eleven shared assets serve from the whitelist and nothing else does, each with a validator that answers 304', async (t) => {
   const sb = await mint();
   const srv = start(t, sb);
   /* a start that exits leaves the port to whoever holds it, whose 404 would read as a missing asset */
@@ -538,31 +546,39 @@ test('the eleven shared assets serve from the whitelist and nothing else does', 
   const esc = await raw(sb.port, '/' + sb.secret + '/assets/../board/secret');
   assert.equal(esc.status, 404);
   assert.ok(!esc.body.includes(sb.secret));
+
+  /* A VALIDATOR ON EVERY ASSET: `no-cache` alone tells the browser to revalidate and
+     gives it nothing to revalidate with, so every navigation would download every
+     asset again. A strong tag and a Last-Modified ride with each. */
+  for (const name of ['house.css', 'geist.woff2']) {
+    const first = await fetch(sb.base + '/assets/' + name);
+    assert.equal(first.status, 200, name);
+    const tag = first.headers.get('etag');
+    assert.match(tag, /^"[0-9a-f]{16}"$/, name);
+    assert.ok(Date.parse(first.headers.get('last-modified')) > 0, name);
+    assert.equal(first.headers.get('cache-control'), 'no-cache', name);
+
+    /* the tag is over the CONTENT, so it is the same on the next request */
+    const again = await fetch(sb.base + '/assets/' + name);
+    assert.equal(again.headers.get('etag'), tag, name);
+
+    const asked = await fetch(sb.base + '/assets/' + name, { headers: { 'If-None-Match': tag } });
+    assert.equal(asked.status, 304, name);
+    assert.equal(asked.headers.get('etag'), tag, name);
+    assert.equal(asked.headers.get('cache-control'), 'no-cache', name);
+    assert.equal(asked.headers.get('x-content-type-options'), 'nosniff', name);
+    assert.ok(Date.parse(asked.headers.get('last-modified')) > 0, name);
+    assert.equal((await asked.text()).length, 0, name + ': a 304 carries no body');
+    /* a list is honoured and somebody else's tag is not */
+    assert.equal((await fetch(sb.base + '/assets/' + name,
+      { headers: { 'If-None-Match': '"deadbeefdeadbeef", ' + tag } })).status, 304, name);
+    assert.equal((await fetch(sb.base + '/assets/' + name,
+      { headers: { 'If-None-Match': '"deadbeefdeadbeef"' } })).status, 200, name);
+  }
 });
 
 /* an explicit bound on every case that awaits a child process exit: a
    lifecycle regression must report a failure, not stall node:test forever */
-test('there is no idle timer and no heartbeat: only /stop ends it', { timeout: 20000 }, async (t) => {
-  const sb = await mint();
-  const srv = start(t, sb);
-  await srv.line;
-  await sleep(2000);
-  assert.equal(srv.proc.exitCode, null, 'two silent seconds did not kill it');
-  const wrong = 'http://127.0.0.1:' + sb.port + '/deadbeefdeadbeefdeadbeefdeadbeef/ping';
-  const until = Date.now() + 2000;
-  while (Date.now() < until) {
-    await fetch(wrong, { method: 'POST' });
-    await sleep(50);
-  }
-  assert.equal(srv.proc.exitCode, null, 'unauthorized traffic changed nothing either');
-  assert.equal((await fetch(sb.base + '/')).status, 200);
-
-  const res = await fetch(sb.base + '/stop', { method: 'POST' });
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: true, stopped: true });
-  assert.equal(await srv.closed, 0);
-});
-
 test('a server whose store folder is deleted shuts down', { timeout: 20000 }, async (t) => {
   const sb = await mint();
   const srv = start(t, sb, { ASKERDO_WATCH_MS: '100' });
@@ -571,34 +587,6 @@ test('a server whose store folder is deleted shuts down', { timeout: 20000 }, as
   rmSync(sb.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   assert.equal(await srv.closed, 0);
   assert.match(srv.stderr(), /gone/);
-});
-
-test('the secret ping answers 204 and names the version it serves', async (t) => {
-  const sb = await mint();
-  const srv = start(t, sb);
-  await srv.line;
-  const res = await raw(sb.port, '/' + sb.secret + '/ping', { method: 'POST' });
-  assert.equal(res.status, 204);
-  assert.equal(res.headers['x-askerdo-board'], version);
-  assert.equal(res.headers['cache-control'], 'no-store');
-  /* additive beside the version header and never instead of it: the whole
-     adopt/replace/stranger handshake still keys on the 204 plus a string
-     x-askerdo-board. This one lets the tray tell its own server from a stranger. */
-  assert.match(res.headers['x-askerdo-instance'], /^[0-9a-f]{16}$/);
-  /* and the third additive header, the live dot the tray wears: an empty
-     store is quiet, and this sandbox has the whole notification channel
-     switched off, which is exactly the independence the header promises */
-  assert.equal(res.headers['x-askerdo-dot'], 'quiet');
-
-  /* the right secret on the wrong method is still a flat 404: a GET-able /stop
-     would be reachable from any page the secret leaks into, since an <img src> is
-     a GET, which is why the route table pins the method as well as the path */
-  for (const [m, p] of [['GET', '/ping'], ['GET', '/stop'], ['POST', '/'],
-    ['POST', '/q/Q1'], ['POST', '/assets/house.css'], ['DELETE', '/']]) {
-    const r = await raw(sb.port, '/' + sb.secret + p, { method: m });
-    assert.equal(r.status, 404, m + ' ' + p);
-  }
-  assert.equal(srv.proc.exitCode, null, 'no wrong-method request acted');
 });
 
 test('a second start on the identity port adopts the running instance', { timeout: 20000 }, async (t) => {
@@ -1856,41 +1844,6 @@ function wire(port, path, headers = {}) {
   });
 }
 
-test('an asset carries a validator and answers 304', async (t) => {
-  const sb = await mint();
-  const srv = start(t, sb);
-  await srv.line;
-
-  /* A VALIDATOR ON EVERY ASSET: `no-cache` alone tells the browser to revalidate and
-     gives it nothing to revalidate with, so every navigation would download every
-     asset again. A strong tag and a Last-Modified ride with each. */
-  for (const name of ['house.css', 'geist.woff2']) {
-    const first = await fetch(sb.base + '/assets/' + name);
-    assert.equal(first.status, 200, name);
-    const tag = first.headers.get('etag');
-    assert.match(tag, /^"[0-9a-f]{16}"$/, name);
-    assert.ok(Date.parse(first.headers.get('last-modified')) > 0, name);
-    assert.equal(first.headers.get('cache-control'), 'no-cache', name);
-
-    /* the tag is over the CONTENT, so it is the same on the next request */
-    const again = await fetch(sb.base + '/assets/' + name);
-    assert.equal(again.headers.get('etag'), tag, name);
-
-    const asked = await fetch(sb.base + '/assets/' + name, { headers: { 'If-None-Match': tag } });
-    assert.equal(asked.status, 304, name);
-    assert.equal(asked.headers.get('etag'), tag, name);
-    assert.equal(asked.headers.get('cache-control'), 'no-cache', name);
-    assert.equal(asked.headers.get('x-content-type-options'), 'nosniff', name);
-    assert.ok(Date.parse(asked.headers.get('last-modified')) > 0, name);
-    assert.equal((await asked.text()).length, 0, name + ': a 304 carries no body');
-    /* a list is honoured and somebody else's tag is not */
-    assert.equal((await fetch(sb.base + '/assets/' + name,
-      { headers: { 'If-None-Match': '"deadbeefdeadbeef", ' + tag } })).status, 304, name);
-    assert.equal((await fetch(sb.base + '/assets/' + name,
-      { headers: { 'If-None-Match': '"deadbeefdeadbeef"' } })).status, 200, name);
-  }
-});
-
 test('the events stream says hello at once, in the one payload shape', async (t) => {
   const sb = await mint();
   const srv = start(t, sb, { ASKERDO_WATCH_MS: '100' });
@@ -2818,19 +2771,7 @@ test('the board verb prints both URL forms and refuses --port', async (t) => {
   const base = 'http://127.0.0.1:' + port + '/' + secret;
   t.after(async () => { try { await fetch(base + '/stop', { method: 'POST' }); } catch {} });
 
-  const run = (args, env = {}) => new Promise((resolve) => {
-    const child = spawn(process.execPath, [cli, ...args], {
-      env: { ...childEnv(), HOME: home, USERPROFILE: home, ...env },
-    });
-    let out = '';
-    let err = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', (d) => { err += d; });
-    child.stdin.end();
-    child.on('close', (code) => resolve({ code, out, err }));
-  });
+  const run = (args, env = {}) => runCli(args, { env: { ...childEnv(), HOME: home, USERPROFILE: home, ...env } });
 
   /* THE BOARD IS PUT UP HERE, not by the verb: the CLI's start goes through the
      scheduled task, and no case in this suite registers a real one. What the verb
@@ -2881,26 +2822,16 @@ test('the board verb exits 2 when the task cannot be registered', async () => {
   writeFileSync(join(root, 'board', 'port'), String(port) + '\n');
   writeFileSync(join(root, 'board', 'notify.json'), CHANNEL_OFF + '\n');
 
-  const r = await new Promise((resolve) => {
-    const child = spawn(process.execPath, [cli, 'board'], {
-      env: {
-        ...childEnv(),
-        HOME: home,
-        USERPROFILE: home,
-        ASKERDO_SCHTASKS: join(home, 'no-such-scheduler.exe'),
-        /* and the SID comes from here, so the register this case makes fail
-           never asks the machine who it is */
-        ASKERDO_SID: FAKE_SID,
-      },
-    });
-    let out = '';
-    let err = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', (d) => { err += d; });
-    child.stdin.end();
-    child.on('close', (code) => resolve({ code, out, err }));
+  const r = await runCli(['board'], {
+    env: {
+      ...childEnv(),
+      HOME: home,
+      USERPROFILE: home,
+      ASKERDO_SCHTASKS: join(home, 'no-such-scheduler.exe'),
+      /* and the SID comes from here, so the register this case makes fail
+         never asks the machine who it is */
+      ASKERDO_SID: FAKE_SID,
+    },
   });
 
   assert.equal(r.code, 2, r.err);

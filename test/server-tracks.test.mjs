@@ -235,6 +235,12 @@ test('a track file carries its tasks, edges, checklists and junction through an 
   g.settleChecks(db, a.id, { done: [{ step: 2, word: 'measured' }], strike: [{ step: 3, why: 'not needed' }] }, 'cli');
   assert.deepEqual(g.itemsOf(db, a.key).map((s) => [s.n, s.text, s.done, s.word || s.struck || null]),
     [[2, 'two', true, 'measured'], [3, 'zero', true, 'not needed'], [1, 'one', true, null]]);
+  /* a checklist write moves the task's updated time, and an edit that changed nothing else names the checklist */
+  const later = { by: 'cli', now: new Date(Date.now() + 86400e3) };
+  const same = runVerb(db, 'taskUpdate', { id: b.id, priority: 'high', checks: { add: ['three'] } }, 'cli');
+  const again = runVerb(db, 'taskUpdate', { id: b.id, priority: 'high', checks: { add: ['four'] } }, later);
+  assert.deepEqual([same.edit.changed.length > 0, again.edit.changed, again.edit.checklist, Math.abs(Date.parse(runVerb(db, 'readRecord', b.id, null).updated) - later.now.getTime()) < 1000],
+    [true, [], 'added 1', true]);
   const side = t.splinter(db, { from: tr.id, name: 'Side idea', at: a.id }, { session: 's1' });
   /* a run on two tasks, one in the inbox, is exported once and keeps its number */
   const run = runVerb(db, 'openRun', { tasks: [b.id, loose.id], job: 'lane-a', agentId: 'eng-1' }, { session: 's1' }).run.run;
@@ -406,6 +412,23 @@ test('a filing lands where its tier says, before the closing review, and a tier 
   const wave = land({ tier: 2, after: [two.id, behind.id], labels: ['review'], last });
   assert.deepEqual([wave.ladder.before, wave.ladder.closing], [review.id, review.id]);
   assert.ok(g.readiness(db, review.key).waitsOn.some((x) => x.includes(wave.id)));
+  /* last goes behind the chain's end; a started review mid-track with work after it is no closing review to sit
+     before. The asked row names the end it will wait on, and the press files it there with nothing waiting on it */
+  {
+    const db = board();
+    const S5 = { session: 's5' };
+    const mid = t.newTrack(db, { workstream: 'WS-1', name: 'Mid line', session: 's5' }, S5);
+    const mk = (name, p = {}) => runVerb(db, 'createRecord', { name, description: 'd', track: mid.id, ...p }, 'cli');
+    const station = mk('Review the wave', { labels: ['review'] });
+    const fix = mk('Fix the findings', { after: [station.id] });
+    const live = mk('The live run', { after: [fix.id] });
+    const look = mk('The look', { after: [live.id] });
+    w.taskUpdate(db, { id: station.id, inHand: true }, S5);
+    const asked = runVerb(db, 'createRecord', { name: 'Tidy later', description: 'd', tier: 2, last, here: { before: [fix.id] } }, S5).asked;
+    assert.ok(q.show(db, asked.id, null).options.find((o) => o.type === 'b').getsYou.includes(look.id), 'the row names the end it waits on');
+    const made = q.answer(db, { id: asked.id, pick: 'b' }, { user: 's5' }).placement.created;
+    assert.deepEqual([made.after, made.before], [[look.id], []]);
+  }
   /* on the held track a marked blank (no before, no last line) is refused on every filing path, writing nothing, with both calls */
   const count = () => db.prepare("SELECT count(*) AS n FROM records WHERE kind = 'task'").get().n;
   const edges = () => db.prepare('SELECT count(*) AS n FROM depends').get().n;
@@ -432,7 +455,11 @@ test('a filing lands where its tier says, before the closing review, and a tier 
     /* a batch whose later step is blank writes none of it */
     if (via === 'close') blank(() => runVerb(db, 'taskUpdate', { id: open.id, status: 'done', ...mark, leftovers: [{ name: 'Good', description: 'd', runBy: 'fork', tier: 2, last, here: { before: [two.id] } }, { name: 'Left over', description: 'd', runBy: 'fork', tier: 2 }] }, S));
     /* last with other work open is asked of the user, with here, and every path creates nothing */
-    assert.throws(() => go({ last }), (e) => /here/.test(e.message), via + ' asks for here');
+    /* with no here nothing on the held track waits, so the question offers the place asked, talk and drop, no do-it-here press */
+    const bare = q.show(db, go({ last }).asked.id, null);
+    assert.deepEqual([bare.options.map((o) => o.type).join(''), bare.pick, bare.placement.here, bare.options.some((o) => /this track/i.test(o.option))], ['abc', 'a', null, false], via);
+    if (via === 'create') assert.throws(() => q.answer(db, { id: bare.id, pick: 'd' }, { user: 's1' }), (e) => /no option d/.test(e.message), 'a letter the question lacks is refused, never read as talk');
+    if (via === 'create') assert.equal(q.answer(db, { id: bare.id, pick: 'a' }, { user: 's1' }).placement.created.track, line.id, 'its a creates it where asked');
     const had = count();
     const r = go({ last, here: { before: [two.id] } });
     assert.ok(r.asked && r.asked.id && (via === 'edit' || !r.id), via + ' ' + JSON.stringify(r));
@@ -637,6 +664,13 @@ test('closing a task files its leftovers at a real place and asks the rest of th
   /* a drop of a track with its tasks, one with a step open, is refused whole naming it */
   g.addItem(db, { task: trayed.id, text: 'wire it' }, 'cli');
   assert.throws(() => t.dropTrack(db, { track: other.id, reason: 'scrapped', leftovers: 'drop' }, 'cli'), (e) => e.data.openSteps[0].id === trayed.id && /wire it/.test(e.message));
+  /* a step waiting on an open task of the held track that nothing there follows is asked with no here, and the close lands */
+  const later = task(db, line.id, 'Later work');
+  g.addItem(db, { task: later.id, text: 'review the records once in use' }, 'cli');
+  const left = runVerb(db, 'taskUpdate', { id: later.id, status: 'done', leftovers: [{ check: 1, runBy: 'fork', tier: 3, unparkWhen: 'task-completes ' + next.id,
+    whyElsewhere: 'it reads the records in use; they exist only once ' + next.id + ' ships' }] }, S);
+  const parkedQ = q.show(db, left.leftovers[0].asked.id, null);
+  assert.deepEqual([runVerb(db, 'readRecord', later.id, null).status, parkedQ.placement.here, parkedQ.options.length], ['done', null, 3]);
 });
 
 test('a step its worker will not do moves onto another task, into a new task or to an open question, struck with where it went; a bad move writes nothing', () => {
@@ -701,6 +735,8 @@ test('a review covers the code finished before it started; a fix finished after 
   const done = runVerb(db, 'editRecord', { id: review.id, status: 'done' }, at(13));
   assert.deepEqual(done.covers, [one.id], 'the default covers only what finished before the review started');
   const covered = () => Object.fromEntries(runVerb(db, 'coverage', { scope: line.id }, null).tasks.map((x) => [x.id, x.covered]));
+  /* review covers with no list on the closed review keeps what it read, never empties it */
+  assert.deepEqual(runVerb(db, 'reviewCovers', { review: review.id }, at(13)).covers.map((x) => x.id), [one.id]);
   assert.deepEqual(covered(), { [one.id]: true, [fix.id]: false });
   link(one.id, 'd', 14);
   assert.equal(covered()[one.id], false, 'a commit after the cover uncovers it');

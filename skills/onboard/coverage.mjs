@@ -3,7 +3,7 @@
    backticked tokens, conditions, entry ids and check phrases must all be there. A cut item is a gap unless its
    source marks it out of force, an answer dropped it, or its judgment's evidence holds; every block of a rule file
    that goes is named by an item. Folders carry no rows: their gate is their evidence (apply.mjs).
-   coverage(items, { manifest, readRecord, readFile, ledger, repoint, judged, whole, proved, exists, going }) -> coverage.json */
+   coverage(items, { manifest, readRecord, readFile, ledger, repoint, judged, whole, proved, exists, going, lineEdits, records, backed }) -> coverage.json */
 
 const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -72,9 +72,41 @@ export function tokensOf(clause) {
 /* The tokens of a clause a record's text lacks (whitespace and case folded). */
 export function covers(record, clause) {
   const text = oneLine(record);
+  const words = leftOut(text, oneLine(clause));
   /* a clause copied word for word loses nothing */
-  if (text.toLowerCase().includes(oneLine(clause).toLowerCase())) return [];
-  return tokensOf(clause).filter((k) => !k.re.test(text)).map((k) => k.t);
+  if (text.toLowerCase().includes(words.toLowerCase())) return [];
+  return tokensOf(words).filter((k) => !k.re.test(text)).map((k) => k.t);
+}
+
+/* A private value the record replaced with a marker ("[address left out]") is no loss: where the words around a
+   marker in the record frame a span of the clause, that span reads as the marker. A marker stands for one value (an
+   address, a key, a host, an id, a handle): a span of one token, so a phrase behind a marker stays a gap */
+const MARKER = /\[[a-z][a-z ]{0,30} left out\]/gi;
+const IS_MARKER = new RegExp(MARKER.source, 'i');
+const CONTEXT = [24, 12, 6, 3];
+export const ONE_VALUE = /^\S{1,256}$/;
+function leftOut(text, clause) {
+  const marks = [...text.matchAll(MARKER)];
+  let out = clause;
+  marks.forEach((m, k) => {
+    const from = k ? marks[k - 1].index + marks[k - 1][0].length : 0;
+    const to = k + 1 < marks.length ? marks[k + 1].index : text.length;
+    const after = m.index + m[0].length;
+    for (const n of CONTEXT) {
+      const l = text.slice(Math.max(from, m.index - n), m.index).toLowerCase();
+      const r = text.slice(after, Math.min(to, after + n)).toLowerCase();
+      if (!l.trim() && !r.trim()) return;
+      const lo = out.toLowerCase();
+      /* framed on both sides, or at the clause's own start or end when the record's words run past it */
+      for (let a = l ? lo.indexOf(l) : 0; a >= 0; a = l ? lo.indexOf(l, a + 1) : -1) {
+        const s = a + l.length;
+        const b = r ? lo.indexOf(r, s) : lo.length;
+        if (b > s && ONE_VALUE.test(out.slice(s, b).trim()) && !IS_MARKER.test(out.slice(s, b))) { out = out.slice(0, s) + m[0] + out.slice(b); return; }
+        if (!l) break;
+      }
+    }
+  });
+  return out;
 }
 
 /* an item's own lines in its file: line to end, the line alone, or the whole file; null with no file to read */
@@ -128,15 +160,30 @@ const DROP_SHAPES = new Set(['stale', 'superseded', 'history', 'loader']);
 const bareKey = (p) => String(p || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/:\d+$/, '').replace(/\/+$/, '');
 const inside = (p, folder) => { const f = bareKey(folder); const x = bareKey(p); return x === f || x.startsWith(f + '/'); };
 const listOf = (v) => (Array.isArray(v) ? v : v ? [v] : []).map(String).filter((x) => x.trim());
-function evidenceBacks(j, { exists, going }) {
+/* for a stale or superseded cut, its own file (or a folder holding it) says only that the file goes, never that
+   its subject did, so it is no evidence; a history or loader cut is judged by its own text. A board record holds by status */
+const OWN_FILE_NO_EVIDENCE = new Set(['stale', 'superseded']);
+function evidenceBacks(j, own, { exists, going, records }) {
   if (!j || !DROP_SHAPES.has(String(j.shape)) || !oneLine(j.why) || !exists) return null;
   const ev = j.evidence || {};
-  const gone = listOf(ev.gone);
-  const cites = listOf(ev.cites);
-  if (!gone.length && !cites.length) return null;
+  const mine = (p) => Boolean(own) && OWN_FILE_NO_EVIDENCE.has(String(j.shape)) && inside(own, p);
+  const gone = listOf(ev.gone).filter((p) => !mine(p));
+  const cites = listOf(ev.cites).filter((p) => !mine(p));
+  const named = listOf(ev.records);
+  if (!gone.length && !cites.length && !named.length) return null;
   if (gone.some((p) => exists(bareKey(p)) && !going.some((g) => inside(p, g))) || cites.some((p) => !exists(bareKey(p)))) return null;
-  return j.shape + ': ' + oneLine(j.why) + ' (' + [gone.length ? 'gone: ' + gone.join(', ') : '', cites.length ? 'cites: ' + cites.join(', ') : ''].filter(Boolean).join('; ') + ')';
+  const held = named.map((id) => (records ? records(id) : null));
+  if (held.some((h) => !h)) return null;
+  return j.shape + ': ' + oneLine(j.why) + ' (' + [gone.length ? 'gone: ' + gone.join(', ') : '', cites.length ? 'cites: ' + cites.join(', ') : '',
+    held.length ? 'records: ' + held.join(', ') : ''].filter(Boolean).join('; ') + ')';
 }
+/* the map's re-check reads the same test, so a judgment coverage refuses never reads holds later */
+export const OWN_ONLY = 'its evidence names only its own file, which says the file goes, not that the rule is stale: name what made it stale, a path or a board record';
+export const ownOnly = (j, own) => {
+  const ev = (j && j.evidence) || {};
+  const paths = [...listOf(ev.gone), ...listOf(ev.cites)];
+  return OWN_FILE_NO_EVIDENCE.has(String(j && j.shape)) && paths.length > 0 && !listOf(ev.records).length && paths.every((p) => inside(own, p));
+};
 
 /* the blocks of a rule file a session reads, past its frontmatter: each bullet with its run-on lines, each
    paragraph, table row and fence; headings, comments and rules carry none */
@@ -173,9 +220,22 @@ const meets = (a, [from, to]) => a[0] <= to && from <= a[1];
 /* a card step as the item gave it: its words, and its command */
 const stepParts = (s) => (typeof s === 'string' ? [s] : s && typeof s === 'object' ? [s.text || s.title || '', s.run || s.command || s.cmd || ''] : []).map(oneLine).filter(Boolean);
 
-export function coverage(items, { manifest, readRecord, readFile = null, ledger = [], repoint = null, judged = [], whole = [], proved = {}, exists = null, going = [] } = {}) {
+export const lineEditKey = (e) => 'lineEdit:' + e.file + '#L' + e.line;
+/* a line edit waits while coverage has a gap on its words or on an item that names them */
+export function lineEditHeld(e, cov, items = []) {
+  const s = ((cov && cov.sources) || []).find((x) => bareKey(x.file) === bareKey(e.file));
+  if (!s) return null;
+  const at = [Number(e.line), Number(e.end || e.line)];
+  const naming = new Set(items.filter((x) => x.source && bareKey(x.source.file) === bareKey(e.file) && meets(rangeOf(x), at)).map((x) => x.id));
+  const g = s.gaps.find((x) => x.item === lineEditKey(e) || naming.has(x.item));
+  return g ? g.item + ': ' + g.why : null;
+}
+
+export function coverage(items, { manifest, readRecord, readFile = null, ledger = [], repoint = null, judged = [], whole = [], proved = {}, exists = null, going = [], lineEdits = [], records = null, backed = [] } = {}) {
   const steps = ((manifest && manifest.imports) || []).filter((i) => !i.undone).flatMap((i) => i.steps || []);
-  const written = new Map(steps.filter((s) => s.id && s.row).map((s) => [s.row, s.id]));
+  /* an item's record is what its own step made; a later step on it (a task's checklist) answers "ok" */
+  const written = new Map();
+  for (const s of steps) if (s.id && s.row && (!written.has(s.row) || s.step === s.row)) written.set(s.row, s.id);
   const sources = new Map();
   const runFiles = [...new Set(items.map((x) => x.source && x.source.file).filter(Boolean))];
   const lines = linesOf(readFile, new Map());
@@ -201,9 +261,10 @@ export function coverage(items, { manifest, readRecord, readFile = null, ledger 
     if (r.cut) {
       const off = notInForce(r, readFile, runFiles, lines);
       if (off) { back('not in force: ' + off); continue; }
-      const ev = evidenceBacks(judgedItem.get(r.id), { exists, going });
+      const ev = evidenceBacks(judgedItem.get(r.id), file, { exists, going, records });
       if (ev) { back('dropped as ' + ev); continue; }
-      s.gaps.push({ item: r.id, why: 'cut: it reaches no record, no answer of the user dropped it, and it carries no drop shape with evidence that holds' });
+      s.gaps.push({ item: r.id, why: 'cut: it reaches no record, no answer of the user dropped it, and it carries no drop shape with evidence that holds'
+        + (ownOnly(judgedItem.get(r.id), file) ? ' (' + OWN_ONLY + ')' : '') });
       continue;
     }
     const id = written.get(r.id) || (r.kind === 'card' ? r.target || 'its card' : null);
@@ -241,8 +302,11 @@ export function coverage(items, { manifest, readRecord, readFile = null, ledger 
     if (!lost.length && !lostSteps.length) { s.covered++; continue; }
     for (const x of lost) s.gaps.push({ item: r.id, clause: x.clause, missing: x.missing, why: id + ' lost ' + x.missing.join(', ') });
   }
+  /* a folder a group answer ended (plan.backed) goes whole on that answer, so none of its blocks is read */
+  for (const b of backed || []) { const s = src(bareKey(b.path) + '/'); s.backed++; s.drops.push({ item: 'folder:' + bareKey(b.path), why: 'ended whole by the answer to ' + b.call }); }
   /* every block of a rule file that goes is named by an item, so an omitted rule is a gap, not a silent loss */
   for (const file of whole || []) {
+    if ((backed || []).some((b) => inside(file, b.path))) continue;
     const raw = readFile ? readFile(file) : null;
     if (typeof raw !== 'string') continue;
     /* the lines an earlier run's coverage passed, from the source's map row, are named too */
@@ -252,6 +316,14 @@ export function coverage(items, { manifest, readRecord, readFile = null, ledger 
       if (named.some((rg) => meets(rg, [b.line, b.end]))) continue;
       src(file).gaps.push({ item: 'line ' + b.line, line: b.line, clause: b.text, why: 'no item names it: convert it, or cut it with its shape and evidence' });
     }
+  }
+  /* the words a kept file's line edit takes out read like a block of a rule file that goes: an item names them, or
+     the gap holds the edit; a replace whose new words carry them all takes out nothing */
+  for (const e of lineEdits || []) {
+    if (!/\w/.test(e.struck || '') || (e.kind === 'replace' && !covers(e.with || '', e.struck).length)) continue;
+    const at = [Number(e.line), Number(e.end || e.line)];
+    if (items.some((x) => x.kind !== 'fix' && x.source && bareKey(x.source.file) === bareKey(e.file) && meets(rangeOf(x), at))) continue;
+    src(e.file).gaps.push({ item: lineEditKey(e), line: e.line, clause: oneLine(e.struck), edit: true, why: 'the line edit takes it out and no item names it: convert it, or cut it with its shape and evidence' });
   }
   /* each instruction file's ledger: a carried clause needs its record, a split one its kept words too, a dropped one its reason */
   const claude = (ledger || []).map((l) => {
@@ -280,10 +352,14 @@ export function repointGaps(cov, rep) {
   /* the latest repoint's gaps replace an earlier one's */
   for (const s of cov.sources) s.gaps = s.gaps.filter((g) => !String(g.item || '').startsWith('citations:'));
   for (const h of (rep && rep.unresolved) || []) {
-    if (!h.tool) continue;
-    let s = cov.sources.find((x) => x.file === h.of);
-    if (!s) cov.sources.push(s = { file: h.of, items: 0, covered: 0, backed: 0, gaps: [], drops: [] });
-    s.gaps.push({ item: 'citations:' + h.of, why: 'a tool prints it at ' + h.file + ' line ' + h.line + ' (' + h.form + '), and the repoint could not resolve it', file: h.file, line: h.line, form: h.form });
+    /* a bare name several going files share holds each of them until the session says which */
+    if (!h.tool && !h.among) continue;
+    for (const of of h.among || [h.of]) {
+      let s = cov.sources.find((x) => x.file === of);
+      if (!s) cov.sources.push(s = { file: of, items: 0, covered: 0, backed: 0, gaps: [], drops: [] });
+      s.gaps.push({ item: 'citations:' + of, why: (h.among ? 'a bare name at ' + h.file + ' line ' + h.line + ' may mean it or ' + (h.among.length - 1) + ' other going files of that name, and nothing settles which'
+        : 'a tool prints it at ' + h.file + ' line ' + h.line + ' (' + h.form + '), and the repoint could not resolve it'), file: h.file, line: h.line, form: h.form });
+    }
   }
   return settle(cov);
 }

@@ -160,6 +160,30 @@ test('a card written from an onboarding routine row parses clean, its steps and 
   const rel = parse(release.text, release.name + '.md');
   assert.equal(rel.ok, true, rel.errors.join('; ') + '\n' + release.text);
   assert.deepEqual(rel.proc.commands.filter((c) => c.section === 'Verify').map((c) => c.line), ['npm view . version'], 'Verify runs the named check, never the publish');
+  /* a step prints as written: its sentence never runs into its command, its heading is whole, a bare path is
+     named and not run, its code keeps its lines, and an MCP tool is called, never fenced as a shell line */
+  const code = 'Take a snapshot first:\n```python\nfrom snap import take\npre = take()\n```';
+  const steps = [{ text: 'Rebuild the app (with `--clean`): run the build.', run: 'npm run build -- --clean' }, { text: 'Read `tools/snap.py` and `node-map.json` first.' },
+    { text: code }, { text: 'Start a debug session.', run: 'mcp__ide__debugger_launch' }, { text: 'Check it (the CLI checks too.)', run: 'npm run check' },
+    { text: 'Never run `node tools/publish.mjs --force` here.' }, 'Then run `npm test`.',
+    { text: 'Build it with `mcp__a__b_c`.' }, { text: 'Probe the app and stamp the zip.', run: 'curl.exe -s http://localhost:5000/health\n(Get-Item out/app.zip).LastWriteTime' }];
+  /* the item's summary, words and preconditions print; a generic program is never a trigger or a reference */
+  const fields = { steps, summary: 'Rebuild the app clean and check it.', words: ['clean rebuild'], commands: ['wpr', 'tools/x.ps1'],
+    preconditions: [{ text: 'The app is running', check: 'curl.exe -s http://localhost:5000/health' }] };
+  const written = cardText(cardRow({ title: 'Rebuild', fields }, 'docs/procedures/rebuild.md'));
+  const wr = parse(written.text, written.name + '.md');
+  assert.equal(wr.ok, true, wr.errors.join('; ') + '\n' + written.text);
+  /* an object step runs only its run: one that names a command fences none, a string step's command span runs */
+  assert.deepEqual(wr.proc.commands.filter((c) => c.section !== 'Verify').map((c) => c.section + ': ' + c.line), ['Preconditions: curl.exe -s http://localhost:5000/health',
+    'Steps: npm run build -- --clean', 'Steps: npm run check', 'Steps: npm test', 'Steps: curl.exe -s http://localhost:5000/health', 'Steps: (Get-Item out/app.zip).LastWriteTime']);
+  assert.ok(wr.proc.refs.some((x) => x.target === 'tools/publish.mjs') && !(wr.proc.triggers.commands || []).includes('tools/publish.mjs'), written.text);
+  assert.deepEqual([wr.proc.summary, wr.proc.triggers.words, wr.proc.triggers.commands], [fields.summary, ['rebuild', 'clean rebuild'], ['tools/x.ps1']]);
+  assert.ok(!wr.proc.refs.some((x) => /curl/.test(x.target)), written.text);
+  /* a step's body follows its heading without repeating it; a tool name keeps its underscores; a run is one fence in the shell any PowerShell line needs */
+  assert.ok(!/[.!?;:]["')\]]*: `/.test(written.text) && written.text.split('Rebuild the app (with').length === 2, written.text);
+  assert.ok(/### 8\. .*`mcp__a__b_c`/.test(written.text) && /```powershell\ncurl\.exe[^\n]*\n\(Get-Item[^\n]*\n```/.test(written.text), written.text);
+  assert.ok(['tools/snap.py', 'node-map.json'].every((p) => wr.proc.refs.some((x) => x.target === p)), 'a path the step names is a reference');
+  assert.ok(written.text.includes(code.split('\n').slice(1).join('\n')) && written.text.includes('mcp__ide__debugger_launch'), written.text);
   assert.deepEqual(r.proc.refs.map((x) => x.target), ['scripts/build-driver.ps1', 'scripts/test.mjs']);
   const bare = cardText(routine('Run the tests: `npm test`.', 'Run the tests', 'docs/procedures/run-the-tests.md'));
   const b = parse(bare.text, bare.name + '.md');
@@ -234,7 +258,12 @@ test('staleness: a referenced file changed, a symbol gone, a flag gone, a script
   mkdirSync(join(dir, 'out'));
   writeFileSync(join(dir, 'out', 'app.exe'), 'x');
   writeFileSync(join(dir, '.git', 'info', 'exclude'), 'out/\n');
-  assert.deepEqual(pr.lint(dir, { ...proc, backticks: proc.backticks.concat({ section: 'Steps', token: 'out/app.exe' }) }), ['lib/b.mjs (in Steps) is not in References']);
+  /* a path the steps send a session to that a commit deleted is read; one the repo never held, a placeholder and a URL are not */
+  commitFile(dir, 'lib/gone.mjs', 'x\n');
+  git(dir, 'rm', '-q', 'lib/gone.mjs');
+  git(dir, 'commit', '-q', '-m', 'drop lib/gone.mjs');
+  const named = ['out/app.exe', 'out/later.zip', 'lib/gone.mjs', 'lib/never.mjs', 'docs/<name>.md', 'https://x/y.md'].map((token) => ({ section: 'Steps', token }));
+  assert.deepEqual(pr.lint(dir, { ...proc, backticks: proc.backticks.concat(named) }).map((w) => w.split(' ')[0]), ['lib/b.mjs', 'lib/gone.mjs']);
   const head = git(dir, 'rev-parse', 'HEAD');
   commitFile(dir, 'lib/a.mjs', 'export const SYMBOL = 2;\n');
   assert.deepEqual(pr.judge(dir, proc, { self: head }), ['changed since ' + head.slice(0, 7) + ': lib/a.mjs (1 commit)']);
@@ -252,6 +281,13 @@ test('staleness: a referenced file changed, a symbol gone, a flag gone, a script
   assert.ok(gone.includes('gone: scripts/build.mjs'), gone.join('; '));
   assert.ok(gone.includes('command gone: scripts/build.mjs'), gone.join('; '));
   assert.ok(pr.judge(dir, proc, { self: 'f'.repeat(40) }).includes('the verified commit fffffff is not in the repo'));
+  /* judged at a commit (the vouch's before), the files are read as that commit holds them, not on disk */
+  const at = git(dir, 'rev-parse', 'HEAD');
+  const then = pr.judge(dir, proc, {}, { head: at });
+  assert.deepEqual(['gone: scripts/build.mjs', 'command gone: scripts/build.mjs', 'flag gone: --check in scripts/build.mjs'].map((x) => then.includes(x)), [false, false, true], then.join('; '));
+  /* a References bullet the handover noted with git is history, never gone */
+  const noted = parse(DEMO.replace('`scripts/build.mjs`: the build.', '`scripts/build.mjs`: the build. (in git at ' + at.slice(0, 10) + ')')).proc;
+  assert.ok(!pr.judge(dir, noted, { self: at }).includes('gone: scripts/build.mjs'));
 });
 
 /* ---- the watcher's matching ---- */
@@ -317,6 +353,13 @@ test('a command matches inside a covered repo only; an edit matches its glob and
     ['Grep', { pattern: 'fixme', path: 'lib' }], ['Glob', { pattern: 'docs/**/*.md' }]]) assert.deepEqual(on(tool, input), [], tool + ' ' + JSON.stringify(input));
   for (const [tool, input, cwd] of [['Grep', { pattern: 'TODO' }], ['Grep', { pattern: 'todo', path: 'C:/src/proj/lib/x' }],
     ['Grep', { pattern: 'TODO', glob: 'lib/**/*.mjs' }], ['Glob', { pattern: '**/*TODO*' }, 'C:/src/proj/lib']]) assert.equal(on(tool, input, cwd).length, 1, tool + ' ' + JSON.stringify(input));
+  /* a shell read or search points as the tools do; a written file, an unknown flag, a variable path or a piped search stays silent */
+  const sh = (command, shellCwd) => decisionHits(marked, { tool: 'Bash', input: { command }, cwd: 'C:/src/proj', shellCwd }).length;
+  for (const [used, at] of [['rg -n TODO lib'], ['grep -rn todo'], ['cat docs/index.md 2>/dev/null | head -5'], ['Get-Content -Path docs/index.md -TotalCount 40'],
+    ['Select-String -Path lib/*.mjs -Pattern TODO'], ['cat index.md', 'C:/src/proj/docs'], ['cd docs && sed -n 1,20p index.md'], ['rg TODO /c/src/proj/lib']])
+    assert.equal(sh(used, at), 1, used);
+  for (const said of ['rg -n FIXME lib', 'rg TODO src', 'echo x > docs/index.md', "cat > docs/index.md <<'EOF'\nx\nEOF", 'cat $D/index.md',
+    'rg --no-such-flag TODO lib', 'git log | rg TODO', 'cd $X && cat docs/index.md', 'grep TODO']) assert.equal(sh(said), 0, said);
   /* an edit's contains word matches in any case, and an edit that does not write it stays silent */
   const worded = [{ id: 'K-6', project: 'C:/src/proj', files: ['lib/a.mjs | Opus'] }];
   const wrote = (new_string) => decisionHits(worded, { tool: 'Edit', input: { file_path: 'C:/src/proj/lib/a.mjs', new_string }, cwd: 'C:/src/proj' }).length;
@@ -327,7 +370,9 @@ test('a command matches inside a covered repo only; an edit matches its glob and
   const tone = (command) => pm.matchCall([TONE], { tool: 'PowerShell', input: { command }, cwd: 'C:/src/proj' }).map((h) => h.why);
   assert.deepEqual(tone('& "C:/node/node.exe" tools/app-smoke.mjs app.exe out/x --asio-signal 512 --counter-tone --tone-peak 0.5'), ['the command runs with --counter-tone']);
   for (const used of ["$env:APP_DRY_RUN = '1'\nnode tools/noise-stream.js", 'APP_DRY_RUN=1 node tools/noise-stream.js',
-    'flutter.bat build apk --dart-define=APP_TEST_TONES=true']) assert.equal(tone(used).length, 1, used);
+    'flutter.bat build apk --dart-define=APP_TEST_TONES=true',
+    /* Start-Process runs its -FilePath with its -ArgumentList */
+    "(Start-Process app.exe -ArgumentList '--asio-signal','512','--counter-tone' -PassThru -Wait).ExitCode"]) assert.equal(tone(used).length, 1, used);
   for (const said of ['rg -- --counter-tone tools', 'grep -rn APP_DRY_RUN tools', "$env:APP_DRY_RUN = '1'", 'echo $env:APP_DRY_RUN',
     'git commit -m "APP_TEST_TONES=true" -- a', 'git log -S APP_DRY_RUN', 'node tools/noise-stream.js --counter-tones'])
     assert.equal(tone(said).length, 0, said);
@@ -361,6 +406,11 @@ test('the pointer note names the file and the run verb; a stale card says why', 
   const cmd = pm.procNote(CARD, 'x', { recorded: true });
   assert.ok(!cmd.includes('proc ran release clean') && /deviated.*--fixed.*--one-off.*--filed/.test(cmd));
   assert.ok(!pm.procNote(CARD, 'x', { agent: true, recorded: true }).includes('proc ran'));
+  /* a sandboxed or agent-worktree run of the command is recorded by no one */
+  assert.deepEqual(['ASKERDO_ROOT=/s/a node --test x', "$env:ASKERDO_SANDBOX_HOME = 'C:/s/h'; node --test x",
+    'cd C:/r/.claude/worktrees/agent-a1 && node --test x', 'node --test x', 'env -u ASKERDO_ROOT node --test x', 'ASKERDO_ROOT= node --test x'].map((c) => pm.testRun(c)), [true, true, true, false, false, false]);
+  assert.deepEqual([pm.testRun('node --test x', ['C:\\r\\.claude\\worktrees\\agent-a1']), pm.testRun('node --test x', ['C:/r/.claude/worktrees/feature'])], [true, false]);
+  assert.ok(!/proc ran release (clean|deviated)/.test(pm.procNote(CARD, 'x', { recorded: true, test: true })));
   assert.ok(!/[\u2013\u2014]/.test(note));
   assert.deepEqual(pm.badgeOf({ ...CARD, flag: 'x', stale: ['y'] }).badge, 'flagged');
   assert.deepEqual(pm.badgeOf({ ...CARD, verifiedAt: '2026-10-20' }).badge, 'fresh');

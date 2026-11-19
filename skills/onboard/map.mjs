@@ -4,6 +4,7 @@
    blobsOf aside. */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { OWN_ONLY, ownOnly } from './coverage.mjs';
 
 export const RUN = 'run:';
 export const CALL = 'call:';
@@ -104,6 +105,8 @@ export function evidenceOf(ev) {
   for (const k of ['cites', 'gone']) { const xs = [...new Set(pathsOf(e[k]).map(bare))]; if (xs.length) out[k] = xs; }
   if (e.until && typeof e.until === 'object' && Object.keys(e.until).length) out.until = e.until;
   if (e.call) out.call = String(e.call);
+  const records = [...new Set(listOf(e.records).map((x) => String(x).trim()).filter(Boolean))];
+  if (records.length) out.records = records;
   return out;
 }
 const DONE = ['done', 'dropped'];
@@ -122,12 +125,31 @@ export function eventCame(until, { tasks = new Map(), tracks = new Map(), answer
   return 'its event names nothing the board can watch';
 }
 
+/* the survey's board records as a lookup, so a rehearsal on a scratch board reads the statuses the live
+   board had, with no call: a task closed, a decision or fact in force, a question answered holds. A ref is an id or
+   id@key; records(ref) says why it holds, or null */
+export function boardRecords(board) {
+  const b = board || {};
+  const all = [...[...(b.openTasks || []), ...(b.closedTasks || [])].map((t) => ({ ...t, kind: 'task' })),
+    ...(b.decisions || []).map((d) => ({ ...d, kind: 'decision', status: 'in force' })),
+    ...(b.knowledge || []).map((k) => ({ ...k, kind: 'knowledge', status: k.status || 'active' })), ...(b.questions || []).map((q) => ({ ...q, kind: 'question', status: 'answered' }))];
+  return (ref) => {
+    const m = /^([A-Z]{1,3}-\d+|Q\d+)(?:@([0-9a-z]{8}))?$/.exec(String(ref || '').trim());
+    if (!m) return null;
+    /* a key names its one record; an id alone, or a key no listed record carries, names the record by its id */
+    const rec = (m[2] && all.find((x) => x.key === m[2])) || all.find((x) => x.id === m[1] && !(m[2] && x.key));
+    if (!rec || !(rec.kind === 'task' ? DONE.includes(rec.status) : rec.kind === 'knowledge' ? rec.status === 'active' : true)) return null;
+    return m[0] + ' is ' + rec.status;
+  };
+}
+
 /* The map read against the repo now: { last, sources, folders, calls, judgments, markOf, counts }. hashOf(path) is a
    file's blob (its text's hash when HEAD holds no clean one); sigOf(folder/) a folder's sig; lastFolders the last run's
    sigs. reads(reader, path) says whether a reader is gone or still names a path; clauseHere(clauseId) whether a
-   clause still stands in its file; board the tasks, tracks and answered questions an event is checked against. */
+   clause still stands in its file; board the tasks, tracks and answered questions an event is checked against.
+   judge: false (the survey's default) leaves the earlier keeps and drops unchecked and unlisted. */
 export const ENDED = ['delete', 'move'];
-export function markMap(map, { hashOf, sigOf, exists, seeds = [], reads = () => true, clauseHere = () => true, board = {} }) {
+export function markMap(map, { hashOf, sigOf, exists, seeds = [], reads = () => true, clauseHere = () => true, board = {}, judge: rejudge = true }) {
   const rows = (map && map.rows) || [];
   const last = (map && map.last) || null;
   /* a path a run's handover retired (its folder or itself deleted or moved) and still not back is settled */
@@ -140,11 +162,15 @@ export function markMap(map, { hashOf, sigOf, exists, seeds = [], reads = () => 
   const folders = [];
   const calls = [];
   for (const r of rows) {
-    if (r.kind === 'file' && ENDED.includes(r.fate)) folders.push({ folder: r.source, fate: r.fate, ...(r.why ? { why: r.why } : {}), ...(r.sha ? { at: r.sha } : {}), ...(r.detail && r.detail.to ? { to: r.detail.to } : {}) });
+    /* a row whose source is a ref outside the repo (github:owner/repo/issues/1) has nothing on disk to re-read: it stays converted */
+    if (r.kind === 'file' && /^[a-z][a-z0-9+.-]+:/i.test(String(r.source || ''))) { sources.push({ source: r.source, records: r.records, state: 'outside', ...(r.gone ? { gone: r.gone } : {}), ...(r.detail && Array.isArray(r.detail.lines) ? { lines: r.detail.lines } : {}) }); continue; }
+    /* a file row with a keep (a kept file that is also a source) lists its end as well as its source */
+    if (r.kind === 'file' && (ENDED.includes(r.fate) || r.fate === 'keep')) folders.push({ folder: r.source, fate: r.fate, ...(r.why ? { why: r.why } : {}), ...(r.sha ? { at: r.sha } : {}), ...(r.detail && r.detail.to ? { to: r.detail.to } : {}) });
     if (r.kind === 'file' && retired(r.source)) {
       sources.push({ source: r.source, records: r.records, state: 'retired' });
     } else if (r.kind === 'file') {
-      const now = exists(r.source) ? hashOf(r.source) : undefined;
+      /* a file row naming a whole folder reads its tree's hash, as the write and the handover stamp it */
+      const now = there(r.source) ? hashOf(r.source) : undefined;
       const state = now === undefined ? 'removed' : now && r.hash && now === r.hash ? 'unchanged' : 'changed';
       sources.push({ source: r.source, records: r.records, state, ...(r.gone ? { gone: r.gone } : {}), ...(r.detail && Array.isArray(r.detail.lines) ? { lines: r.detail.lines } : {}) });
     } else if (r.kind === 'folder' && !r.fate && (r.records || []).length) {
@@ -167,16 +193,16 @@ export function markMap(map, { hashOf, sigOf, exists, seeds = [], reads = () => 
   const counts = {};
   for (const s of sources) counts[s.state] = (counts[s.state] || 0) + 1;
   for (const c of calls) counts['calls ' + c.state] = (counts['calls ' + c.state] || 0) + 1;
-  /* what each run left out with no call: left still while its source is unchanged */
-  const left = new Map();
+  /* what each run left out, counted per group answer; a row from before the counts names items, read as none */
+  const left = [];
   for (const r of rows.filter((x) => x.kind === 'run')) for (const l of (r.detail && r.detail.left) || []) {
-    left.set(l.item, { item: l.item, ...(l.source ? { source: l.source } : {}), state: !l.source || retired(l.source) || subjectOf(l.source) === l.hash ? 'unchanged' : 'changed', run: r.source.slice(RUN.length) });
+    if (Number.isInteger(l.count)) left.push({ ...(l.call ? { call: l.call } : {}), count: l.count, run: r.source.slice(RUN.length) });
   }
-  const judgments = judge(rows, { there, hashOf, reads, clauseHere, board, calls });
-  for (const j of judgments) counts['judgments ' + j.state] = (counts['judgments ' + j.state] || 0) + 1;
+  const judgments = rejudge ? judge(rows, { there, hashOf, reads, clauseHere, board, calls }) : null;
+  for (const j of judgments || []) counts['judgments ' + j.state] = (counts['judgments ' + j.state] || 0) + 1;
   /* the instruction files the newest run saw, so the doctor tells a switched setting */
   const saw = rows.filter((x) => x.kind === 'run' && x.detail && x.detail.instructions).sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0)).pop();
-  return { last: last ? { run: last.source.slice(RUN.length), at: last.at, ...(last.sha ? { head: last.sha } : {}) } : null, sources, folders, calls, left: [...left.values()], judgments,
+  return { last: last ? { run: last.source.slice(RUN.length), at: last.at, ...(last.sha ? { head: last.sha } : {}) } : null, sources, folders, calls, left, ...(judgments ? { judgments } : {}),
     ...(saw ? { instructions: { ...saw.detail.instructions, run: saw.source.slice(RUN.length) } } : {}), markOf, counts };
 }
 
@@ -208,9 +234,12 @@ function judge(rows, { there, hashOf, reads, clauseHere, board, calls }) {
       if (seen === 'gone') because.push('its reader ' + r + ' is gone');
       else if (seen === false && j.kind !== 'clause') because.push(r + ' no longer names ' + named);
     }
+    /* a stale or superseded cut whose evidence is only its own file, as coverage refuses it */
+    if (j.kind === 'item' && ownOnly(j, subject)) because.push(OWN_ONLY);
     for (const p of ev.cites || []) if (!there(p)) because.push('its cite ' + p + ' no longer resolves');
     for (const p of ev.gone || []) if (there(p)) because.push(p + ' is in the tree');
     if (ev.until) { const came = eventCame(ev.until, board); if (came) because.push(came); }
+    for (const id of board.records ? ev.records || [] : []) if (!board.records(id)) because.push(id + ' no longer holds');
     if (ev.call && callState.get(ev.call) !== 'unchanged') because.push('the call ' + ev.call + (callState.has(ev.call) ? '\'s subjects changed' : ' is not on the map'));
     if ((j.kind === 'item' || j.kind === 'file') && j.hash && hashOf(subject) !== j.hash) because.push(subject + ' changed since');
     out.push({ key: j.key, kind: j.kind, subject, ...(j.clause ? { clause: j.clause } : {}), fate: j.fate, ...(j.why ? { why: j.why } : {}), ...(j.shape ? { shape: j.shape } : {}),
@@ -219,9 +248,9 @@ function judge(rows, { there, hashOf, reads, clauseHere, board, calls }) {
   return out.sort((a, b) => (a.key < b.key ? -1 : 1));
 }
 
-/* What the plan's rerun skip reads: a source the map holds, unchanged since, or seeded by an earlier import. */
+/* What the plan's rerun skip reads: a source the map holds, unchanged since or outside the repo, or seeded by an earlier import. */
 export function coveredBy(conversion) {
   const m = new Map();
-  for (const s of (conversion && conversion.sources) || []) if (s.state === 'unchanged' || s.state === 'seeded') m.set(s.source, s);
+  for (const s of (conversion && conversion.sources) || []) if (s.state === 'unchanged' || s.state === 'outside' || s.state === 'seeded') m.set(s.source, s);
   return m;
 }

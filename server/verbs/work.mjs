@@ -9,7 +9,7 @@ import {
 import {
   UsageError, LABEL_KINDS, endingStamps, historyItem, loadEntry, pickLabel, refsFor, relabelIfArchived, resolveRecord, shownFront, strList,
 } from './labels.mjs';
-import { wakeLinked } from './questions.mjs';
+import { reopenQuestion, wakeLinked } from './questions.mjs';
 import { APPROVED } from './placement-seam.mjs';
 import { TrackRefusal, addItem, itemsOf, loadRecord, readiness, settleChecks, shownWorkers } from './graph.mjs';
 import { decisionsFor } from './decisions.mjs';
@@ -55,11 +55,18 @@ export const WORK_KINDS = Object.freeze({
     kind: 'knowledge', verb: 'knowledge',
     keys: KEY_ORDERS.knowledge,
     arrays: ['projects', 'projectRepos', 'labels', 'refs', 'workstreams', 'tracks', 'tasks', 'files', 'commands', 'labelHistory'],
-    maps: ['source'], statuses: ['active', 'superseded', 'withdrawn'],
+    maps: ['source'], statuses: ['active', 'superseded', 'withdrawn', 'retired'],
   },
 });
 
-const TERMINAL = { workstream: ['closed'], task: ['dropped', 'done'], knowledge: ['superseded', 'withdrawn'] };
+const TERMINAL = { workstream: ['closed'], task: ['dropped', 'done'], knowledge: ['superseded', 'withdrawn', 'retired'] };
+
+/* a fact an import wrote carries the import's label and its onboard ref from its
+   creation (no verb adds a label to a knowledge record later), so the undo's withdraw takes it */
+export const isImportFact = (front) => Boolean(front) && front.type !== 'decision'
+  && (front.labels || []).some((l) => /^import:\S/.test(String(l))) && (front.refs || []).some((r) => /^onboard:\S/.test(String(r)));
+/* why a withdrawn record ended: a ruling never made, or a fact whose import was undone */
+export const withdrawnWhy = (front) => (front && front.type !== 'decision' ? 'its import was undone' : 'never ruled');
 
 /* In progress is read from an open run, never set; a status word naming it gets the call that starts one. */
 const IN_PROGRESS = 'in_progress';
@@ -79,7 +86,7 @@ const LEGACY_KNOWLEDGE_RE = /^[a-z0-9][a-z0-9-]*:[GD]-\d{4}$/;
 const refusal = {
   plan: 'a plan has no verbs on the board: its steps are tasks on a track',
   thread: 'a thread has no verbs on the board: it is a track now',
-  knowledge: 'a knowledge record has its own verbs: knowledge edit (while no other session has used it), knowledge amend or knowledge supersede',
+  knowledge: 'a knowledge record has its own verbs: knowledge new, knowledge edit (while no other session has used it), knowledge amend, knowledge supersede, or knowledge retire with --reason for a fact that stops being true',
   procedure: 'a procedure card has no generic verb: proc scan or proc ran',
   question: 'a question has its own verbs: answer, drop, snooze, wake',
 };
@@ -480,7 +487,7 @@ function applyEdit(k, front, c) {
   if (c.priority !== undefined) setScalar('priority', c.priority);
   if (c.clearWorkstream) { if (front.workstream !== undefined && front.workstream !== '') { delete front.workstream; changed.push('workstream'); } }
   else if (c.workstream !== undefined) setScalar('workstream', c.workstream);
-  if (c.handoff !== undefined) setScalar('handoff', c.handoff);
+  if (c.clearHandoff) { if (front.handoff) { delete front.handoff; changed.push('handoff'); } } else if (c.handoff !== undefined) setScalar('handoff', c.handoff);
   if (c.clearRunBy) { if (front.runBy) { delete front.runBy; changed.push('runBy'); } } else if (c.runBy !== undefined) setScalar('runBy', c.runBy);
   if (c.reviewScope === 'track') { if (front.reviewScope) { delete front.reviewScope; changed.push('reviewScope'); } } else if (c.reviewScope !== undefined) setScalar('reviewScope', c.reviewScope);
   /* setting a review scope marks a review, which is known by its label alone */
@@ -606,7 +613,7 @@ function editTexts(db, e, k, c) {
 }
 
 const fieldNamed = (c) => ['name', 'status', 'priority', 'workstream', 'handoff', 'serves', 'projectRepos', 'runBy', 'reviewScope', 'intent', 'description'].some((key) => c[key] !== undefined)
-  || c.clearRunBy || c.close !== undefined || c.clearClose || c.clearWorkstream || c.inHand || c.letGo || c.clearServes || c.addOutcome?.length || c.removeOutcome?.length
+  || c.clearRunBy || c.clearHandoff || c.close !== undefined || c.clearClose || c.clearWorkstream || c.inHand || c.letGo || c.clearServes || c.addOutcome?.length || c.removeOutcome?.length
   || ['addLabel', 'removeLabel', 'addRef', 'removeRef', 'addProject', 'removeProject'].some((key) => c[key]?.length);
 
 /* Field flips, and a task's intent and description while its work has not started.
@@ -698,6 +705,7 @@ function editFields(db, input, actor) {
     c[key] = c[key].replace(/\r\n/g, '\n').trim();
   }
   if (c.description === '') throw new UsageError('--description needs text');
+  if (c.handoff !== undefined && c.clearHandoff) throw new UsageError('pick one of --handoff and --clear-handoff');
   if (c.handoff !== undefined) c.handoff = handoffPath(c.handoff, '--handoff');
   /* who runs the task, as a handoff's leftover names it */
   if (c.runBy !== undefined && c.clearRunBy) throw new UsageError('pick one of --run-by and --clear-run-by');
@@ -728,7 +736,7 @@ function editFields(db, input, actor) {
     if ((c.inHand || c.letGo) && k.kind !== 'task') throw new UsageError('only a task is taken in hand');
     if ((c.addOutcome.length || c.removeOutcome.length) && k.kind !== 'workstream') throw new UsageError('only a workstream carries outcomes');
     if ((c.serves !== undefined || c.clearServes) && k.kind !== 'task') throw new UsageError('only a task serves outcomes');
-    if (c.handoff !== undefined && k.kind !== 'workstream') throw new UsageError('only a workstream carries a handoff folder');
+    if ((c.handoff !== undefined || c.clearHandoff) && k.kind !== 'workstream') throw new UsageError('only a workstream carries a handoff folder');
     if ((c.runBy !== undefined || c.clearRunBy) && k.kind !== 'task') throw new UsageError('only a task is run by someone');
     if (c.reviewScope !== undefined && k.kind !== 'task') throw new UsageError('only a review task has a review scope');
     checkVersion(e, c);
@@ -805,6 +813,8 @@ export function taskUpdate(db, input = {}, actor) {
     /* the steps its leftovers file count as settled at the close; they are struck once filed */
     if (left) { edit.leftovers = left.steps; edit[SETTLED] = left.taken; }
     if (editing) out.edit = editRecord(db, { id, kind: 'task', ...edit }, actor);
+    /* the reply names the checklist's change, so an edit that changed nothing else never reads unchanged */
+    if (out.edit && out.checks && out.checks.did) out.edit.checklist = out.checks.did;
     if (out.edit && out.edit.hand) out.hand = out.edit.hand;
     if (out.edit && out.edit.leftovers) Object.assign(out, { leftovers: out.edit.leftovers, steps: out.edit.steps });
     if (left && left.taken.length && out.leftovers) {
@@ -972,13 +982,15 @@ export function closeRecord(db, input = {}, actor) {
   });
 }
 
-/* For a premature close only; a workstream reopened past its archive day takes a fresh label. */
-export function reopenRecord(db, input = {}, actor) {
+/* For a premature close or a drop's undo; a workstream reopened past its archive day takes a fresh label. */
+export function reopenRecord(db, input = {}, actor, opts) {
   const ctx = actorOf(actor);
   return tx(db, () => {
     const hit = resolveRecord(db, String(input.id ?? '').trim(), { day: ctx.day });
+    if (hit && hit.kind === 'question') return reopenQuestion(db, input, actor, opts);
+    if (['until', 'trigger', 'wakeOn'].some((k) => input[k] !== undefined)) throw new UsageError('--until, --trigger and --wake-on snooze a reopened question, not a ' + ((hit && hit.kind) || 'record'));
     if (hit && hit.kind === 'task') throw new UsageError('a task reopens through task edit --status, not the reopen verb');
-    if (hit && hit.kind === 'knowledge') throw new UsageError('a knowledge record has no reopen verb: a superseded fact stays superseded');
+    if (hit && hit.kind === 'knowledge') throw new UsageError('a knowledge record has no reopen verb: a retired one comes back by knowledge reinstate ' + hit.label + ' --reason; a superseded or withdrawn one stays ended');
     const e = target(db, input.id, ['workstream'], ctx.day, 'reopen');
     checkVersion(e, input);
     const k = WORK_KINDS.workstream;
@@ -1271,7 +1283,8 @@ export function markSuperseded(db, old, byKey, ctx) {
   if (front.status === 'superseded') {
     throw new UsageError(front.id + ' is already superseded' + (front.supersededBy ? ' by ' + labelOf(db, front.supersededBy) : ''));
   }
-  if (front.status === 'withdrawn') throw new UsageError(front.id + ' is withdrawn: never ruled, so nothing supersedes it');
+  if (front.status === 'withdrawn') throw new UsageError(front.id + ' is withdrawn: ' + withdrawnWhy(front) + ', so nothing supersedes it');
+  if (front.status === 'retired') throw new UsageError(front.id + ' is retired: knowledge reinstate ' + front.id + ' first, or leave it ended');
   const before = snap(front);
   front.status = 'superseded';
   front.supersededBy = byKey;
@@ -1293,7 +1306,8 @@ function knowledgeTarget(db, id, day, verb) {
 }
 
 function liveKnowledge(db, front, verb) {
-  if (front.status === 'withdrawn') throw new UsageError(front.id + ' is withdrawn: never ruled');
+  if (front.status === 'withdrawn') throw new UsageError(front.id + ' is withdrawn: ' + withdrawnWhy(front));
+  if (front.status === 'retired') throw new UsageError(front.id + ' is retired: knowledge reinstate ' + front.id + ' --reason first, then ' + verb + ' it');
   if (front.status !== 'superseded') return;
   throw new UsageError(front.id + ' is superseded' + (front.supersededBy ? ' by ' + labelOf(db, front.supersededBy) + '; ' + verb + ' that one' : ''));
 }
@@ -1321,6 +1335,17 @@ export function amendKnowledge(db, input = {}, actor) {
     writeLine(db, ctx, { verb: 'edit', kind: 'knowledge', front: fields, changes: { ...changesOf(before, fields), body: 'amended', history: historyRef([h]) } });
     return { id: fields.id, kind: 'knowledge', name: fields.name, amended: fields.amended, history: h, version: e.version + 1 };
   });
+}
+
+/* a Body rewritten whole keeps the amended stamp only while it keeps an amendment paragraph */
+export const keepsAmendment = (body) => /^Amended \d{4}-\d{2}-\d{2} by /m.test(String(body ?? ''));
+
+/* The stamp a rewritten Body keeps: the time of the newest amend that left exactly this
+   text (a later amend undone), else the stamp it had, or none once no amendment stays. */
+export function amendedStampFor(db, key, text, stamp) {
+  if (!stamp || !keepsAmendment(text)) return null;
+  const row = db.stmt("SELECT at FROM history WHERE record = ? AND field = 'body' AND why = 'amended' AND new = ? ORDER BY id DESC LIMIT 1").get(key, String(text));
+  return row ? row.at : stamp;
 }
 
 /* knowledge edit: name and body rewritten in place only while no other session
@@ -1354,6 +1379,8 @@ export function editKnowledge(db, input = {}, actor) {
     if (text !== undefined && text !== (secs.Body ?? '')) {
       moved.push({ field: 'body', old: secs.Body ?? '', next: text });
       body = withSection(body, 'Body', text);
+      const stamp = amendedStampFor(db, e.key, text, front.amended);
+      if (stamp) front.amended = stamp; else delete front.amended;
     }
     if (moved.length) {
       const why = usedBy(db, e);
@@ -1378,6 +1405,43 @@ export function editKnowledge(db, input = {}, actor) {
     return { id: fields.id, kind: 'knowledge', name: fields.name, changed: [...moved.map((m) => m.field), ...listed, ...(confirmedNow ? ['confirmed'] : [])], history: ids, version: e.version + 1 };
   });
 }
+
+/* ---- the plain retire and its return ---- */
+
+/* A fact that stops being true ends with a reason and no replacement, and comes back by
+   reinstate; nothing is lost either way, so a session needs no press (the rule holds). */
+function retireOrBack(db, input, actor, verb) {
+  const ctx = actorOf(actor);
+  const reason = String(input.reason ?? '').replace(/\s+/g, ' ').trim();
+  if (!reason) throw new UsageError('knowledge ' + verb + ' needs --reason: ' + (verb === 'retire' ? 'why the record stopped being true' : 'why it holds again'));
+  return tx(db, () => {
+    const e = knowledgeTarget(db, input.id, ctx.day, verb);
+    checkVersion(e, input);
+    const front = normalize(WORK_KINDS.knowledge, { ...e.front });
+    if (front.type === 'decision') {
+      throw new UsageError(front.id + ' is a ruling: it changes only by supersede (a decide whose supersedes names ' + front.id + ') or the user\'s withdraw (override request --kind withdraw)');
+    }
+    const from = verb === 'retire' ? 'active' : 'retired';
+    if (front.status !== from) {
+      throw new UsageError(front.id + ' is ' + front.status + (front.status === 'withdrawn' ? ': ' + withdrawnWhy(front) : '')
+        + (verb === 'retire' ? ': only an active record retires' : ': only a retired record is reinstated'));
+    }
+    const before = snap(front);
+    front.status = verb === 'retire' ? 'retired' : 'active';
+    /* stamps closed; back after its archive day, it takes a fresh label */
+    endingStamps(db, 'knowledge', front, before, ctx);
+    front.updated = ctx.at;
+    const fields = orderFront(WORK_KINDS.knowledge, front);
+    save(db, e, fields);
+    const why = (verb === 'retire' ? 'retired: ' : 'reinstated: ') + reason;
+    const h = addHistory(db, ctx, { key: e.key, field: 'status', old: before.status, next: front.status, why });
+    writeLine(db, ctx, { verb: 'edit', kind: 'knowledge', front: fields, changes: { ...changesOf(before, fields), history: historyRef([h]) }, note: why });
+    return { id: fields.id, kind: 'knowledge', name: fields.name, status: fields.status, ...(fields.id !== before.id ? { was: before.id } : {}), history: h, version: e.version + 1 };
+  });
+}
+
+export const retireKnowledge = (db, input = {}, actor) => retireOrBack(db, input, actor, 'retire');
+export const reinstateKnowledge = (db, input = {}, actor) => retireOrBack(db, input, actor, 'reinstate');
 
 /* ---- reads ---- */
 

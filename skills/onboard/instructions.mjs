@@ -93,6 +93,10 @@ const MARK = String.fromCharCode(1);
 /* a path with a folder and a file, a folder with its slash, a glob in a folder, or a bare file name a project holds */
 const CITE = /(?<![\w/.:@~$%-])((?:[\w.-]+\/)+(?:[\w*-]+(?:\.[\w*-]+)*\.[A-Za-z0-9*]{1,8}|\*[\w.*-]*)?|[\w-]+(?:\.[\w-]+)*\.(?:md|markdown|txt|json|ya?ml|toml|mjs|cjs|js|ts|py|ps1|sh|cs))(?![\w/-])/g;
 
+/* the handover's repoint of a cite whose folder left: `<path> (in git at <sha>)` names history, never a live path;
+   placeCite puts the note past a code span's backticks or a link's closing parenthesis */
+export const IN_GIT = /^[`\])]* \(in git at [0-9a-f]+\)/;
+
 /* Each path a text names, with its line and whether an instruction file imports it (`@path`). */
 export function citesOfText(text) {
   const out = [];
@@ -100,7 +104,7 @@ export function citesOfText(text) {
     const l = raw.replace(VAR, ' ').replace(/(^|[\s(])@(?=[\w.])/g, '$1' + MARK);
     for (const m of l.matchAll(CITE)) {
       const p = m[1].replace(/^\.\//, '');
-      if (!p || p === '/' || /^\.+\/?$/.test(p)) continue;
+      if (!p || p === '/' || /^\.+\/?$/.test(p) || IN_GIT.test(l.slice(m.index + m[0].length))) continue;
       out.push({ raw: p, line: i + 1, ...(l[m.index - 1] === MARK ? { import: true } : {}) });
     }
   });
@@ -280,7 +284,7 @@ export function handoffsOf(ctx, resolve, here) {
 }
 
 /* ctx: { root, files, history (per path: commits, last, idx), lines (per commit), touch(f) -> { day, how }, open(f),
-   grep(patterns) -> [{ file, line, text }] }; instr: instructionFiles' result, each file's entry given the folders it
+   grep(patterns) -> [{ file, line, text }], citers and since: false to skip who cites each and the commits since }; instr: instructionFiles' result, each file's entry given the folders it
    names (`folders`, folder:line), which load nothing. */
 export function ruleFiles(ctx, instr) {
   const have = new Set(ctx.files);
@@ -366,8 +370,9 @@ export function ruleFiles(ctx, instr) {
     const own = e.loads.find((l) => l.by === 'rules');
     if (own) for (const c of e.cites.filter((x) => !x.folder && !x.front)) for (const n of c.lines || [c.line]) loadFrom('menu', e.file + ':' + n, [c], own.paths ? { paths: own.paths } : {});
   }
-  /* who cites each: one grep for their names, each hit line's cites resolved from its own file */
-  const names = [...new Set([...set.keys()].map((f) => posix.basename(f)))];
+  /* who cites each: one grep for their names, each hit line's cites resolved from its own file; with citers false
+     (the survey's default) only the instruction files' cites count */
+  const names = ctx.citers === false ? [] : [...new Set([...set.keys()].map((f) => posix.basename(f)))];
   for (const h of names.length ? ctx.grep(names) : []) {
     for (const c of citesOfText(h.text)) {
       const r = resolve(c.raw, h.file, true);
@@ -393,18 +398,21 @@ function sinceOf(ctx, e) {
   return all.length ? { commits: all.length, newest: all.slice(0, SINCE_SHOWN).map((i) => ctx.lines[i]) } : null;
 }
 
+/* a routine's own scripts: what a skill or command cites that is a file and no text */
+const ROUTINE = new Set(['skills', 'commands']);
 function entryOf(ctx, e) {
   const by = (s) => e.cites.filter((c) => c.state === s);
+  const scripts = ROUTINE.has(e.kind) ? [...new Set(by('ok').filter((c) => !c.folder && !TEXT_FILE.test(c.path)).map((c) => c.path))] : [];
   const ok = by('ok');
   const gone = by('gone').map((c) => ({ path: c.path, line: c.line, since: c.since }));
   const moved = by('moved').map((c) => ({ path: c.path, line: c.line, to: c.to }));
   const none = by('none').map((c) => c.path);
   const cited = [...e.cited].map(([f, l]) => f + ':' + l);
-  const since = sinceOf(ctx, e);
+  const since = ctx.since === false ? null : sinceOf(ctx, e);
   return {
     file: e.file, kind: e.kind, ...(e.role ? { role: e.role } : {}), last: ctx.touch(e.file).day, loads: e.loads,
     cites: { ok: ok.length, ...(gone.length ? { gone } : {}), ...(moved.length ? { moved } : {}), ...(none.length ? { none: none.slice(0, 5), ...(none.length > 5 ? { noneMore: none.length - 5 } : {}) } : {}) },
     ...(cited.length ? { citedBy: cited.slice(0, CITED_SHOWN), ...(cited.length > CITED_SHOWN ? { citedByMore: cited.length - CITED_SHOWN } : {}) } : {}),
-    ...(since ? { since } : {}),
+    ...(since ? { since } : {}), ...(scripts.length ? { scripts } : {}),
   };
 }

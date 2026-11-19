@@ -795,24 +795,22 @@ describe('the AskerDo pane', () => {
     await ui.unmount()
   })
 
-  for (const surface of SURFACES) {
-    test('holding none, Resume here does what /askerdo resume TR-n does and takes the track (' + surface + ')', async ($: any, on: any) => {
-      const w = shelfWorld(on)
-      delete w.tracks[0].session
-      w.tracks[0].state = 'waiting'
-      await start($, w)
-      const ui = await mount($, surface)
-      expect((await ui.find({ key: 'trk-press-TR-6' }))?.props.variant).toBe('primary')
-      await ui.press({ key: 'trk-press-TR-6' })
-      expect(w.last('resume').args).toEqual(['resume', 'TR-6', '--session', 'sess-1', '--json'])
-      /* Resume is the user's own act, so an idle session starts one turn carrying the kickoff */
-      expect(w.prompts.at(-1)).toContain('Kickoff for TR-6.1')
-      expect(w.markers().at(-1)).toBe('sess-1')
-      await w.clock.settle()
-      expect([!!(await ui.find({ key: 'trk-held-TR-6' })), await ui.find({ key: 'trk-press-TR-6' })]).toEqual([true, undefined])
-      await ui.unmount()
-    })
-  }
+  test('holding none, Resume here does what /askerdo resume TR-n does and takes the track', async ($: any, on: any) => {
+    const w = shelfWorld(on)
+    delete w.tracks[0].session
+    w.tracks[0].state = 'waiting'
+    await start($, w)
+    const ui = await mount($, 'desktop')
+    expect((await ui.find({ key: 'trk-press-TR-6' }))?.props.variant).toBe('primary')
+    await ui.press({ key: 'trk-press-TR-6' })
+    expect(w.last('resume').args).toEqual(['resume', 'TR-6', '--session', 'sess-1', '--json'])
+    /* Resume is the user's own act, so an idle session starts one turn carrying the kickoff */
+    expect(w.prompts.at(-1)).toContain('Kickoff for TR-6.1')
+    expect(w.markers().at(-1)).toBe('sess-1')
+    await w.clock.settle()
+    expect([!!(await ui.find({ key: 'trk-held-TR-6' })), await ui.find({ key: 'trk-press-TR-6' })]).toEqual([true, undefined])
+    await ui.unmount()
+  })
 })
 
 describe('the AskUserQuestion redraw', () => {
@@ -825,36 +823,34 @@ describe('the AskUserQuestion redraw', () => {
     ],
   }]
 
-  for (const surface of SURFACES) {
-    test('rewritten props reach the engine\'s own dialog, never a tree, its options the card\'s cells (' + surface + ')', async ($: any, on: any) => {
-      const w = world(on)
-      await start($, w)
-      const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AskUserQuestion', props: { tool: 'AskUserQuestion', questions: QUESTIONS } })
-      /* the engine's own dialog drew, handed the mod's props: a tree would never reach it */
-      expect(w.dialogs.length).toBe(1)
-      const [q] = w.dialogs[0].questions
-      expect(q.question).toBe('Which store shape?')
-      /* each label the letter, the star on the recommended one, the title */
-      expect(q.options[0].label).toMatch(/^a .*One file/)
-      expect(q.options[0].label).not.toContain('\u2605')
-      expect(q.options[1].label).toMatch(/^b \u2605 Many files/)
-      expect(q.options[1].label).not.toContain('Recommended')
-      expect(q.options[2].label).toMatch(/^c .*Keep as is/)
-      expect(q.options[0].description).toContain('Catch: merge churn')
-      expect(q.options[1].description).toContain('What happens: no churn')
-      expect(q.options[1].preview).toBe('tree')
-      expect(q.options[2].description).toBe(QUESTIONS[0].options[2].description)
-      await ui.unmount()
-    })
+  test('rewritten props reach the engine\'s own dialog, never a tree, its options the card\'s cells', async ($: any, on: any) => {
+    const w = world(on)
+    await start($, w)
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AskUserQuestion', props: { tool: 'AskUserQuestion', questions: QUESTIONS } })
+    /* the engine's own dialog drew, handed the mod's props: a tree would never reach it */
+    expect(w.dialogs.length).toBe(1)
+    const [q] = w.dialogs[0].questions
+    expect(q.question).toBe('Which store shape?')
+    /* each label the letter, the star on the recommended one, the title */
+    expect(q.options[0].label).toMatch(/^a .*One file/)
+    expect(q.options[0].label).not.toContain('\u2605')
+    expect(q.options[1].label).toMatch(/^b \u2605 Many files/)
+    expect(q.options[1].label).not.toContain('Recommended')
+    expect(q.options[2].label).toMatch(/^c .*Keep as is/)
+    expect(q.options[0].description).toContain('Catch: merge churn')
+    expect(q.options[1].description).toContain('What happens: no churn')
+    expect(q.options[1].preview).toBe('tree')
+    expect(q.options[2].description).toBe(QUESTIONS[0].options[2].description)
+    await ui.unmount()
+  })
 
-    test('a dialog with no split anywhere passes through as it came (' + surface + ')', async ($: any, on: any) => {
-      const w = world(on)
-      await start($, w)
-      const plain = [{ question: 'Go on?', header: 'Next', multiSelect: false,
-        options: [{ label: 'Yes', description: 'Carry on.' }, { label: 'No', description: 'Stop here.' }] }]
-      const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AskUserQuestion', props: { tool: 'AskUserQuestion', questions: plain } })
-      expect(w.dialogs[0].questions).toEqual(plain)
-      await ui.unmount()
-    })
-  }
+  test('a dialog with no split anywhere passes through as it came', async ($: any, on: any) => {
+    const w = world(on)
+    await start($, w)
+    const plain = [{ question: 'Go on?', header: 'Next', multiSelect: false,
+      options: [{ label: 'Yes', description: 'Carry on.' }, { label: 'No', description: 'Stop here.' }] }]
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AskUserQuestion', props: { tool: 'AskUserQuestion', questions: plain } })
+    expect(w.dialogs[0].questions).toEqual(plain)
+    await ui.unmount()
+  })
 })

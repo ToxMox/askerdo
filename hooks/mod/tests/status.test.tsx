@@ -152,6 +152,10 @@ describe('the status line', () => {
     /* the shield presses as the band's does; the terminal keeps the AskerDo word and draws no mark */
     expect((await ui.find({ key: 'status-guard-toggle' }))?.type).toBe('Button')
     expect([(await ui.find({ key: 'askerdo-open' }))?.props.label, await ui.find({ key: 'status-mark' })]).toEqual(['AskerDo', undefined])
+    /* its press toggles the guard, as the desktop's does */
+    await ui.press({ key: 'status-guard-toggle' })
+    await w.clock.settle()
+    expect(w.toasts.at(-1)).toContain('The agent guard is on for this project')
     await ui.unmount()
     /* a cloud session asks for the hint line and has no band, so it draws there too */
     const desk = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'PromptHint', props: HINT })

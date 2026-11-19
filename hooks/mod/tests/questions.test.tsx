@@ -248,175 +248,175 @@ describe('the Questions pane', () => {
       expect(await keysWith(ui, 'slot-')).toEqual([])
       await ui.unmount()
     })
-
-    /* a press opens the strip under the option; Queue answer records nothing and
-       marks the card, a press on another option moves the strip and queues that one instead, Cancel
-       closes it, and Answer now records with the card's note */
-    test('a row press opens the strip: queue, change, cancel, then Answer now records with the card\'s note; drop, snooze and a typed answer too (' + surface + ')', async ($: any, on: any) => {
-      const w = decisionWorld(on)
-      w.questions.push({ id: 'Q108', name: 'later one', blocking: false, subscribers: ['sess-1'], pick: null, gist: 'Later.',
-        options: [{ type: 'a', option: 'yes', getsYou: 'g', costsYou: '' }] },
-      { id: 'Q109', name: 'version name', blocking: false, subscribers: ['sess-1'], pick: null, gist: 'Free text.', options: [] })
-      /* one snoozed question, which the wake verb puts back */
-      const napOne = { id: 'Q110', name: 'nap one', wake: 'until Nov 20' }
-      let nap = [napOne]
-      const bandOf = w.near
-      w.near = (...a: any[]) => ({ ...bandOf(...a), asleep: nap })
-      const fake = w.cli
-      let down = true
-      w.cli = (args: string[], stdin?: string, env?: any) => {
-        if (args[0] !== 'wake') return fake(args, stdin, env)
-        if (down) return { exitCode: 1, stdout: '', stderr: 'AskerDo: the board at http://127.0.0.1:52565 is unreachable (ECONNREFUSED)\n' }
-        nap = nap.filter((q) => q.id !== args[1])
-        w.change()
-        return { exitCode: 0, stdout: JSON.stringify({ id: args[1], status: 'open' }) + String.fromCharCode(10), stderr: '' }
-      }
-      await start($, w)
-      const ui = await mountPane($, surface)
-      await ui.input({ key: 'qnote-Q106', text: 'files are the truth', kind: 'change' })
-      /* a redraw while typing draws the field as it was, so it puts no older text back */
-      await ui.redraw()
-      expect((await ui.find({ key: 'qnote-Q106' }))?.props.value).toBe('')
-      await ui.press({ key: 'pick-106a' })
-      /* the note field moves into the strip with the words typed; its presses keyed by digit on the pinned card */
-      expect(JSON.stringify(await ui.find({ key: 'qstrip-Q106' }))).toContain('"qnote-Q106"')
-      expect((await ui.find({ key: 'qnote-Q106' }))?.props.value).toBe('files are the truth')
-      expect((await ui.find({ key: 'qnow-Q106' }))?.props.hotkey).toBe('1')
-      await ui.press({ key: 'qqueue-Q106' })
-      expect([w.last('answer'), await ui.find({ key: 'qstrip-Q106' })]).toEqual([undefined, undefined])
-      expect((await ui.find({ key: 'qqueued-Q106' }))?.text).toContain('Queued 106a')
-      expect(!!(await ui.find({ key: 'oqueued-106a' }))).toBe(true)
-      await ui.press({ key: 'pick-106b' })
-      expect(!!(await ui.find({ key: 'qunqueue-Q106' }))).toBe(true)
-      await ui.press({ key: 'qqueue-Q106' })
-      expect([!!(await ui.find({ key: 'oqueued-106b' })), !!(await ui.find({ key: 'oqueued-106a' }))]).toEqual([true, false])
-      await ui.press({ key: 'pick-106a' })
-      await ui.press({ key: 'qcancel-Q106' })
-      expect([await ui.find({ key: 'qstrip-Q106' }), w.last('answer')]).toEqual([undefined, undefined])
-      await ui.press({ key: 'pick-106a' })
-      await ui.press({ key: 'qnow-Q106' })
-      expect(w.last('answer').args).toEqual(['answer', 'Q106', '--pick', 'a', '--user', 'sess-1', '--json', '--note', 'files are the truth'])
-      expect(w.toasts.at(-1)).toBe('Answered Q106 (store shape): 106a. Note: files are the truth')
-      expect(await ui.find({ key: 'qcard-Q106' })).toBeUndefined()
-      /* no note: the same path, no --note; the own questions pin first, so the name press pins the
-         blocker and a desktop answers it by the whole card's tile (a press anywhere on it) */
-      if (surface === 'desktop') await ui.press({ key: 'qrow-Q503' })
-      await ui.press({ key: surface === 'desktop' ? 'tile-503a' : 'pick-503a' })
-      await ui.press({ key: 'qnow-Q503' })
-      expect(w.last('answer').args).toEqual(['answer', 'Q503', '--pick', 'a', '--user', 'sess-1', '--json'])
-      /* drop sends the field as its reason, and the card leaves */
-      await ui.input({ key: 'qnote-Q107', text: 'not needed', kind: 'change' })
-      await ui.press({ key: 'qdrop-Q107' })
-      expect(w.last('drop').args).toEqual(['drop', 'Q107', '--note', 'not needed', '--user', 'sess-1', '--json'])
-      expect(w.toasts.at(-1)).toContain('Dropped Q107')
-      expect(await ui.find({ key: 'qcard-Q107' })).toBeUndefined()
-      /* snooze reads the field: empty it says how and records nothing; a date is the wake day */
-      await ui.press({ key: 'qsnooze-Q108' })
-      expect(w.last('snooze')).toBeUndefined()
-      expect(w.toasts.at(-1)).toContain('YYYY-MM-DD')
-      await ui.input({ key: 'qnote-Q108', text: '2026-11-01', kind: 'change' })
-      await ui.press({ key: 'qsnooze-Q108' })
-      expect(w.last('snooze').args).toEqual(['snooze', 'Q108', '--until', '2026-11-01', '--user', 'sess-1', '--json'])
-      /* no lettered options: no grid, no ask-about; Enter in the field is the answer */
-      expect((await ui.find({ key: 'qnote-Q109' }))?.props.placeholder).toBe('your answer')
-      expect(await ui.find({ key: 'qgrid-Q109' })).toBeUndefined()
-      expect(await ui.find({ key: 'ask-Q109' })).toBeUndefined()
-      expect((await ui.find({ key: 'qanswer-Q109' }))?.props.variant).toBe('primary')
-      await ui.input({ key: 'qnote-Q109', text: 'Moxglow' })
-      expect(w.last('answer').args).toEqual(['answer', 'Q109', '--user', 'sess-1', '--json', '--note', 'Moxglow'])
-      /* the asleep one counts in no number and no crescent draws by the tab;
-         its fold is shut until pressed, and Wake runs the verb as the user's act */
-      const tabWith = async () => [(await ui.find({ key: 'tab-questions' }))?.props.label, JSON.stringify(await ui.find({ key: 'tabbox-questions' })).includes('Crescent')]
-      const tabAsleep = await tabWith()
-      expect([tabAsleep[1], await ui.find({ key: 'asleep-Q110' })]).toEqual([false, undefined])
-      await ui.press({ key: 'asleep-fold' })
-      const rested = (await ui.find({ key: 'asleep-Q110' }))?.text
-      expect(rested).toContain('nap one')
-      /* a failed Wake says so on the row with no id or address, and the words go once the row leaves and returns */
-      await ui.press({ key: 'wake-Q110' })
-      await w.clock.settle()
-      await ui.redraw()
-      const said = String((await ui.find({ key: 'asleep-Q110' }))?.text)
-      expect([said !== rested, /Q110|127\.0\.0\.1/.test(said)]).toEqual([true, false])
-      const reread = async (list: any[]) => { nap = list; w.change(); await w.clock.settle(); await ui.redraw() }
-      await reread([])
-      expect(await tabWith()).toEqual(tabAsleep)
-      await reread([napOne])
-      expect((await ui.find({ key: 'asleep-Q110' }))?.text).toBe(rested)
-      down = false
-      await ui.press({ key: 'wake-Q110' })
-      expect(w.last('wake').args).toEqual(['wake', 'Q110', '--user', 'sess-1', '--json'])
-      await w.clock.settle()
-      await ui.redraw()
-      expect(await ui.find({ key: 'asleep-Q110' })).toBeUndefined()
-      await ui.unmount()
-    })
-
-    /* queued answers stay off the board, saved on this PC, until one Send records them all
-       with their notes and starts one turn carrying them; the band and every open strip offer Send */
-    test('queue, change, then Send records both answers and starts one turn (' + surface + ')', { timeoutMs: 15000 }, async ($: any, on: any) => {
-      const w = decisionWorld(on)
-      /* each save of the queue file sets or clears the session's list */
-      let saves = 0
-      w.queuedFile = new Proxy(w.queuedFile, {
-        set: (t: any, k: string, v: any) => { saves++; t[k] = v; return true },
-        deleteProperty: (t: any, k: string) => { saves++; delete t[k]; return true },
-      })
-      await start($, w)
-      const ui = await mountPane($, surface)
-      await ui.input({ key: 'qnote-Q106', text: 'files are the truth', kind: 'change' })
-      await ui.press({ key: 'pick-106a' })
-      await ui.press({ key: 'qqueue-Q106' })
-      await ui.press({ key: 'pick-106b' })
-      await ui.press({ key: 'qqueue-Q106' })
-      await ui.press({ key: 'pick-107a' })
-      await ui.press({ key: 'qqueue-Q107' })
-      await w.clock.settle()
-      expect(w.last('answer')).toBeUndefined()
-      expect(w.queuedFile['sess-1'].map((q: any) => q.id + q.letter)).toEqual(['Q106b', 'Q107a'])
-      /* an open strip shows the count and Send, as the band does */
-      await ui.press({ key: 'pick-107a' })
-      expect((await ui.find({ key: 'qsendcount-Q107' }))?.text).toContain('2')
-      expect(!!(await ui.find({ key: 'qsend-Q107' }))).toBe(true)
-      await ui.press({ key: 'qcancel-Q107' })
-      const band = await mountBand($, surface)
-      expect((await band.find({ key: 'queued' }))?.text).toContain('2')
-      const prompts = w.prompts.length
-      const saved = saves
-      await band.press({ key: 'queued-send' })
-      await w.clock.settle()
-      const answered = w.cliRuns().filter((r: any) => r.args[0] === 'answer').map((r: any) => r.args)
-      /* a batch, so the queue file is written once for every answer sent */
-      expect(saves - saved).toBe(1)
-      expect(answered.map((a: string[]) => a[1] + a[3])).toEqual(['Q106b', 'Q107a'])
-      expect(answered[0]).toContain('files are the truth')
-      /* the timing rows ride the next band read: a lap for each answer sent, and the draw check's */
-      const rode = w.reads.map((r: any) => decodeURIComponent(String(r.url))).filter((u: string) => u.includes('/local/band?')).join(' ')
-      expect([(rode.match(/"x":"send"/g) || []).length, rode.includes('"x":"check"')]).toEqual([2, true])
-      const turn = w.prompts.slice(prompts)
-      expect(turn.length).toBe(1)
-      expect([/106b/.test(turn[0]), /107a/.test(turn[0])]).toEqual([true, true])
-      expect(w.queuedFile['sess-1']).toBeUndefined()
-      expect(await band.find({ key: 'queued' })).toBeUndefined()
-      /* the whole queue draws each surface at the press, then once more when the batch, its reload
-         and its turn have landed, never a draw an answer */
-      expect(twiceAtMost(await pressRow(w, 'answer', 'send'), 2)).toBe(true)
-      await band.unmount()
-      await ui.unmount()
-    })
-
-    test('ask about an option, then a row press, submits a prompt and records nothing (' + surface + ')', async ($: any, on: any) => {
-      const w = decisionWorld(on)
-      await start($, w)
-      const ui = await mountPane($, surface)
-      await ui.press({ key: 'ask-Q106' })
-      await ui.press({ key: 'pick-106b' })
-      await w.clock.settle()
-      expect(w.prompts).toEqual(['Tell me more about 106b before I pick.'])
-      expect(w.last('answer')).toBeUndefined()
-      await ui.unmount()
-    })
   }
+
+  /* a press opens the strip under the option; Queue answer records nothing and
+     marks the card, a press on another option moves the strip and queues that one instead, Cancel
+     closes it, and Answer now records with the card's note */
+  test('a row press opens the strip: queue, change, cancel, then Answer now records with the card\'s note; drop, snooze and a typed answer too', async ($: any, on: any) => {
+    const w = decisionWorld(on)
+    w.questions.push({ id: 'Q108', name: 'later one', blocking: false, subscribers: ['sess-1'], pick: null, gist: 'Later.',
+      options: [{ type: 'a', option: 'yes', getsYou: 'g', costsYou: '' }] },
+    { id: 'Q109', name: 'version name', blocking: false, subscribers: ['sess-1'], pick: null, gist: 'Free text.', options: [] })
+    /* one snoozed question, which the wake verb puts back */
+    const napOne = { id: 'Q110', name: 'nap one', wake: 'until Nov 20' }
+    let nap = [napOne]
+    const bandOf = w.near
+    w.near = (...a: any[]) => ({ ...bandOf(...a), asleep: nap })
+    const fake = w.cli
+    let down = true
+    w.cli = (args: string[], stdin?: string, env?: any) => {
+      if (args[0] !== 'wake') return fake(args, stdin, env)
+      if (down) return { exitCode: 1, stdout: '', stderr: 'AskerDo: the board at http://127.0.0.1:52565 is unreachable (ECONNREFUSED)\n' }
+      nap = nap.filter((q) => q.id !== args[1])
+      w.change()
+      return { exitCode: 0, stdout: JSON.stringify({ id: args[1], status: 'open' }) + String.fromCharCode(10), stderr: '' }
+    }
+    await start($, w)
+    const ui = await mountPane($, 'desktop')
+    await ui.input({ key: 'qnote-Q106', text: 'files are the truth', kind: 'change' })
+    /* a redraw while typing draws the field as it was, so it puts no older text back */
+    await ui.redraw()
+    expect((await ui.find({ key: 'qnote-Q106' }))?.props.value).toBe('')
+    await ui.press({ key: 'pick-106a' })
+    /* the note field moves into the strip with the words typed; its presses keyed by digit on the pinned card */
+    expect(JSON.stringify(await ui.find({ key: 'qstrip-Q106' }))).toContain('"qnote-Q106"')
+    expect((await ui.find({ key: 'qnote-Q106' }))?.props.value).toBe('files are the truth')
+    expect((await ui.find({ key: 'qnow-Q106' }))?.props.hotkey).toBe('1')
+    await ui.press({ key: 'qqueue-Q106' })
+    expect([w.last('answer'), await ui.find({ key: 'qstrip-Q106' })]).toEqual([undefined, undefined])
+    expect((await ui.find({ key: 'qqueued-Q106' }))?.text).toContain('Queued 106a')
+    expect(!!(await ui.find({ key: 'oqueued-106a' }))).toBe(true)
+    await ui.press({ key: 'pick-106b' })
+    expect(!!(await ui.find({ key: 'qunqueue-Q106' }))).toBe(true)
+    await ui.press({ key: 'qqueue-Q106' })
+    expect([!!(await ui.find({ key: 'oqueued-106b' })), !!(await ui.find({ key: 'oqueued-106a' }))]).toEqual([true, false])
+    await ui.press({ key: 'pick-106a' })
+    await ui.press({ key: 'qcancel-Q106' })
+    expect([await ui.find({ key: 'qstrip-Q106' }), w.last('answer')]).toEqual([undefined, undefined])
+    await ui.press({ key: 'pick-106a' })
+    await ui.press({ key: 'qnow-Q106' })
+    expect(w.last('answer').args).toEqual(['answer', 'Q106', '--pick', 'a', '--user', 'sess-1', '--json', '--note', 'files are the truth'])
+    expect(w.toasts.at(-1)).toBe('Answered Q106 (store shape): 106a. Note: files are the truth')
+    expect(await ui.find({ key: 'qcard-Q106' })).toBeUndefined()
+    /* no note: the same path, no --note; the own questions pin first, so the name press pins the
+       blocker and a desktop answers it by the whole card's tile (a press anywhere on it) */
+    await ui.press({ key: 'qrow-Q503' })
+    await ui.press({ key: 'tile-503a' })
+    await ui.press({ key: 'qnow-Q503' })
+    expect(w.last('answer').args).toEqual(['answer', 'Q503', '--pick', 'a', '--user', 'sess-1', '--json'])
+    /* drop sends the field as its reason, and the card leaves */
+    await ui.input({ key: 'qnote-Q107', text: 'not needed', kind: 'change' })
+    await ui.press({ key: 'qdrop-Q107' })
+    expect(w.last('drop').args).toEqual(['drop', 'Q107', '--note', 'not needed', '--user', 'sess-1', '--json'])
+    expect(w.toasts.at(-1)).toContain('Dropped Q107')
+    expect(await ui.find({ key: 'qcard-Q107' })).toBeUndefined()
+    /* snooze reads the field: empty it says how and records nothing; a date is the wake day */
+    await ui.press({ key: 'qsnooze-Q108' })
+    expect(w.last('snooze')).toBeUndefined()
+    expect(w.toasts.at(-1)).toContain('YYYY-MM-DD')
+    await ui.input({ key: 'qnote-Q108', text: '2026-11-01', kind: 'change' })
+    await ui.press({ key: 'qsnooze-Q108' })
+    expect(w.last('snooze').args).toEqual(['snooze', 'Q108', '--until', '2026-11-01', '--user', 'sess-1', '--json'])
+    /* no lettered options: no grid, no ask-about; Enter in the field is the answer */
+    expect((await ui.find({ key: 'qnote-Q109' }))?.props.placeholder).toBe('your answer')
+    expect(await ui.find({ key: 'qgrid-Q109' })).toBeUndefined()
+    expect(await ui.find({ key: 'ask-Q109' })).toBeUndefined()
+    expect((await ui.find({ key: 'qanswer-Q109' }))?.props.variant).toBe('primary')
+    await ui.input({ key: 'qnote-Q109', text: 'Moxglow' })
+    expect(w.last('answer').args).toEqual(['answer', 'Q109', '--user', 'sess-1', '--json', '--note', 'Moxglow'])
+    /* the asleep one counts in no number and no crescent draws by the tab;
+       its fold is shut until pressed, and Wake runs the verb as the user's act */
+    const tabWith = async () => [(await ui.find({ key: 'tab-questions' }))?.props.label, JSON.stringify(await ui.find({ key: 'tabbox-questions' })).includes('Crescent')]
+    const tabAsleep = await tabWith()
+    expect([tabAsleep[1], await ui.find({ key: 'asleep-Q110' })]).toEqual([false, undefined])
+    await ui.press({ key: 'asleep-fold' })
+    const rested = (await ui.find({ key: 'asleep-Q110' }))?.text
+    expect(rested).toContain('nap one')
+    /* a failed Wake says so on the row with no id or address, and the words go once the row leaves and returns */
+    await ui.press({ key: 'wake-Q110' })
+    await w.clock.settle()
+    await ui.redraw()
+    const said = String((await ui.find({ key: 'asleep-Q110' }))?.text)
+    expect([said !== rested, /Q110|127\.0\.0\.1/.test(said)]).toEqual([true, false])
+    const reread = async (list: any[]) => { nap = list; w.change(); await w.clock.settle(); await ui.redraw() }
+    await reread([])
+    expect(await tabWith()).toEqual(tabAsleep)
+    await reread([napOne])
+    expect((await ui.find({ key: 'asleep-Q110' }))?.text).toBe(rested)
+    down = false
+    await ui.press({ key: 'wake-Q110' })
+    expect(w.last('wake').args).toEqual(['wake', 'Q110', '--user', 'sess-1', '--json'])
+    await w.clock.settle()
+    await ui.redraw()
+    expect(await ui.find({ key: 'asleep-Q110' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  /* queued answers stay off the board, saved on this PC, until one Send records them all
+     with their notes and starts one turn carrying them; the band and every open strip offer Send */
+  test('queue, change, then Send records both answers and starts one turn', { timeoutMs: 15000 }, async ($: any, on: any) => {
+    const w = decisionWorld(on)
+    /* each save of the queue file sets or clears the session's list */
+    let saves = 0
+    w.queuedFile = new Proxy(w.queuedFile, {
+      set: (t: any, k: string, v: any) => { saves++; t[k] = v; return true },
+      deleteProperty: (t: any, k: string) => { saves++; delete t[k]; return true },
+    })
+    await start($, w)
+    const ui = await mountPane($, 'desktop')
+    await ui.input({ key: 'qnote-Q106', text: 'files are the truth', kind: 'change' })
+    await ui.press({ key: 'pick-106a' })
+    await ui.press({ key: 'qqueue-Q106' })
+    await ui.press({ key: 'pick-106b' })
+    await ui.press({ key: 'qqueue-Q106' })
+    await ui.press({ key: 'pick-107a' })
+    await ui.press({ key: 'qqueue-Q107' })
+    await w.clock.settle()
+    expect(w.last('answer')).toBeUndefined()
+    expect(w.queuedFile['sess-1'].map((q: any) => q.id + q.letter)).toEqual(['Q106b', 'Q107a'])
+    /* an open strip shows the count and Send, as the band does */
+    await ui.press({ key: 'pick-107a' })
+    expect((await ui.find({ key: 'qsendcount-Q107' }))?.text).toContain('2')
+    expect(!!(await ui.find({ key: 'qsend-Q107' }))).toBe(true)
+    await ui.press({ key: 'qcancel-Q107' })
+    const band = await mountBand($, 'desktop')
+    expect((await band.find({ key: 'queued' }))?.text).toContain('2')
+    const prompts = w.prompts.length
+    const saved = saves
+    await band.press({ key: 'queued-send' })
+    await w.clock.settle()
+    const answered = w.cliRuns().filter((r: any) => r.args[0] === 'answer').map((r: any) => r.args)
+    /* a batch, so the queue file is written once for every answer sent */
+    expect(saves - saved).toBe(1)
+    expect(answered.map((a: string[]) => a[1] + a[3])).toEqual(['Q106b', 'Q107a'])
+    expect(answered[0]).toContain('files are the truth')
+    /* the timing rows ride the next band read: a lap for each answer sent, and the draw check's */
+    const rode = w.reads.map((r: any) => decodeURIComponent(String(r.url))).filter((u: string) => u.includes('/local/band?')).join(' ')
+    expect([(rode.match(/"x":"send"/g) || []).length, rode.includes('"x":"check"')]).toEqual([2, true])
+    const turn = w.prompts.slice(prompts)
+    expect(turn.length).toBe(1)
+    expect([/106b/.test(turn[0]), /107a/.test(turn[0])]).toEqual([true, true])
+    expect(w.queuedFile['sess-1']).toBeUndefined()
+    expect(await band.find({ key: 'queued' })).toBeUndefined()
+    /* the whole queue draws each surface at the press, then once more when the batch, its reload
+       and its turn have landed, never a draw an answer */
+    expect(twiceAtMost(await pressRow(w, 'answer', 'send'), 2)).toBe(true)
+    await band.unmount()
+    await ui.unmount()
+  })
+
+  test('ask about an option, then a row press, submits a prompt and records nothing', async ($: any, on: any) => {
+    const w = decisionWorld(on)
+    await start($, w)
+    const ui = await mountPane($, 'desktop')
+    await ui.press({ key: 'ask-Q106' })
+    await ui.press({ key: 'pick-106b' })
+    await w.clock.settle()
+    expect(w.prompts).toEqual(['Tell me more about 106b before I pick.'])
+    expect(w.last('answer')).toBeUndefined()
+    await ui.unmount()
+  })
 
   /* a restart keeps the queue: the mod comes back over the data folder its last run saved;
      one answered another way meanwhile (the session's answer tool, the CLI) leaves it at the next read */
@@ -627,25 +627,23 @@ describe('the Questions pane', () => {
 })
 
 describe('the band\'s buttons and name', () => {
-  for (const surface of SURFACES) {
-    test('pressing a question\'s name opens the Questions pane at that card (' + surface + ')', async ($: any, on: any) => {
-      const w = decisionWorld(on)
-      w.questions = w.questions.filter((q: any) => q.id === 'Q503').map((q: any) => ({ ...q, track: 'TR-3' }))
-      await start($, w)
-      const ui = await mountBand($, surface)
-      expect(await ui.find({ type: 'Text', text: 'command names' })).toBeDefined()
-      await ui.press({ key: 'name-Q503' })
-      await w.clock.settle()
-      expect(w.panes.map((p: any) => [p.id, p.title.startsWith('AskerDo'), p.focus])).toEqual([[PANE_ID, true, true]])
-      /* the card pinned at the top; the keys stay with the pane, so its hotkeys work at once */
-      const pane = await mountPane($, surface)
-      expect(await keysWith(pane, 'qcard-')).toEqual(['qcard-Q503'])
-      expect((await pane.find({ key: 'qnote-Q503' }))?.props.autoFocus).toBeUndefined()
-      expect((await pane.find({ key: 'pick-503a' }))?.props.hotkey).toBe('a')
-      await pane.unmount()
-      await ui.unmount()
-    })
-  }
+  test('pressing a question\'s name opens the Questions pane at that card', async ($: any, on: any) => {
+    const w = decisionWorld(on)
+    w.questions = w.questions.filter((q: any) => q.id === 'Q503').map((q: any) => ({ ...q, track: 'TR-3' }))
+    await start($, w)
+    const ui = await mountBand($, 'desktop')
+    expect(await ui.find({ type: 'Text', text: 'command names' })).toBeDefined()
+    await ui.press({ key: 'name-Q503' })
+    await w.clock.settle()
+    expect(w.panes.map((p: any) => [p.id, p.title.startsWith('AskerDo'), p.focus])).toEqual([[PANE_ID, true, true]])
+    /* the card pinned at the top; the keys stay with the pane, so its hotkeys work at once */
+    const pane = await mountPane($, 'desktop')
+    expect(await keysWith(pane, 'qcard-')).toEqual(['qcard-Q503'])
+    expect((await pane.find({ key: 'qnote-Q503' }))?.props.autoFocus).toBeUndefined()
+    expect((await pane.find({ key: 'pick-503a' }))?.props.hotkey).toBe('a')
+    await pane.unmount()
+    await ui.unmount()
+  })
 })
 
 describe('the ask tool\'s decision fields', () => {

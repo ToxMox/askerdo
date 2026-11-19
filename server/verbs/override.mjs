@@ -6,7 +6,7 @@ import { readTx, tx } from '../db.mjs';
 import { actorOf, addNote, guardHeadings, labelOf, logRow, logVerb, putRecord, sessionWords, stampNow, unguardHeadings } from '../records.mjs';
 import { WEB } from '../paths.mjs';
 import { UsageError, loadEntry, resolveRecord } from './labels.mjs';
-import { WORK_KINDS, normalize, orderFront, sectionsOf, startedBy, withSection } from './work.mjs';
+import { WORK_KINDS, amendedStampFor, isImportFact, normalize, orderFront, sectionsOf, startedBy, withSection, withdrawnWhy } from './work.mjs';
 import { addHistory, historyRef, usedBy } from './history.mjs';
 import { closeOf, closeText, inScope } from './upkeep.mjs';
 
@@ -186,11 +186,16 @@ function itemOf(db, kind, raw, ctx, named = new Set()) {
     if (e.kind === 'knowledge' && !usedBy(db, e) && p.words === undefined) throw refuse(label + ' is not in use yet: rewrite it in place (knowledge edit ' + label + ' --name, --body)', { inPlace: label });
   } else if (kind === 'withdraw') {
     extra([]);
-    if (!isRuling(e)) throw new UsageError('a withdraw takes back a ruling never made; ' + label + ' is not a decision');
+    /* an undone import's facts go in the same press as its rulings; any other fact ends by supersede */
+    if (!isRuling(e) && !(e.kind === 'knowledge' && isImportFact(e.front))) {
+      throw refuse('a withdraw takes back a ruling never made, or a knowledge record an undone import wrote; ' + label + ' is neither: a fact that stops being true is retired (knowledge retire ' + label + ' --reason) or superseded', { notWithdrawable: label });
+    }
     /* a superseded one goes with its superseder: withdrawn already, or in this request */
     const by = e.front.status === 'superseded' && e.front.supersededBy ? loadEntry(db, e.front.supersededBy) : null;
     const goes = by && (by.front.status === 'withdrawn' || named.has(by.key));
-    if (e.front.status !== 'active' && !goes) throw new UsageError(label + ' is ' + e.front.status + ': nothing to withdraw');
+    /* an import's fact a session retired still goes with its undone import */
+    const retired = e.front.status === 'retired' && !isRuling(e);
+    if (e.front.status !== 'active' && !goes && !retired) throw new UsageError(label + ' is ' + e.front.status + ': nothing to withdraw');
   } else {
     extra(['text']);
     const text = typeof raw.text === 'string' ? raw.text : '';
@@ -207,7 +212,8 @@ function measureOf(db, kind, items) {
   let size = 0;
   const add = (k, n = 1) => { sections[k] = (sections[k] || 0) + n; };
   for (const it of items) {
-    if (kind === 'withdraw') { add('status'); continue; }
+    /* rulings and an import's facts counted apart, so the card says what the press takes */
+    if (kind === 'withdraw') { add(isRuling(it.e) ? 'rulings' : 'facts'); continue; }
     if (kind === 'scrub') {
       for (const [k, n] of Object.entries(placesOf(db, it.e, it.proposed.text))) { add(k, n); size += n; }
       continue;
@@ -228,7 +234,14 @@ const listWords = (a) => (a.length < 3 ? a.join(' and ') : a.slice(0, -1).join('
 export function measureText(kind, m) {
   const entries = Object.entries(m.sections || {});
   const what = m.records === 1 ? '' : plural(m.records, m.kinds && m.kinds.length === 1 ? m.kinds[0] : 'record', m.kinds && m.kinds.length === 1 ? m.kinds[0] + 's' : 'records') + ': ';
-  if (kind === 'withdraw') return what + 'withdrawn: never ruled';
+  if (kind === 'withdraw') {
+    const { rulings = 0, facts = 0 } = m.sections || {};
+    /* a request asked before facts could be withdrawn counted its rulings as status */
+    if (!facts) return what + 'withdrawn: never ruled';
+    const factWords = 'withdrawn: ' + (facts === 1 ? 'its' : 'their') + ' import was undone';
+    if (!rulings) return (facts === 1 ? '' : plural(facts, 'knowledge record', 'knowledge records') + ': ') + factWords;
+    return plural(rulings, 'ruling', 'rulings') + ' withdrawn: never ruled; ' + plural(facts, 'knowledge record', 'knowledge records') + ' ' + factWords;
+  }
   if (kind === 'scrub') return what + 'text removed from ' + plural(m.size, 'place', 'places') + ' (' + entries.map(([k, n]) => k + (m.records > 1 || n > 1 ? ' ' + n : '')).join(', ') + ')';
   const fields = entries.map(([k, n]) => (FIELD_WORDS[k] || k) + (m.records > 1 ? ' on ' + n : ''));
   return what + listWords(fields) + (m.size ? ', ' + m.size + ' characters proposed' : '');
@@ -310,7 +323,7 @@ export function overrideRequest(db, input = {}, actor, opts) {
   const session = (typeof o.session === 'string' && o.session.trim()) || ctx.session;
   if (!session) throw new UsageError('override request needs --session <own-id>: a session asks the user; a subagent reports to its session instead');
   const reason = textOf(o.reason).replace(/\s+/g, ' ');
-  if (!reason) throw new UsageError('override request needs --reason: the bug that wrote the text, the ruling never made, or the secret');
+  if (!reason) throw new UsageError('override request needs --reason: the bug that wrote the text, the ruling never made, the undone import, or the secret');
   const summary = textOf(o.summary).replace(/\s+/g, ' ');
   if (!summary) throw new UsageError('override request needs --summary: what the user decides, in about 200 characters');
   if (summary.length > SUMMARY_MAX) throw new UsageError('--summary is ' + summary.length + ' characters; keep it to ' + SUMMARY_MAX + ' (the request page carries the whole before and after)');
@@ -403,10 +416,10 @@ function applyFix(db, it, req, ctx) {
     moved.push({ field: f, old, next: p[f] });
   }
   const changes = {};
-  /* a fixed Body is the whole text: the amended stamp stays only with an amendment it kept */
-  if (p.body !== undefined && front.amended && !/^Amended \d{4}-\d{2}-\d{2} by /m.test(sectionsOf(body).Body ?? '')) {
-    changes.amended = [front.amended, null];
-    delete front.amended;
+  const stamp = p.body !== undefined && front.amended ? amendedStampFor(db, e.key, sectionsOf(body).Body ?? '', front.amended) : front.amended;
+  if (stamp !== front.amended) {
+    changes.amended = [front.amended, stamp];
+    if (stamp) front.amended = stamp; else delete front.amended;
   }
   if (p.close !== undefined && !same(front.close, p.close)) {
     front.close = p.close;
@@ -434,7 +447,7 @@ function applyWithdraw(db, it, req, ctx) {
   front.updated = ctx.at;
   const fields = orderFront(WORK_KINDS.knowledge, front);
   putRecord(db, { key: e.key, kind: e.kind, slug: e.slug, fields, body: e.body, layout: e.layout, track: e.track });
-  const why = 'withdrawn: never ruled (override #' + req.id + ')';
+  const why = 'withdrawn: ' + withdrawnWhy(front) + ' (override #' + req.id + ')';
   const h = addHistory(db, ctx, { key: e.key, field: 'status', old: was, next: 'withdrawn', why });
   logRow(db, ctx, { verb: 'edit', kind: e.kind, front: fields, changes: { status: [was, 'withdrawn'], history: historyRef([h]) }, note: why });
   return { id: it.label };
@@ -517,7 +530,9 @@ export function overrideDecide(db, input = {}, actor, opts) {
       return null;
     }
     if (decision === 'allow') {
-      const moved = items.filter((it) => !it.e || hashOf(touched(it.e, req.kind, it.proposed)) !== it.hash).map((it) => it.label);
+      /* a fix of a fact that ended since the ask (retired, superseded) has nothing left to fix */
+      const ended = (it) => req.kind === 'fix' && it.e.kind === 'knowledge' && it.e.front.status !== 'active';
+      const moved = items.filter((it) => !it.e || ended(it) || hashOf(touched(it.e, req.kind, it.proposed)) !== it.hash).map((it) => it.label);
       if (req.changed || moved.length) {
         if (!req.changed) {
           db.stmt('UPDATE overrides SET changed = ? WHERE id = ?').run(ctx.at, req.id);
@@ -610,7 +625,7 @@ export function overrideUnscrub(db, input = {}, actor, opts) {
 /* The purged original leaves the live file too: the search index merges past its deleted
    terms, VACUUM rewrites every page (earlier writes left copies in free space, measured),
    and the log is truncated. Inside an outer write it waits for the next purge. */
-function wipe(db) {
+export function wipe(db) {
   if (db.isTransaction) return;
   db.exec("INSERT INTO search (search) VALUES ('optimize')");
   db.exec('VACUUM');
@@ -686,7 +701,7 @@ export function overrideView(db, input = {}, actor, opts) {
         ...(it.e && req.kind !== 'scrub' && isRuling(it.e) ? { reversal: true } : {}) };
       if (!it.e) return { ...head, gone: true, fields: [] };
       const secs = sectionsOf(it.e.body);
-      if (req.kind === 'withdraw') return { ...head, fields: [{ field: 'status', before: it.e.front.status, after: 'withdrawn: never ruled' }] };
+      if (req.kind === 'withdraw') return { ...head, fields: [{ field: 'status', before: it.e.front.status, after: 'withdrawn: ' + withdrawnWhy(it.e.front) }] };
       if (req.kind === 'scrub') {
         /* a scrub moved between boards travels without its text, and is asked again */
         if (typeof it.proposed.text !== 'string') return { ...head, removed: true, fields: [] };

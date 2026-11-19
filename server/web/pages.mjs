@@ -604,7 +604,11 @@ function overrideWords(m) {
   const kinds = [...new Set(m.records.map((x) => x.kind).filter(Boolean))];
   const n = m.records.length;
   const what = kinds.length === 1 ? plural(n, kinds[0], kinds[0] + 's') : plural(n, 'record', 'records');
-  return m.kind === 'withdraw' ? 'Withdraws ' + (n === 1 ? 'a ruling' : n + ' rulings') + ' you never made'
+  /* each ruling is marked; the rest of a withdraw are an undone import's knowledge records */
+  const rulings = m.records.filter((x) => x.reversal).length;
+  const facts = n - rulings;
+  return m.kind === 'withdraw' ? 'Withdraws ' + [rulings ? (rulings === 1 ? 'a ruling' : rulings + ' rulings') + ' you never made' : '',
+    facts ? (facts === 1 ? 'a knowledge record' : facts + ' knowledge records') + ' an undone import wrote' : ''].filter(Boolean).join(' and ')
     : m.kind === 'scrub' ? 'Scrubs a secret or a personal detail from ' + what
       : 'Rewrites the text of ' + what + ' already in use';
 }

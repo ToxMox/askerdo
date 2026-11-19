@@ -292,6 +292,20 @@ test('knowledge supersede mints or links the replacement, a superseded fact stay
   assert.ok(text.startsWith('---\n' + frontText(rec.front) + '---\n') && inTodaysOrder('knowledge', Object.keys(rec.front)), text);
   assert.equal(rec.sections.Body, 'It was the stale key.');
 
+  /* a fact retires with a reason and no replacement, out of the active reads, and comes back */
+  const glob = w.createKnowledge(db, { ...fact, title: 'The lib glob', files: ['lib/*.mjs'] }, on('2026-10-25'));
+  assert.throws(() => w.retireKnowledge(db, { id: glob.id }, on('2026-10-25')), /needs --reason/);
+  w.retireKnowledge(db, { id: glob.id, reason: 'the cache was rewritten' }, on('2026-10-25', 's2'));
+  assert.deepEqual([w.readRecord(db, glob.id).status, decisionTriggers(db, {}).some((t) => t.id === glob.id)], ['retired', false]);
+  assert.throws(() => w.amendKnowledge(db, { id: glob.id, body: 'x' }, on('2026-10-25')), /reinstate/);
+  assert.ok(!w.listWork(db, { kind: 'knowledge' }).some((e) => e.id === glob.id), 'the open list leaves it out');
+  w.reinstateKnowledge(db, { id: glob.id, reason: 'the old cache is back' }, on('2026-10-26'));
+  assert.deepEqual(recordHistory(db, { id: glob.id }).rows.map((x) => [x.old, x.new]), [['active', 'retired'], ['retired', 'active']]);
+  assert.ok(decisionTriggers(db, {}).some((t) => t.id === glob.id) && !w.readRecord(db, glob.id).closed, 'active again, it points as before');
+  /* back after its archive day, it takes a fresh label */
+  w.retireKnowledge(db, { id: glob.id, reason: 'gone again' }, on('2026-10-26'));
+  assert.notEqual(w.reinstateKnowledge(db, { id: glob.id, reason: 'back' }, on('2026-11-20')).id, glob.id);
+
   /* one decide call lands the ruling's links and the supersede together */
   const ws = w.createRecord(db, { kind: 'workstream', name: 'Rulings', description: 'd' }, on('2026-10-25'));
   const task = w.createRecord(db, { name: 'Wire the rows', description: 'd', workstream: ws.id }, on('2026-10-25'));
@@ -304,6 +318,7 @@ test('knowledge supersede mints or links the replacement, a superseded fact stay
   const back = w.readRecord(db, d.id);
   assert.deepEqual([back.tasks, back.workstreams, back.labels, back.files], [[task.id], [ws.id], [ws.id], ['lib/*.mjs']]);
   assert.deepEqual(decisionsFor(db, { task: task.id }).map((x) => x.id), [d.id], 'the superseded one is out of force');
+  assert.throws(() => w.retireKnowledge(db, { id: d.id, reason: 'x' }, on('2026-10-26')), /ruling: it changes only by supersede/);
   /* the words' token answers the question the ruling names; without one the result warns it is still open */
   const ask = () => qv.register(db, {
     name: 'which', gist: 'Which?', projectRepo: 'C:/repos/app', session: 's1', blocking: false, workstream: ws.id,
@@ -364,6 +379,15 @@ test('knowledge supersede mints or links the replacement, a superseded fact stay
   w.amendKnowledge(db, { id: k.id, body: 'checked from a shell' }, { now: on('2026-10-28').now, pc: 'DESK' });
   const plain = w.readRecord(db, k.id).sections.Body.split('\n\n').at(-1);
   assert.ok(plain.includes('DESK') && !/\bcli\b/.test(plain), plain);
+  /* undoing the second amend puts back the first's stamp; undoing both clears it */
+  const p = w.createKnowledge(db, { type: 'gotcha', title: 'Pointer', body: 'old plans', projects: ['C:/repos/app'] }, on('2026-10-27'));
+  const first = w.amendKnowledge(db, { id: p.id, body: 'plans/a' }, on('2026-10-27')).amended;
+  const once = w.readRecord(db, p.id).sections.Body;
+  w.amendKnowledge(db, { id: p.id, body: 'plans/b' }, on('2026-10-28'));
+  w.editKnowledge(db, { id: p.id, body: once }, on('2026-10-29'));
+  assert.equal(w.readRecord(db, p.id).amended, first);
+  w.editKnowledge(db, { id: p.id, body: 'old plans' }, on('2026-10-29'));
+  assert.equal(w.readRecord(db, p.id).amended, undefined);
 });
 
 /* the board keeps itself current while upkeep is on, each change by board:upkeep with its cause. */
@@ -468,6 +492,7 @@ test('the dry run lists the catch-up without writing, upkeep on applies the same
 
 /* the user's override of a record in use, decided by Allow or Keep (the user actor) */
 const o = await import('../server/verbs/override.mjs');
+const { importPurge } = await import('../server/verbs/purge.mjs');
 const { backup, pickCopy, restore } = await import('../server/maint.mjs');
 const { openDb } = await import('../server/db.mjs');
 const { migrate } = await import('../server/migrate.mjs');
@@ -555,6 +580,43 @@ test('an override batch rewrites tasks all or nothing and sets each close; a bat
   o.overrideDecide(db, { request: fix.request, decision: 'allow' }, pressed('2026-10-27'));
   assert.equal(L.resolveRecord(db, ruling.id).front.words, 'rows, then columns');
   assert.deepEqual(recordHistory(db, { id: ruling.id }).rows.map((x) => [x.field, x.old]), [['words', 'rows']], 'the old words kept');
+
+  /* an undone import's facts go in the one Withdraw beside its ruling; a fact no import wrote is refused */
+  const mark = { labels: ['import:app'], projects: ['C:/repos/app'], files: ['lib/*.mjs'] };
+  const fact = w.createKnowledge(db, { ...mark, type: 'gotcha', title: 'The port', refs: ['onboard:fact:1'] }, on('2026-10-27'));
+  const imported = decide(db, { title: 'Columns', words: 'columns', ...mark, refs: ['onboard:dec:1'] }, on('2026-10-27'));
+  const plain = w.createKnowledge(db, { type: 'gotcha', title: 'The host', labels: ['import:app'], global: true }, on('2026-10-27'));
+  assert.throws(() => ask(db, 'withdraw', [{ record: plain.id }], '2026-10-28'), (e) => e.data && e.data.notWithdrawable === plain.id);
+  const wd = ask(db, 'withdraw', [{ record: fact.id }, { record: imported.id }], '2026-10-28');
+  assert.deepEqual([wd.reversal, wd.measure.sections], [true, { facts: 1, rulings: 1 }], 'the card counts the ruling and the fact apart');
+  o.overrideDecide(db, { request: wd.request, decision: 'withdraw' }, pressed('2026-10-28'));
+  assert.deepEqual([fact.id, imported.id].map((id) => statusOf(db, id)), ['withdrawn', 'withdrawn']);
+  assert.match(recordHistory(db, { id: fact.id }).rows[0].why, /import was undone/);
+  assert.match(recordHistory(db, { id: imported.id }).rows[0].why, /never ruled/);
+  assert.ok(!decisionTriggers(db, {}).some((t) => [fact.id, imported.id].includes(t.id)), 'neither points a session anywhere');
+  assert.throws(() => w.amendKnowledge(db, { id: fact.id, body: 'x' }, on('2026-10-28')), /import was undone/);
+
+  /* the purge deletes what the import wrote once withdrawn, counted first; a ruling still in force and a
+     record no onboard ref marks stay. Its labels rest as an ended record's do, and the map reads a reused one as gone */
+  const task = w.createRecord(db, { name: 'Wire the port', description: 'd', workstream: ws.id, labels: ['import:app'], refs: ['onboard:task:1'] }, on('2026-10-27'));
+  w.noteRecord(db, { id: task.id, text: 'the portnote' }, on('2026-10-27'));
+  const inForce = decide(db, { title: 'Rows', words: 'rows', ...mark, refs: ['onboard:dec:2'] }, on('2026-10-27'));
+  const keys = [fact.id, imported.id, task.id].map((id) => L.resolveRecord(db, id).key);
+  cv.conversionPut(db, { project: 'c:/repos/app', run: 'r1', rows: [{ source: 'F.md', kind: 'file', records: [fact.id, imported.id] }] }, on('2026-10-28'));
+  /* a gate from a question the purge keeps goes with the task it names, from the question's fields too */
+  const gate = qv.register(db, { name: 'the port', gist: 'g', projectDir: 'C:/repos/x', session: 's1', blocking: false, gates: [task.id],
+    ask: 'Wire it (a, my pick) or not (b)?', pick: 'a', options: [{ type: 'a', option: 'Wire it' }, { type: 'b', option: 'Not' }] }, { session: 's1' }, on('2026-10-27'));
+  const count = importPurge(db, { label: 'import:app' }, on('2026-10-28'));
+  assert.deepEqual([count.dryRun, count.counts, count.held.map((h) => h.id)], [true, { knowledge: 1, decision: 1, task: 1 }, [inForce.id]]);
+  assert.ok(L.resolveRecord(db, task.id), 'a dry run deletes nothing');
+  importPurge(db, { label: 'import:app', yes: true }, on('2026-10-28'));
+  const left = (t) => db.prepare(`SELECT count(*) AS n FROM ${t} WHERE record IN (${keys.map(() => '?').join(', ')})`).get(...keys).n;
+  assert.deepEqual([keys.map((k) => L.resolveRecord(db, k)), search(db, { text: 'portnote' }).total, left('history'), left('notes'), left('activity'), db.prepare('SELECT count(*) AS n FROM links WHERE "to" = ?').get(keys[2]).n], [[null, null, null], 0, 0, 0, 0, 0]);
+  assert.deepEqual([statusOf(db, inForce.id), statusOf(db, plain.id), L.resolveRecord(db, gate.id).front.gates || []], ['active', 'active', []]);
+  const later = (day) => w.createKnowledge(db, { type: 'gotcha', title: 'Later ' + day, global: true }, on(day)).id;
+  assert.ok(![fact.id, imported.id].includes(later('2026-10-29')), 'no new record takes a purged label while it rests');
+  assert.deepEqual([later('2026-12-12'), later('2026-12-12')].sort(), [fact.id, imported.id].sort(), "after the rest an ended record's would have");
+  assert.deepEqual(cv.conversionMap(db, { project: 'c:/repos/app' }).rows[0].gone, [fact.id, imported.id], "the old row names records gone, not their labels' new holders");
 });
 
 test('a scrub hides the text from the record, search and activity at once; unscrub puts it back inside 7 days; after that it reads as purged', () => {

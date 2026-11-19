@@ -53,11 +53,35 @@ const everywhereCard = (proc, version) => ({ ...scanned('', undefined, proc), ev
 const vparts = (v) => String(v || '0').split('.').map((n) => parseInt(n, 10) || 0);
 const atLeast = (a, b) => { const x = vparts(a), y = vparts(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return true; };
 
-/* One card's update inside the transaction, with its journal note and activity row. */
-function updateCard(db, row, apply, ctx, note) {
+/* a conversion's handover (`by`, its last commit) records a card's verified commit (`at`: its own last commit,
+   or for a card it edited that read stale, the base the card had before); `vouched.was` keeps what the card held
+   before the import's first such record, so the undo gives it back and a second handover run keeps it */
+function vouchOn(front, { at, by }) {
+  const v = front.verified || {};
+  const was = front.vouched && v.self === front.vouched.head ? front.vouched.was : v.self;
+  front.verified = { ...v, self: at };
+  front.vouched = { head: at, ...(by && by !== at ? { by } : {}), ...(was ? { was } : {}) };
+  return at === by ? 'verified at ' + at.slice(0, 7) + ' by the conversion handover, which wrote this card or found it current before its first commit'
+    : 'verified commit kept at ' + at.slice(0, 7) + ', its base before the conversion handover edited it, so the edit is no run';
+}
+function unvouchOn(front, by) {
+  const h = front.vouched;
+  if (!h || (h.by || h.head) !== by) return '';
+  const v = { ...(front.verified || {}) };
+  if (v.self === h.head) { if (h.was) v.self = h.was; else delete v.self; }
+  front.verified = v;
+  delete front.vouched;
+  return 'the verified commit ' + h.head.slice(0, 7) + ' the conversion handover recorded is withdrawn with the import';
+}
+const both = (...notes) => notes.filter(Boolean).join('. ') || undefined;
+
+/* One card's update inside the transaction, with its journal note and activity row; a note
+   may be a function, read after the update, when the update says what it did. */
+function updateCard(db, row, apply, ctx, said) {
   const before = JSON.parse(JSON.stringify(row.fields));
   const front = JSON.parse(JSON.stringify(row.fields));
   apply(front);
+  const note = typeof said === 'function' ? said() : said;
   /* stamps or clears closed; a card back after its archive day takes a fresh label */
   endingStamps(db, KIND, front, before, ctx);
   const changes = changesOf(before, front);
@@ -78,7 +102,7 @@ function updateCard(db, row, apply, ctx, note) {
    checkout of it on that PC (`homes`) and HEAD. Cards are made, followed and
    retired here; nothing is written when nothing moved. `everywhere`, when the PC
    could read the plugin's own folder, is every card it holds for all projects. */
-export function scanProject(db, { project: dir, repo = '', homes, head = '', files = [], everywhere, pluginVersion } = {}, actor) {
+export function scanProject(db, { project: dir, repo = '', homes, head = '', files = [], everywhere, pluginVersion, unvouch = '' } = {}, actor) {
   const project = normPath(dir);
   if (!isAbsolute(project)) throw new UsageError('a scan needs the project\'s absolute main checkout: ' + dir);
   repo = repo || project.toLowerCase();
@@ -119,12 +143,14 @@ export function scanProject(db, { project: dir, repo = '', homes, head = '', fil
       return id;
     };
     for (const { f } of pairs.filter((p) => p.f.proc && !p.card)) {
-      out.created.push(make(f.proc, { ...scanned(project, repo, f.proc), stale: f.stale || [] },
-        'card made from ' + PROC_DIR + '/' + f.proc.slug + '.md' + (head ? ' at ' + String(head).slice(0, 7) : '')));
+      const fields = { ...scanned(project, repo, f.proc), stale: f.stale || [] };
+      const said = f.vouch ? vouchOn(fields, f.vouch) : '';
+      out.created.push(make(f.proc, fields, both('card made from ' + PROC_DIR + '/' + f.proc.slug + '.md' + (head ? ' at ' + String(head).slice(0, 7) : ''), said)));
     }
     for (const { f, card } of pairs) {
       if (!card) continue;
       const back = card.status === 'retired';
+      let said = '';
       const r = updateCard(db, byFront.get(card), (front) => {
         if (f.proc) {
           Object.assign(front, scanned(project, repo, f.proc));
@@ -132,13 +158,15 @@ export function scanProject(db, { project: dir, repo = '', homes, head = '', fil
           front.refs = refsFor(db, recordRefs(f.proc));
         } else front.stale = ['the file does not parse: ' + f.errors[0]];
         if (back) front.status = 'active';
-      }, ctx, back ? 'the file is back: ' + card.doc : undefined);
+        said = both(unvouch && unvouchOn(front, unvouch), f.proc && f.vouch && vouchOn(front, f.vouch)) || '';
+      }, ctx, () => both(back && 'the file is back: ' + card.doc, said));
       (r ? out.updated : out.unchanged).push(r ? r.id : card.id);
     }
     for (const c of gone) {
       const why = !c.project || sameDir(c.project, project) || foreign(c, repo, home) ? c.doc + ' is gone from ' + project
         : 'the cards of ' + normPath(c.project) + ' are the main checkout\'s, ' + project;
-      updateCard(db, byFront.get(c), (front) => { front.status = 'retired'; }, ctx, 'retired: ' + why);
+      let said = '';
+      updateCard(db, byFront.get(c), (front) => { front.status = 'retired'; said = unvouch ? unvouchOn(front, unvouch) : ''; }, ctx, () => both('retired: ' + why, said));
       out.retired.push(c.id);
     }
     /* the everywhere cards follow the plugin's folder, never this project's */
@@ -289,7 +317,8 @@ export function recordRun(db, { name, result, note, fixed, oneOff, filed, projec
       front.cleanRuns = clean;
       front.lastRun = ctx.at;
       if (Array.isArray(stale)) front.stale = stale;
-      if (result === 'clean') { front.verified = verified; front.verifiedAt = ctx.at; }
+      /* a clean run's commit is the run's own record, never the handover's to withdraw */
+      if (result === 'clean') { front.verified = verified; front.verifiedAt = ctx.at; delete front.vouched; }
       if (outcome && outcome.kind === 'filed') { front.filedTasks = filedTasks; front.flag = lead; }
       else if (!waits.length) front.flag = '';
     }, ctx, runNote);

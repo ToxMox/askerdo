@@ -237,7 +237,8 @@ is missing: the place asked for, its reason (`last`'s line, or
 place does not fit; one parked on, or woken by, the held track's own
 end, task or question adds, after a semicolon, why it cannot start
 sooner), and `here` (`--here-before`, `--here-after`), the real place on
-the held track the work would otherwise take, checked as a real place.
+the held track the work would otherwise take, checked as a real place,
+left out when nothing on the held track waits on the work.
 
 Nothing is created while the user decides. The board registers a
 question labelled `placement` in the filing's own transaction, on the
@@ -247,7 +248,9 @@ track and where the session asks to put it, by task name. Its options
 are fixed: a, do it on this track (created at `here`); b, put it where
 asked (the session's pick, created at the place asked for, making the
 parked track when that is the place); c, let's talk where it fits; d,
-drop it. The press creates the task with no model turn, as the filing
+drop it. A filing with no `here` has no do-it-on-this-track row: its
+options are a, put it where asked (the pick); b, let's talk; c, drop it,
+so no press adds a dependency nobody meant. The press creates the task with no model turn, as the filing
 session, and the new task's journal names the question and the press;
 the answer's inbox event tells the session the task's id and place, or
 the outcome. After a talk (c, or a note with no press) the session lays
@@ -763,6 +766,11 @@ the tool share one check (`lib/handoff-payload.mjs`):
   `handoff update` wraps its text the same way.
 - `whereWeWere`: the previous session's own words, at most 4 KB, wrapped
   as `state` is.
+- A `focus`, `state` or `whereWeWere` over its budget is stored as sent,
+  never refused, so the write takes one call; its result names each
+  field over and the `handoff update` op that shortens it: `{ op:
+  "focus", text }`, `{ op: "state", heading, text }` for a long
+  section, or `{ op: "whereWeWere", text }`, which replaces it whole.
 - `waitingOnUser`: a list of one-line items.
 - `leftovers`: the steps left, laid out on the track as `track layout`
   lays them, each naming its `runBy`. One for later work names
@@ -1185,7 +1193,7 @@ The task and track calls past the routine ones in
   `--tier 2` on the held track, `--tier 3 --track TR-n`, or `--tier 4
   --track TR-n` in another workstream (or `task edit T-13 --wake
   next-session` alone on a task on a track), with its reason and
-  `--here-before`: the user is asked first, and once created it waits
+  `--here-before` when a task on the held track waits on it: the user is asked first, and once created it waits
   for the filing session and reads ready in another's kickoff.
 - **A look** is a task labelled `look` that the session runs, ending in
   one question to the user that gates it (`ask` with `gates`, or

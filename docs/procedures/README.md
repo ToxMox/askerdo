@@ -97,7 +97,7 @@ A bullet list. Each bullet starts with exactly one backticked target, then `: ` 
 | Store record | `` `T-239` ``, `` `Q495` ``, `` `K-12` `` | A link on the card; no staleness. |
 | URL | `` `https://...` `` | A link; no staleness. |
 
-The References list is the authoritative set of paths for staleness. Every repo path that appears in backticks or inside a command in Steps or Verify MUST also appear here; the parser lints Steps and Verify for backticked tokens that contain `/` or end in a file extension and exist in the repo, and reports each one missing from References, except a path git ignores (a build's output). `askerdo proc scan --check` runs the parse, the lint and the staleness judge on the files of the checkout it runs in, a worktree's branch included, and writes nothing to the board.
+The References list is the authoritative set of paths for staleness. Every repo path that appears in backticks or inside a command in Steps or Verify MUST also appear here; the parser lints Steps and Verify for backticked tokens that contain `/` or end in a file extension and exist in the repo, and reports each one missing from References, except a path git ignores (a build's output). It also warns on a path with a `/` that the Steps or Verify prose names in backticks, that is not in References (where staleness reads it) and that a commit deleted from the repo: a path the repo never held (another project's, or one a step creates), a placeholder, a glob and a URL are not read. `askerdo proc scan --check` runs the parse, the lint and the staleness judge on the files of the checkout it runs in, a worktree's branch included, and writes nothing to the board.
 
 ## How the card judges staleness
 
@@ -107,6 +107,8 @@ From the file alone plus git, against the commit at which the procedure was last
 2. A referenced path is gone at HEAD, or a `::symbol` no longer occurs in its file.
 3. A command is gone: the first token of a command line is a repo path (for example `scripts/build.mjs`, or `node scripts/build.mjs`'s second token) that no longer exists, or a `--flag` used with a repo script no longer occurs anywhere in that script's source. A line is split on `&&`, `||`, `;` and `|` outside quotes and backticks, so a quoted regex stays one word. Commands on PATH (`node`, `git`, `claude`, `pwsh`, `curl.exe`) are taken as present: a first token with no slash that is not a file in the repo is one.
 4. Age since the last clean run, shown second and never alone a reason.
+
+A card with no clean run is judged from its file's last commit. A conversion's handover (the onboard skill) scans the cards after its last commit and records that commit as the verified commit of each card it wrote and of each that read current before its first commit, so the conversion's own commits never read as changes; a card it edited that read stale before keeps the base it had, so it stays stale, a gone path still reads gone, and the card still reads never run until a session runs it. The undo of the conversion gives back the verified commit each card held before.
 
 ## Recording runs
 

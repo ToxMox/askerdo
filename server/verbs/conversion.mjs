@@ -3,7 +3,7 @@
    so it stays out of search, lists, labels and the history rows. */
 import { tx } from '../db.mjs';
 import { actorOf } from '../records.mjs';
-import { UsageError, resolveRecord } from './labels.mjs';
+import { UsageError, heldSpans, resolveRecord } from './labels.mjs';
 import { loadProfiles } from './profiles.mjs';
 import { settingsOf } from './profile-rules.mjs';
 
@@ -27,7 +27,7 @@ function needProject(input) {
 
 function rowOf(r, gone) {
   const records = json(r.records, []);
-  const lost = records.filter((id) => gone(id));
+  const lost = records.filter((id) => gone(id, String(r.at || '').slice(0, 10)));
   return {
     source: r.source, kind: r.kind, ...(r.hash ? { hash: r.hash } : {}), ...(r.sha ? { sha: r.sha } : {}), records,
     ...(r.fate ? { fate: r.fate } : {}), ...(r.why ? { why: r.why } : {}), ...(r.answer ? { answer: r.answer } : {}),
@@ -46,12 +46,18 @@ export function conversionMap(db, input = {}) {
     lines = lines || loadProfiles(db).profiles;
     return !(settingsOf(lines[name])['rules.add'] || []).some((l) => l && l.slug === slug);
   };
-  /* a record id, a handoff (TR-n.m) or a rule line (profile/slug) the board no longer holds */
-  const gone = (id) => {
+  /* a record id, a handoff (TR-n.m) or a rule line (profile/slug) the board no longer holds; a label
+     a new record took after the row was written names a record gone, never the new one */
+  const reusedSince = (e, id, day) => (heldSpans(e.kind, e.front).filter((s) => s.label === id).pop() || {}).from > day;
+  const gone = (id, day) => {
     const line = LINE.exec(id);
     if (!LABEL.test(id) && !line) return false;
-    if (!seen.has(id)) seen.set(id, line ? lineGone(line[1], line[2]) : !resolveRecord(db, id));
-    return seen.get(id);
+    const at = id + ' ' + day;
+    if (!seen.has(at)) {
+      const e = line ? null : resolveRecord(db, id);
+      seen.set(at, line ? lineGone(line[1], line[2]) : !e || Boolean(day && reusedSince(e, id, day)));
+    }
+    return seen.get(at);
   };
   const rows = db.stmt('SELECT source, kind, hash, sha, records, fate, why, answer, detail, run, at FROM conversion WHERE project = ? ORDER BY source').all(project).map((r) => rowOf(r, gone));
   const runs = rows.filter((r) => r.kind === 'run').sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));

@@ -10,6 +10,8 @@ import { APPROVED, PLACEMENT_LABEL } from './placement-seam.mjs';
 const ENDED_TASK = ['done', 'dropped'];
 const CLOSED_TRACK = ['done', 'dropped', 'folded'];
 const OUTCOME = { a: 'here', b: 'asked', c: 'talk', d: 'drop' };
+/* a question with no here has no do-it-here row, so its letters start at the place asked */
+const OUTCOME_NO_HERE = { a: 'asked', b: 'talk', c: 'drop' };
 const DRAFT_KEYS = ['name', 'description', 'intent', 'priority', 'labels'];
 const ASKED_KEYS = ['tier', 'track', 'workstream', 'newTrack', 'unparkWhen', 'wake', 'unplaced', 'last', 'whyElsewhere', 'after', 'before', 'onto'];
 
@@ -103,7 +105,10 @@ export function placementAnswered(db, q, answer, c) {
       + p.created + ' itself (task edit, or task update --status dropped)');
   }
   const pick = answer.drop ? null : answer.pick ? String(answer.pick).trim() : null;
-  let outcome = answer.drop ? 'drop' : OUTCOME[pick] || 'talk';
+  const table = p.here ? OUTCOME : OUTCOME_NO_HERE;
+  /* a habitual letter the question lacks (d on three rows) is refused, never read as talk */
+  if (pick && !table[pick]) throw new UsageError(front.id + ' has no option ' + pick + ': answer one of ' + Object.keys(table).join(', ') + ', or drop it; nothing was written');
+  let outcome = answer.drop ? 'drop' : table[pick] || 'talk';
   let made = null;
   let why = null;
   if (outcome === 'here' || outcome === 'asked') {
@@ -121,7 +126,7 @@ export function placementAnswered(db, q, answer, c) {
       made = { id: e.label, ...placeOf(db, e.key) };
       const text = front.id + ' (' + front.name + ') was answered: ' + (answer.line || pick) + ' ' + e.label
         + ' was ' + (given(p.task) ? 'placed' : 'created') + ' by that press, as the session that found it filed it'
-        + (made.track ? ', on ' + made.track : '') + (made.before.length ? ' before ' + made.before.join(', ') : '') + '.';
+        + (made.track ? ', on ' + made.track : '') + (made.after.length ? ' after ' + made.after.join(', ') : '') + (made.before.length ? ' before ' + made.before.join(', ') : '') + '.';
       addNote(db, e.key, { at: c.at, actor: byOf(c.actor), body: guardHeadings(text) });
       logVerb(db, { ts: c.at, verb: 'note', kind: 'task', id: e.label, key: e.key, name: e.front.name, changes: {}, by: byOf(c.actor), pc: c.pc, note: text });
     }
