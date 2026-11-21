@@ -102,6 +102,18 @@ export function nothingElseOpen(db, trackKey, skip = new Set()) {
   const closing = closingKeys(db, open);
   return !open.some((r) => !closing.has(r.key) && !skip.has(r.key));
 }
+/* a step that waits (through `seeds`, task keys) on open work on the track with nothing there but the closing
+   review sitting after that work is the track's end: there is no order to be last in, so it files at once. */
+export function endOfTrack(db, trackKey, seeds, skip = new Set()) {
+  const all = openOn(db, trackKey);
+  const closing = closingKeys(db, all);
+  const open = all.filter((r) => !skip.has(r.key));
+  const reached = open.filter((r) => seeds.some((s) => pathBetween(db, s, r.key)));
+  const front = reached.filter((r) => !reached.some((o) => o !== r && pathBetween(db, o.key, r.key)));
+  return front.length > 0 && !open.some((o) => !reached.includes(o) && !closing.has(o.key) && front.some((f) => pathBetween(db, o.key, f.key)));
+}
+const taskKeysOf = (db, ids) => [].concat(ids ?? []).filter((a) => typeof a === 'string' && a.trim())
+  .map((a) => resolveRecord(db, a.trim(), { kinds: ['task'] })).filter(Boolean).map((e) => e.key);
 /* Before names an open task on the held track other than its closing review; a wrong id is refused by name. */
 export function realBefore(db, heldRec, before, after, strict = true) {
   const open = openOn(db, heldRec.key);
@@ -675,7 +687,7 @@ function inboxWays(db, heldRec, wsKey, wake, at) {
 /* The ladder's place for a filing `f`(tier and its answer: track, workstream, before, after, unplaced, wake, newTrack,
    unparkWhen; name and words for the hint). `at`: via, task (an existing T-n), taskWs, unplaced (an inbox task's reason), marked (a filing
    that names its tier or is refused), free (let through: the talk filing), skip (keys nothing-else-open leaves out), laterReal (a later
-   step of the same call with a real place waits on it).
+   step of the same call with a real place waits on it), chain (the T-n ids a step waits through, its earlier steps' included).
    Null when no tier is named and none is owed; else { tier, track | inbox | park, before, after, filled, tell, whyElsewhere, ask }.
    `ask` marks a filing the board asks the user about rather than files ({ reason }). */
 export function ladderPlace(db, f, c, at = {}) {
@@ -696,13 +708,14 @@ export function ladderPlace(db, f, c, at = {}) {
   if (onHeld) {
     const real = realBefore(db, heldRec, f.before, f.after) || Boolean(at.laterReal);
     if (free) return { ...lad, approved: true };
-    if (real || nothingElseOpen(db, heldRec.key, at.skip)) return lad;
+    /* a last the caller sends stays its ask of the user, at the end too */
+    if (real || nothingElseOpen(db, heldRec.key, at.skip) || (!isGiven(f.last) && endOfTrack(db, heldRec.key, taskKeysOf(db, at.chain || f.after), at.skip))) return lad;
     const said = typeof f.last === 'string' ? oneLineOf(f.last) : '';
     if (said && !unfilled(said)) return { ...lad, ask: { reason: said } };
     /* a blank before and blank last stays refused; a before of the closing review alone is last */
     throw ladderRefusal((isGiven(f.last) ? 'last says in one line why nothing on ' + id + ' needs the task sooner' + (said ? TEMPLATE_WORDS : '')
       : isGiven(f.before) ? 'before names only the closing review of ' + id + ', which is last: say last with why nothing on ' + id + ' needs it sooner'
-        : 'A step on ' + id + ', ' + youHold(heldRec) + ', names before: the tasks on it that must not finish without this one')
+        : 'A step on ' + id + ', ' + youHold(heldRec) + ', names before: the tasks on it that must not finish without this one (a step after the work at its end, which nothing there follows, needs none)')
       + '. Only when nothing on ' + id + ' needs it sooner does it say last, with that line, and last is asked of the user with here, the real place it would otherwise take when a task there waits on it',
     heldNext(id, undefined), at.via === 'leftover');
   }
@@ -959,9 +972,10 @@ function lastLine(db, trackKey, ask, actor, taskKey) {
   if (!held || held.track !== trackKey) return null;
   if (line && !unfilled(line)) return line;
   /* with nothing else open there is no order to be last in */
-  if (!isGiven(ask.last) && nothingElseOpen(db, trackKey, new Set([taskKey, ...(ask.skip || [])]))) return null;
+  const skip = new Set([taskKey, ...(ask.skip || [])]);
+  if (!isGiven(ask.last) && (nothingElseOpen(db, trackKey, skip) || endOfTrack(db, trackKey, [taskKey], skip))) return null;
   const id = labelOf(db, trackKey);
-  throw ladderRefusal((isGiven(ask.last) ? 'last says in one line why nothing on ' + id + ' needs the task sooner' + (line ? TEMPLATE_WORDS : '') : 'A step on ' + id + ', ' + youHold(held) + ', names before: the tasks on it that must not finish without this one')
+  throw ladderRefusal((isGiven(ask.last) ? 'last says in one line why nothing on ' + id + ' needs the task sooner' + (line ? TEMPLATE_WORDS : '') : 'A step on ' + id + ', ' + youHold(held) + ', names before: the tasks on it that must not finish without this one (a step after the work at its end, which nothing there follows, needs none)')
     + '. Only when nothing on ' + id + ' needs it sooner does it say last, with that line; last is a last resort, since a task filed last waits until the track runs out of other work',
   heldNext(id, ask.nextSession ? NEXT_SESSION : undefined), ask.step);
 }
@@ -1431,12 +1445,15 @@ function placeLayout(db, track, steps, input, c) {
     real[i] = held && (lands[i] ? realBefore(db, heldRec, s.before, null, false) || steps.some((o, j) => j > i && (o.after || []).includes(i + 1) && real[j]) : waiting(keyOfStep(s)));
   }
   const tier = held ? 2 : track.fields.workstream === heldRec.fields.workstream ? 3 : 4;
+  /* a step's after chain through the earlier steps it names by number, none of them made yet */
+  const chain = [];
+  steps.forEach((s, i) => { chain[i] = (s.after || []).flatMap((a) => (typeof a === 'string' ? [a] : Number.isInteger(a) && a >= 1 && a <= i ? chain[a - 1] : [])); });
   const asked = [];
   steps.forEach((s, i) => stepped(i, s, () => {
     for (const a of s.after || []) if (Number.isInteger(a) && asked[a - 1]) throw new TrackRefusal('after names step ' + a + ', which is asked of the user (' + asked[a - 1].id + '), so nothing is made for it yet');
     if (!lands[i]) return;
     const f = { ...s, tier, track: track.fields.id, after: (s.after || []).filter((a) => typeof a === 'string') };
-    const lad = ladderPlace(db, f, c, { via: 'layout', laterReal: real[i] });
+    const lad = ladderPlace(db, f, c, { via: 'layout', laterReal: real[i], chain: chain[i] });
     if (lad && lad.ask) asked[i] = askFiling(db, f, c, s.task !== undefined ? { task: s.task.trim() } : { draft: s }, { via: 'layout', step: i + 1 });
   }));
   return asked;

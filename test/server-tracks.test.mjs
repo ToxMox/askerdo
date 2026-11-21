@@ -429,6 +429,21 @@ test('a filing lands where its tier says, before the closing review, and a tier 
     const made = q.answer(db, { id: asked.id, pick: 'b' }, { user: 's5' }).placement.created;
     assert.deepEqual([made.after, made.before], [[look.id], []]);
   }
+  /* a step whose after chain reaches the held track's last open work is its end, filed at once on every path;
+     one after work something else on the track already follows still names its before */
+  {
+    const db = board();
+    const S9 = { session: 's9' };
+    const end = t.newTrack(db, { workstream: 'WS-1', name: 'End line', session: 's9' }, S9);
+    const fix = runVerb(db, 'createRecord', { name: 'The fix', description: 'd', track: end.id }, 'cli');
+    const laid = runVerb(db, 'layOut', { track: end.id, steps: [{ name: 'Review', description: 'd', after: [fix.id] }, { name: 'Release', description: 'd', after: [1] }], session: 's9' }, S9).steps;
+    assert.ok(laid.every((s) => s.id && !s.asked), JSON.stringify(laid));
+    const placed = runVerb(db, 'createRecord', { name: 'Announce', description: 'd', tier: 2, after: [laid[1].id] }, S9);
+    assert.ok(placed.id && !placed.asked && placed.track === end.id, JSON.stringify(placed));
+    assert.throws(() => runVerb(db, 'createRecord', { name: 'Middle', description: 'd', tier: 2, after: [fix.id] }, S9), (e) => e.data.offers.some((o) => o.tier === 2 && o.before));
+    const left = runVerb(db, 'taskUpdate', { id: fix.id, status: 'done', leftovers: [{ name: 'Tag it', description: 'd', runBy: 'fork', tier: 2, after: [placed.id] }] }, S9).steps[0];
+    assert.ok(left.id && !left.asked, JSON.stringify(left));
+  }
   /* on the held track a marked blank (no before, no last line) is refused on every filing path, writing nothing, with both calls */
   const count = () => db.prepare("SELECT count(*) AS n FROM records WHERE kind = 'task'").get().n;
   const edges = () => db.prepare('SELECT count(*) AS n FROM depends').get().n;

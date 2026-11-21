@@ -56,7 +56,8 @@ export function layLeftovers(db, home, steps, actor) {
     let lad = null;
     try {
       lad = stays ? null : ladderPlace(db, { ...s, name: s.name || s.task }, c,
-        { via: 'leftover', task: s.task, taskWs: home.workstream, marked: Boolean(heldRec), steps, laterReal: real[i], skip: skip() });
+        { via: 'leftover', task: s.task, taskWs: home.workstream, marked: Boolean(heldRec), steps, laterReal: real[i], skip: skip(),
+          chain: (Array.isArray(s.after) ? s.after : []).map((a) => (Number.isInteger(a) && a >= 1 && a <= i ? out[a - 1].id : a)) });
       if (lad && lad.ask) {
         /* the question outlives this call, so a step named by its number is named by its id */
         const n = /^\s*task-completes\s+(\d+)\s*$/i.exec(typeof s.unparkWhen === 'string' ? s.unparkWhen : '');

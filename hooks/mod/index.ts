@@ -990,12 +990,14 @@ const askSchema = (n: string) => ({
 
 /* a repo's verify-first entry, as handoff_write takes it and handoff_update refreshes it */
 const VERIFY_ENTRY = {
-  path: { type: 'string', description: 'The repo, absolute' }, branch: { type: 'string' }, worktree: { type: 'string' },
-  commit: { type: 'string' }, expectedDirty: { type: 'array', items: { type: 'string' } },
+  path: { type: 'string', description: 'The repo, absolute' },
+  branch: { type: 'string', description: 'Leave out: the write reads it from git; one git disagrees with is not stored, and the result names it' },
+  worktree: { type: 'string', description: 'Where the branch is checked out when not at path, absolute; the checks then run there' },
+  commit: { type: 'string', description: 'Leave out: read from git, as the branch is' }, expectedDirty: { type: 'array', items: { type: 'string' } },
   ownedByOthers: { type: 'array', items: { type: 'string' } },
   files: {
     type: 'array',
-    description: 'Only the untracked files new since the last handoff and kept ones due for review; one left out carries its last disposition here',
+    description: 'Only the untracked files new since the last handoff and kept ones due for review; one left out carries its last disposition here. A delete under a folder the conversion keeps is stored as a keep',
     items: {
       type: 'object', required: ['path', 'disposition'],
       properties: {
@@ -1023,6 +1025,7 @@ const VERIFY_ENTRY = {
 
 /* the places a filing names, as place, a close's leftovers and a handoff's take them: a real place on the held track lands, any other asks */
 const TIER_LINES = 'tier 2: the track this session holds, at a real place: after is what it needs and before the tasks on it that must not finish without it; it files at once. '
+  + 'One whose after reaches the work at the track\'s end (open work nothing there follows but the closing review) needs no before and files at once as the end. '
   + 'Asking to put it last on that track (last, with why), on another track or a parked one an event opens (tier 3: track, or unparkWhen with newTrack), '
   + 'in another workstream or project (tier 4: workstream with a track there, or wake for its inbox; a date wake says why that date in unplaced), '
   + 'or for a later session (wake next-session) creates nothing: it asks the user, with the reason and with here naming the real place on the held track it would otherwise take (left out when nothing there waits on it), and their press creates it or not.'
@@ -1050,7 +1053,7 @@ const LEFTOVER_STEP = {
   name: { type: 'string', description: 'The step, one line' },
   task: { type: 'string', description: 'T-n: an existing task, moved onto the track' },
   after: { type: 'array', description: 'What it waits on: T-n ids, or the number of an earlier step here (1 first)', items: { anyOf: [{ type: 'string' }, { type: 'integer' }] } },
-  before: { type: 'array', description: 'What waits on it: T-n ids alone (a later step here names this one in its own after). A tier 2 step names before, the tasks on the track that wait on it; last asks the user', items: { type: 'string' } },
+  before: { type: 'array', description: 'What waits on it: T-n ids alone (a later step here names this one in its own after). A tier 2 step names before, the tasks on the track that wait on it, unless its after reaches the work at the track\'s end; last asks the user', items: { type: 'string' } },
   description: { type: 'string', description: 'Required for a new step: what the next worker needs to start, why it was left, what it touches, what done looks like; '
     + 'a ruling is named by its K-n and statement, never quoted from the chat. A step filed by its check number takes that step\'s text, and one naming a task needs none' },
   priority: { type: 'string', enum: ['high', 'medium', 'low'] },
@@ -1238,7 +1241,7 @@ const toolsFor = (n: string) => [
         leftovers: {
           type: 'array',
           description: 'With status done or dropped: the steps this close leaves, nothing filed or closed if one is refused. '
-            + 'Each names its place as place takes it: tier 2 at a real place on the held track (with no after, after the closing task) files with the close; '
+            + 'Each names its place as place takes it: tier 2 at a real place on the held track (with no after, after the closing task), or after the work at its end, files with the close; '
             + 'a step asked last, off the track or for a later session becomes ' + n + '\'s placement question, its card under this call and its block in the result, created only on their press, while the close lands. '
             + 'The board checks each place and answers one that does not fit with the call that does',
           items: {
@@ -1253,7 +1256,7 @@ const toolsFor = (n: string) => [
           type: 'array',
           description: 'Open steps this task\'s worker will not do, each moved by its number to one place and struck with where it went: '
             + 'onto an open task (onto), to a question already asked (question), or filed as a new task with the place fields, as a leftover is: '
-            + 'at a real place on the held track it lands, and anywhere else, or onto a task on another track, asks ' + n + ' first. '
+            + 'at a real place on the held track, or after the work at its end, it lands, and anywhere else, or onto a task on another track, asks ' + n + ' first. '
             + 'A step moved to a question does not gate this task by itself: when the task needs its answer, the question gates the task (ask with gates naming it). '
             + 'A refused move writes nothing; a close with leftovers goes in its own call',
           items: {
@@ -1293,7 +1296,7 @@ const toolsFor = (n: string) => [
         runBy: { type: 'string', description: 'New work: who runs it, orchestrator, fork or agent:<model>' },
         ...PLACE_ANSWER,
         after: { type: 'array', items: { type: 'string' }, description: 'Tier 2 or 3: T-n ids on that track it waits on' },
-        before: { type: 'array', items: { type: 'string' }, description: 'Tier 2 or 3: T-n ids on that track that must not finish without it; at tier 2 the real place, else last asks ' + n },
+        before: { type: 'array', items: { type: 'string' }, description: 'Tier 2 or 3: T-n ids on that track that must not finish without it; at tier 2 the real place, none when after reaches the work at the track\'s end, else last asks ' + n },
         question: { type: 'string', description: 'Q-n: the placement question a talk settled; with words, the one filing it lets through at the place sent' },
         words: { type: 'string', description: 'With question: ' + n + '\'s words that settled the place' },
       },
@@ -1307,7 +1310,7 @@ const toolsFor = (n: string) => [
       + 'a field over its budget is stored as sent and the result names the handoff_update patch that shortens it, never a second write; '
       + 'rulings: only those ' + n + ' made in chat that decide could not record, '
       + 'and verifyFirst with one entry per repo, '
-      + 'its files list naming only untracked files new since the last handoff and kept ones whose review date has passed, each commit, ignore, delete, keep (with a reason) or undecided, '
+      + 'its files list naming only untracked files new since the last handoff and kept ones whose review date has passed, each commit, ignore, delete (asked with the count of files it removes, which git has no copy of; one under a folder the conversion keeps is stored as a keep), keep (with a reason) or undecided, '
       + 'and its worktrees list likewise for each worktree holding work and the groups merged and branches (remove, keep with a reason, or undecided); '
       + 'a path left out carries its last disposition and reason on this PC, a keep its review date (7 days on when none is given), and the write finds every untracked file, worktree and merged branch itself. '
       + 'The write removes each merged, clean agent worktree (its branch tip in the checkout\'s branch, nothing uncommitted, never a locked one) with its branch, and each merged agent branch, after the board write, and its result lists them with any it had no time for, which the next write removes; '
@@ -1358,7 +1361,7 @@ const toolsFor = (n: string) => [
           type: 'array',
           description: 'The steps left, in order: each becomes a task on the track (a name matching an open task there is that task), waits on its after, and is waited on by its before, '
             + 'so the next session takes the next step from the ready set. The state carries the thinking and never orders work. '
-            + 'Each new step names its place as place takes it: tier 2 at a real place, with its before, lands on the track; '
+            + 'Each new step names its place as place takes it: tier 2 at a real place, with its before or after the work at the track\'s end, lands on the track; '
             + 'one asked last, off the track or for a later session becomes ' + n + '\'s placement question on the track, its card under this call and its block in the result, created only on their press, while the handoff lands. '
             + 'A leftover you cannot place at all (is it work) goes to ' + n + ' through ask',
           items: { type: 'object', additionalProperties: false, required: ['runBy'], properties: LEFTOVER_STEP },
@@ -6490,7 +6493,10 @@ async function handoffLanded($: any, track: string, sid: string, since: number, 
       && Date.parse(x.created) >= since - 5000).pop()
     if (!h) continue
     const m = await cli($, ['track', 'mine', '--session', sid, '--json'])
-    return { id: h.id, status: h.status, created: h.created, track, released: m.ok && !(m.json.held && m.json.track === track) }
+    /* the verify lines this PC worded at the write, kept beside its lists */
+    const full = await cli($, ['track', 'show', h.id, '--json'])
+    const lines = full.ok && full.json ? { ...(full.json.gitLine ? { gitLine: full.json.gitLine } : {}), ...(full.json.keptLine ? { keptLine: full.json.keptLine } : {}) } : {}
+    return { id: h.id, status: h.status, created: h.created, track, released: m.ok && !(m.json.held && m.json.track === track), ...lines }
   }
   return null
 }
@@ -6661,6 +6667,9 @@ async function handoffTool($: any, input: any, agentId?: string, useId?: string)
       + (r.json.waitsLine ? '\n' + r.json.waitsLine : '')
       + (r.json.silentLine ? '\n' + r.json.silentLine : '')
       + (r.json.unpushedLine ? '\n' + r.json.unpushedLine : '')
+      + (Array.isArray(r.json.verify) ? r.json.verify : []).filter((x: any) => x && x.ok === false).map((x: any) => '\nverify first: ' + x.path + ' FAILS: ' + (x.problems || []).join('; ')).join('')
+      + (r.json.gitLine ? '\nWARNING: ' + r.json.gitLine : '')
+      + (r.json.keptLine ? '\n' + r.json.keptLine : '')
       + inboxText(r.json.inbox, r.json.workstream)
       + (r.json.untakenLine ? '\n' + r.json.untakenLine : '')
       + (r.json.warning ? '\nWARNING: ' + r.json.warning : '')
@@ -6746,6 +6755,8 @@ async function updateTool($: any, input: any): Promise<any> {
   return {
     result: 'Updated ' + j.id + ' (' + j.status + ') on ' + j.track + ' in place, keeping its id: ' + (said.join('; ') || 'nothing changed') + '.'
       + fails.map((v: any) => '\nverify first: ' + v.path + ' FAILS: ' + (v.problems || []).join('; ')).join('')
+      + (j.gitLine ? '\nWARNING: ' + j.gitLine : '')
+      + (j.keptLine ? '\n' + j.keptLine : '')
       + (j.overLine ? '\n' + j.overLine : '')
       + (files ? '\n' + files : ''),
   }

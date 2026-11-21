@@ -1,11 +1,11 @@
 /* The contract's checks under `claude plugin test`: the reply checks that flag and never rewrite, the
  * Agent-call checks and the rules in force on a dispatch. */
 import { describe, expect, test } from 'claude-code/testing'
-import { pressAgain, start, world } from './world.ts'
+import { COLD_START, pressAgain, start, world } from './world.ts'
 import { PLUGIN, HAND, GREEN, FLAG, OK, SUN, CHECKS, BAND, RULES, compose, notes, flags, reply, checked, replyRow, mountReply } from './contract-kit.ts'
 
 describe('the reply checks (flag, never rewrite)', () => {
-  test('an em dash gets a dim note under the reply and a note the model reads (acceptance 5)', async ($: any, on: any) => {
+  test('an em dash gets a dim note under the reply and a note the model reads (acceptance 5)', COLD_START, async ($: any, on: any) => {
     const w = checked(on)
     await start($, w)
     await compose($, ['terminal'])

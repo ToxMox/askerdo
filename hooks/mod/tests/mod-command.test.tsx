@@ -1,14 +1,14 @@
 /* The one /askerdo command and its alias answering with no model turn under `claude plugin test`,
  * and the track taken over after /clear. */
 import { describe, expect, test } from 'claude-code/testing'
-import { start, world } from './world.ts'
+import { COLD_START, start, world } from './world.ts'
 import { NEEDS_TRACK, SUBCOMMANDS_LINE } from '../../../lib/mod-core.mjs'
 import { SET } from './mod-kit.ts'
 
 const run = ($: any, args = '', command = 'askerdo') => $.command.run({ command, args }).then((r: any) => r.text)
 
 describe('one /askerdo command answers with no model turn', () => {
-  test('nothing draws the open set one line per question, no table, ending on the subcommands', async ($: any, on: any) => {
+  test('nothing draws the open set one line per question, no table, ending on the subcommands', COLD_START, async ($: any, on: any) => {
     const w = world(on)
     /* the band's calls and the live handoffs' asks are listed too */
     w.calls = [{ kind: 'look', record: 'k5', id: 'T-5', text: 'T-5 landed', presses: [{ label: 'Close', verb: 'editRecord', input: {} }, { label: 'Not yet', verb: 'lookNotYet', input: {} }] }]

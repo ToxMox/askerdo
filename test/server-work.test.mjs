@@ -617,6 +617,19 @@ test('an override batch rewrites tasks all or nothing and sets each close; a bat
   assert.ok(![fact.id, imported.id].includes(later('2026-10-29')), 'no new record takes a purged label while it rests');
   assert.deepEqual([later('2026-12-12'), later('2026-12-12')].sort(), [fact.id, imported.id].sort(), "after the rest an ended record's would have");
   assert.deepEqual(cv.conversionMap(db, { project: 'c:/repos/app' }).rows[0].gone, [fact.id, imported.id], "the old row names records gone, not their labels' new holders");
+
+  /* a ruling that cut records no import labelled stands in for the Withdraw press, a superseded one included */
+  const loose = w.createKnowledge(db, { type: 'gotcha', title: 'The old host', global: true }, on('2026-12-12'));
+  const was = decide(db, { title: 'Tabs', words: 'tabs', global: true }, on('2026-12-12'));
+  const now = decide(db, { title: 'Spaces', words: 'spaces', global: true, supersedes: [was.id] }, on('2026-12-12'));
+  const cut = decide(db, { title: 'Cut the old records', words: 'cut them', global: true, confirmed: true }, on('2026-12-12'));
+  const named = [loose.id, was.id];
+  assert.deepEqual(importPurge(db, { label: 'import:app', ids: named }, on('2026-12-13')).held.map((h) => h.id), named, 'without a ruling both stay');
+  assert.throws(() => importPurge(db, { ruling: cut.id }, on('2026-12-13')), /--id/);
+  const byRuling = importPurge(db, { ruling: cut.id, ids: named }, on('2026-12-13'));
+  assert.deepEqual([byRuling.dryRun, byRuling.counts, byRuling.held, L.resolveRecord(db, loose.id) !== null], [true, { knowledge: 1, decision: 1 }, [], true]);
+  importPurge(db, { ruling: cut.id, ids: named, yes: true }, on('2026-12-13'));
+  assert.deepEqual([...named, now.id, cut.id].map((id) => L.resolveRecord(db, id) !== null), [false, false, true, true], 'the superseder and the ruling stay');
 });
 
 test('a scrub hides the text from the record, search and activity at once; unscrub puts it back inside 7 days; after that it reads as purged', () => {

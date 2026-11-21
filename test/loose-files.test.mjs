@@ -77,6 +77,16 @@ test('the snapshot: a dirty file left as it was passes, new commits on top pass,
   const [e] = (await pc.runVerifyFirst(pc.validateHandoffPayload({ focus: 'f', state: 's', verifyFirst: [{ path: rp.dir, branch: 'build', worktree: tree }] }).verifyFirst, {})).entries;
   assert.equal(e.commit, rp.git('rev-parse', 'build'));
   assert.deepEqual((await lf.checkSnapshotAsync(e)).problems, []);
+  /* a branch and commit the caller gives that git disagrees with are git's in the record, and the result says so */
+  const told = await pc.runVerifyFirst(pc.validateHandoffPayload({ focus: 'f', state: 's', verifyFirst: [{ path: rp.dir, branch: 'gone-lane', commit: 'abcdef1', worktree: tree }] }).verifyFirst, {});
+  assert.equal(told.entries[0].branch, 'build');
+  assert.equal(told.entries[0].commit, rp.git('rev-parse', 'build'));
+  assert.equal(told.summary[0].ok, true);
+  assert.ok(told.gitLine && told.gitLine.includes('gone-lane') && told.gitLine.includes('abcdef1'), told.gitLine);
+  assert.deepEqual((await lf.checkSnapshotAsync(told.entries[0])).problems, [], 'the resume checks git\'s branch against git\'s snapshot');
+  /* a worktree that is not there is named as missing, the given branch still kept out */
+  const lost = await pc.runVerifyFirst(pc.validateHandoffPayload({ focus: 'f', state: 's', verifyFirst: [{ path: rp.dir, branch: 'gone-lane', worktree: tree + '-gone' }] }).verifyFirst, {});
+  assert.ok(lost.gitLine.includes(tree + '-gone') && !lost.gitLine.includes('readable') && !lost.entries[0].branch, lost.gitLine);
   execFileSync('git', ['-C', tree, 'checkout', '-q', '-b', 'elsewhere']);
   const off = (await lf.checkSnapshotAsync(e)).problems.join('; ');
   assert.ok(off.includes(tree) && off.includes('elsewhere'), off);
@@ -193,6 +203,7 @@ test('dispositions: the payload\'s are kept here, a file left out is undecided w
   assert.match(log.note, /^run\.log: 2 bytes, .*"x"$/);
   assert.deepEqual(w.undecided.map((u) => u.path), ['mystery.bin', 'run.log'], 'the write names what it left undecided');
   assert.deepEqual(w.unmatched, [rp.dir + ': gone.txt']);
+  assert.equal(w.due.find((f) => f.path === 'scratch/').count, '1', 'a proposed delete carries the count it removes');
   /* a resume asks nothing; its one line names what is kept and why */
   const lines = lf.keptKickoff(w.entries, '2026-10-19');
   assert.equal(lines.length, 1);

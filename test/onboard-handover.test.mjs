@@ -13,6 +13,9 @@ import { applyPlan, claudeText, cliRunner, gatesOf, handover, keptBack, rehearse
 import { claudeLedger } from '../skills/onboard/survey.mjs';
 import { buildPlan, withFacts } from '../skills/onboard/plan.mjs';
 import { boardRecords, evidenceOf } from '../skills/onboard/map.mjs';
+import { keptPath, readKept, settleFiles } from '../lib/loose-files.mjs';
+import { boardCall } from '../lib/board-call.mjs';
+import { dataDir } from '../lib/node-helpers.mjs';
 import { tempDir } from './helpers/sandbox.mjs';
 
 const CLI = join(import.meta.dirname, '..', 'bin', 'askerdo.mjs');
@@ -197,6 +200,8 @@ test('the handover lands in one commit holding every edit, keeps the folders it 
   p.manifest([{ step: 'workstream', row: null, op: 'ws create', kind: 'workstream', id: 'WS-9' }, { step: 'track:a', row: 'track:a', op: 'track new', kind: 'track', id: 'TR-5' },
     { step: 'rule:small', row: 'rule:small', op: 'profile rule-add', kind: 'rule line', id: 'proj/keep-commits-small' }]);
   p.clean();
+  mkdirSync(join(p.dir, 'scratch', 'deep'));
+  writeFileSync(join(p.dir, 'scratch', 'deep', 'more.md'), 'Nor this.\n');
 
   /* a refused commit puts every edit back, the card it wrote and the settings entry it took out included */
   const hook = join(p.dir, '.git', 'hooks', 'pre-commit');
@@ -218,6 +223,18 @@ test('the handover lands in one commit holding every edit, keeps the folders it 
   const skill = readFileSync(join(p.dir, '.agents/skills/build/SKILL.md'), 'utf8');
   assert.ok(/name: build\r?\ndescription: "Use when building or shipping\."/.test(skill) && skill.includes('docs/procedures/build.md') && !skill.includes('npm run build'), skill);
   assert.deepEqual(h.held.map((x) => [x.path, /untracked|tools\/read\.mjs/.test(x.why)]).sort(), [['scratch', true], ['tools/data', true]], 'git has no copy of one, code reads the other: both stay, named');
+  /* the kept folder keeps every file, and a handoff after the run keeps them too, a delete given for them included */
+  assert.equal(p.git(['status', '--porcelain', '--untracked-files=all', '--', 'scratch']).trim().split('\n').length, 2);
+  const loose = settleFiles({ path: p.dir, snapshot: { untracked: ['scratch/'] } }, [{ path: 'scratch', disposition: 'delete' }], readKept(dataDir(), p.dir), '2026-01-01', Date.now());
+  assert.deepEqual([loose.files.map((f) => [f.path, f.disposition]), loose.held], [[['scratch/', 'keep']], ['scratch/']]);
+  assert.match(loose.files[0].reason, /conversion keeps scratch: .*untracked/);
+  /* a PC whose list predates the conversion's keeps takes them from the project's map at its next handoff */
+  rmSync(keptPath(dataDir(), p.dir));
+  const pc = await import('../lib/tracks-session.mjs');
+  const asked = pc.validateHandoffPayload({ focus: 'f', state: 's', verifyFirst: [{ path: p.dir, files: [{ path: 'scratch', disposition: 'delete' }] }] }).verifyFirst;
+  const v = await pc.runVerifyFirst(asked, { dir: dataDir(), call: boardCall });
+  assert.deepEqual([v.entries[0].files.filter((f) => f.path === 'scratch/').map((f) => f.disposition), v.due.length], [['keep'], 0]);
+  assert.match(v.keptLine, /scratch/);
   /* a skill a session reads is repointed to git; a document keeps its cite as written */
   assert.match(readFileSync(join(p.dir, '.claude/skills/check/SKILL.md'), 'utf8'), new RegExp('runs/2026-01/run-1\\.md \\(in git at ' + BASE.slice(0, 10) + '\\)'));
   assert.equal(readFileSync(join(p.dir, 'docs/notes.md'), 'utf8'), 'The last run is in runs/2026-01/run-1.md.\n');

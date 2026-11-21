@@ -1,7 +1,7 @@
 /* The Needs-you band against the board under `claude plugin test`: a slow board, a burst
  * of presses, the poll and the long poll, the board's calls on Home, and the toasts and the tray alert. */
 import { describe, expect, test } from 'claude-code/testing'
-import { HEAVY, plain, pressAgain, start, world } from './world.ts'
+import { COLD_START, HEAVY, plain, pressAgain, start, world } from './world.ts'
 import { bandModel } from '../../../lib/mod-core.mjs'
 import { runsInCaller } from '../../../lib/caller-runs.mjs'
 import { PLUGIN, FLAG, DONE, SAVING, PANE_ID, SURFACES, BAND, PANE, BOARD, cooled, mount, rowKeys, oneQuestion, threeQuestions } from './band-kit.ts'
@@ -9,7 +9,7 @@ import { PLUGIN, FLAG, DONE, SAVING, PANE_ID, SURFACES, BAND, PANE, BOARD, coole
 describe('the band', () => {
   /* on a board slower than the 400 ms bound the done state draws alone at the bound, and the
      reload and the turn's take that land later wait for the gate like any passive update */
-  test('a slow board draws an answer\'s done state at the bound and its late reload and take through the gate', async ($: any, on: any) => {
+  test('a slow board draws an answer\'s done state at the bound and its late reload and take through the gate', COLD_START, async ($: any, on: any) => {
     const w = world(on)
     oneQuestion(w)
     w.alias = { alias: '', presses: 'once' }
@@ -36,7 +36,7 @@ describe('the band', () => {
     await ui.unmount()
   })
 
-  test('a burst of presses answers one at a time and every one lands; a failed chip says so and a press retries', async ($: any, on: any) => {
+  test('a burst of presses answers one at a time and every one lands; a failed chip says so and a press retries', COLD_START, async ($: any, on: any) => {
     const w = world(on)
     threeQuestions(w)
     w.questions.push({ id: 'Q109', name: 'third ask', blocking: false, subscribers: ['sess-1'], pick: null, options: [{ type: 'a', option: 'go' }] })
@@ -160,7 +160,7 @@ describe('the band', () => {
   })
 
   /* the local board's band in one call, freshened by its held request */
-  test('with a local board the band is its one read, the long poll redraws it when a change lands, with no timer, armed again after a freeze lifts, and the band says when the board is offline or the local server could not start', async ($: any, on: any) => {
+  test('with a local board the band is its one read, the long poll redraws it when a change lands, with no timer, armed again after a freeze lifts, and the band says when the board is offline or the local server could not start', HEAVY, async ($: any, on: any) => {
     const w = world(on)
     w.localServer()
     const q = (id: string, name: string, session: string | null = 'sess-1') => ({ id, key: id.toLowerCase() + 'abcd', name, blocking: true, session, subscribers: [], pick: 'a',

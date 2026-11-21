@@ -3,7 +3,7 @@
  * row. */
 import { describe, expect, test } from 'claude-code/testing'
 import { statusModel, statusPicture } from '../../../lib/mod-core.mjs'
-import { COLD_START, plain, start, world } from './world.ts'
+import { COLD_START, HEAVY, plain, start, world } from './world.ts'
 
 const PLUGIN = 'askerdo'
 const HINT = { isDraft: false, isWorking: false, hint: '? for shortcuts' }
@@ -250,7 +250,7 @@ describe('the status line', () => {
   /* narrowing, the gaps tighten; the task's long name is cut first, its id
      and count kept, then the track's, then the task's name goes; then the track, the task and the percents
      drop to their icons; the mark and the context ring's percent stay */
-  test('the status row shrinks in its fixed order and keeps its right end', async ($: any, on: any) => {
+  test('the status row shrinks in its fixed order and keeps its right end', HEAVY, async ($: any, on: any) => {
     const w = world(on)
     w.questions = []
     w.tracks[0].name = 'band and status row work'

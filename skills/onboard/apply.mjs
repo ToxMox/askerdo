@@ -14,7 +14,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writ
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { storeRoot } from '../../lib/node-helpers.mjs';
+import { dataDir, storeRoot } from '../../lib/node-helpers.mjs';
+import { keepFromConversion } from '../../lib/loose-files.mjs';
 import { stateProblems, wakeIn } from '../../server/handoff-text.mjs';
 import { cardRow, cardText, writeCard } from './cards.mjs';
 import { WAKE_REF, citeJudge, editLines, folderKey, lineEditTakes, readFacts, under } from './plan.mjs';
@@ -365,6 +366,10 @@ async function putMap(run, env, project, runId, groups, log) {
   if (failed.length) log('The conversion map was not written (' + failed.join('; ') + '): the next run reads these sources again');
   return failed;
 }
+/* the map's keeps reach this PC's loose-file list too, so no handoff offers a kept folder's files for deletion */
+function keepOnPc(env, project, folders, gone, log) {
+  try { keepFromConversion(dataDir(env), project, folders, new Date().toISOString().slice(0, 10), gone); } catch (e) { log('The kept folders did not reach this PC\'s loose-file list: ' + oneLine(e && e.message)); }
+}
 
 /* The CLI's own command code behind a launcher path: the launcher's lib, or the one a sync shim imports. */
 export function commandsOf(cli) {
@@ -598,6 +603,7 @@ export async function applyPlan(work, { board, cli = DEFAULT_CLI, log = console.
     refused = refusals.length;
     const failed = await putMap(run, env, plan.project.dir, plan.made, mapRows(plan, imp, mapState(plan.project.dir, work)), log);
     for (const f of failed) refusals.push('the conversion map: ' + f);
+    keepOnPc(env, plan.project.dir, (plan.folders || []).filter((f) => f.end === 'keep'), [], log);
   }
   log('\n' + (t ? 'Written' : 'Would write') + ': ' + Object.entries(tally).map(([k, v]) => k + ' ' + v).join(', '));
   if (t) log('The write: ' + took.steps + ' calls in ' + (took.ms / 1000).toFixed(1) + ' s, ' + took.perSecond + ' a second, in one process.');
@@ -1617,6 +1623,7 @@ export async function handover(work, { board = 'live', cli = DEFAULT_CLI, file =
     log(r.ok ? 'proc scan --project ' + dir + ': the cards are on the board, verified at ' + commit.slice(0, 8) : 'proc scan refused: ' + clip(r.why, 200));
   }
   if (commit) await mapHandover(cliRunner(cli), env, dir, work, { plan, imp, cov, repo, held, git, manifest, log });
+  if (!stopped) keepOnPc(env, dir, [...(plan.folders || []).filter((f) => f.end === 'keep'), ...held], imp.repo.filter((e) => e.op === 'move' || e.op === 'delete').map((e) => e.path), log);
   if (skipped.length) log('Skipped (' + skipped.length + '), each left as it is:\n  ' + skipped.map((s) => s.path + ': ' + s.why).join('\n  '));
   if (held.length) log('Folders that stay (' + held.length + '); tell the user:\n  ' + held.map((s) => s.path + ': ' + s.why).join('\n  '));
   if (stopped) log('Stopped at the ' + stopped.batch + ' step: ' + stopped.why + '. Every edit is put back as it was; nothing is committed. Fix the cause and run --handover again.');

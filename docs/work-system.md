@@ -217,9 +217,12 @@ that track, other than its closing review, waits on the new work:
 directly (`before`, `--before`) or through a later step of the same
 call that itself has a real place. Every id in `before` must be an open
 task on the held track and every id in `after` must exist; a wrong id is
-refused, naming it. When the held track has no open task but the one
-being closed and the closing review, there is no order to be last in:
-the work lands on the track and is the next thing taken.
+refused, naming it. A step whose `after` reaches open work on the held
+track that nothing there follows but the closing review is the track's
+end: there is no order to be last in, so it lands at once with no
+`before` (a `last` sent with it is still asked). When the held track has
+no open task but the one being closed and the closing review, the work
+lands on the track and is the next thing taken.
 
 Every other place is asked: last on the held track (`last`, `--last`,
 which puts a task before the track's closing review, so it waits until
@@ -789,8 +792,9 @@ the tool share one check (`lib/handoff-payload.mjs`):
   new ruling; each carries to every next handoff as R1, R2 until the
   writer marks it `{ "id": "R2", "registered": "Q61" }`.
 - `verifyFirst`: one entry per repo (`path`, `branch`, `worktree`,
-  `commit`, `ownedByOthers`, `files`, `worktrees`); a missing `commit` or
-  `branch` is read from the repo at write time, and the write takes a
+  `commit`, `ownedByOthers`, `files`, `worktrees`); the `commit` and
+  `branch` are read from the repo at write time, a given one git
+  disagrees with is not stored and the result names it, and the write takes a
   snapshot of its dirty and untracked files, its other worktrees and its
   local branches merged into the checkout's. `files` gives each untracked
   file a disposition (Loose files, below), `worktrees` each worktree

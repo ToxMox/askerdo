@@ -171,9 +171,9 @@ describe('the AskerDo pane', () => {
     expect(idle.w).toBe('idle')
   })
 
-  /* a hold inside one of the mod's named bodies says which ran at the due time; three real
+  /* a hold in one of the mod's named bodies says which ran at the due time; three real
      1.3 s holds plus the kit's work, 9 to 11 s in a full run, so it takes the long limit */
-  test('a hold inside a redraw check, a timer or a band timer names that body in its held row', HEAVY, async ($: any, on: any) => {
+  test('a hold in a redraw check, or in the host call of a timer or a band timer, names that body in its held row', HEAVY, async ($: any, on: any) => {
     const w = world(on)
     await start($, w)
     const helds = () => heldRows(w)
@@ -192,7 +192,8 @@ describe('the AskerDo pane', () => {
       if (!w.panesSpin) named = (await helds())[0]
     }
     expect([held(named), named && /redraw check/.test(named.r)]).toEqual([true, true])
-    /* busy inside a timer body: the Questions tab's age timer, whose pane read holds */
+    /* busy in a timer's host call: the Questions tab's age timer, whose pane read holds; the kit runs a
+       host call's hook after the body's synchronous part, so the row may name it as the last body before the hold */
     await ui.press({ key: 'tab-questions' })
     await w.clock.settle()
     w.panesSpin = 1300
@@ -200,7 +201,7 @@ describe('the AskerDo pane', () => {
     await w.clock.advance(250)
     const [timed] = await helds()
     await ui.unmount()
-    expect([held(timed), timed && /questions age timer, \d+ ms in/.test(timed.r)]).toEqual([true, true])
+    expect([held(timed), timed && /questions age timer/.test(timed.r)]).toEqual([true, true])
     /* busy inside a band timer: two lines turn waiting at once, and the toasts timer that shows the
        second holds in the host's toast call */
     const row = (t: string) => ({ track: t, handoff: t + '.1', name: 'line ' + t, state: 'waiting', age: '0m', focus: 'step 1' })
@@ -212,7 +213,7 @@ describe('the AskerDo pane', () => {
     for (let k = 0; k < 60 && w.toastSpin; k++) await w.clock.advance(250)
     await w.clock.advance(250)
     const [toasted] = await helds()
-    expect([held(toasted), toasted && /toasts timer, \d+ ms in/.test(toasted.r)]).toEqual([true, true])
+    expect([held(toasted), toasted && /toasts timer/.test(toasted.r)]).toEqual([true, true])
   })
 
   /* the band's copy over this project's activity, newest first by day;

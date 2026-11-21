@@ -288,6 +288,19 @@ test('staleness: a referenced file changed, a symbol gone, a flag gone, a script
   /* a References bullet the handover noted with git is history, never gone */
   const noted = parse(DEMO.replace('`scripts/build.mjs`: the build.', '`scripts/build.mjs`: the build. (in git at ' + at.slice(0, 10) + ')')).proc;
   assert.ok(!pr.judge(dir, noted, { self: at }).includes('gone: scripts/build.mjs'));
+  /* a folder holding most of the repo watches only the paths in it the steps name, and is warned at write */
+  const wide = demoRepo();
+  const from = git(wide, 'rev-parse', 'HEAD');
+  const whole = { ...proc, refs: [{ kind: 'path', target: './', repo: 'self', path: './' }] };
+  commitFile(wide, 'docs/notes.md', 'unrelated\n');
+  assert.deepEqual(pr.judge(wide, whole, { self: from }), [], 'a commit the steps do not touch leaves a repo-wide watch fresh');
+  assert.ok(pr.lint(wide, whole).some((w) => w.startsWith('./ ')), 'the broad watch is warned');
+  commitFile(wide, 'lib/a.mjs', 'export const SYMBOL = 3;\n');
+  assert.ok(pr.judge(wide, whole, { self: from }).some((x) => x.startsWith('changed since') && x.includes('lib/a.mjs')), 'a file the steps name inside it still counts');
+  /* a narrow folder still watches all of it */
+  commitFile(wide, 'lib/c.mjs', 'x\n');
+  const lib = { ...proc, refs: [{ kind: 'path', target: 'lib/', repo: 'self', path: 'lib/' }] };
+  assert.ok(pr.judge(wide, lib, { self: git(wide, 'rev-parse', 'HEAD~1') }).some((x) => x.startsWith('changed since') && x.includes('lib/ ')));
 });
 
 /* ---- the watcher's matching ---- */
@@ -399,6 +412,8 @@ test('the pointer note names the file and the run verb; a stale card says why', 
   assert.ok(note.startsWith('AskerDo procedure pointer (nothing was blocked): the command runs bump-version.ps1, which is procedure PR-2 Cut a release.'));
   assert.ok(note.includes('C:/src/proj/docs/procedures/release.md'));
   assert.ok(note.includes('The card is stale (gone: scripts/x.mjs)'));
+  /* a file that does not parse is reported by the scan, never on each pointer */
+  assert.ok(!pm.procNote({ ...CARD, stale: ['the file does not parse: x'] }, 'x').includes('The card is stale'));
   assert.ok(note.includes('askerdo proc ran release clean'));
   assert.ok(!pm.procNote(CARD, 'x', { agent: true }).includes('proc ran'), 'T-12: a subagent is never asked to write the board');
   /* the mod records a command's run only for a card that opts in; then only a deviation is asked for */

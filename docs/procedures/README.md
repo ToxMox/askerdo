@@ -1,6 +1,6 @@
 # Procedures: the file shape
 
-A procedure is a recurring operation written down once, as exact steps, beside the code it operates on. Every project keeps its procedures in `docs/procedures/<name>.md`, in the one shape below. This README is the contract the board's procedure parser reads: the headings, the frontmatter keys and the way triggers and paths are written are all load-bearing. A file that breaks a MUST below is reported as unparseable and gets no card.
+A procedure is a recurring operation written down once, as exact steps, beside the code it operates on. Every project keeps its procedures in `docs/procedures/<name>.md`, in the one shape below. This README is the contract the board's procedure parser reads: the headings, the frontmatter keys and the way triggers and paths are written are all load-bearing. A file that breaks a MUST below is reported as unparseable and gets no card; one whose card exists keeps it, and the scan reports the fault while the pointer a matching call draws does not repeat it.
 
 The file holds only what is true of the code. The living part (last verified commit, run history, staleness and its reason) lives on the board card (`PR-n`) and is never written into the file, so a run never makes a commit.
 
@@ -103,7 +103,7 @@ The References list is the authoritative set of paths for staleness. Every repo 
 
 From the file alone plus git, against the commit at which the procedure was last run clean (`PR-n`'s verified commit, per repo):
 
-1. A referenced path changed: `git log --format=%H <verified>..HEAD -- <path>` is non-empty. The card names the path and links the diff.
+1. A referenced path changed: `git log --format=%H <verified>..HEAD -- <path>` is non-empty. The card names the path and links the diff. A referenced folder that holds at least half of its repo's files (the repo root, or a project folder that holds nearly everything) is too broad to say anything about the steps, since nearly every commit touches it: only the paths inside it that Steps or Verify name count as changes, and with none named only its removal does. The parser's lint warns on such a folder, so the card names the files its steps use instead.
 2. A referenced path is gone at HEAD, or a `::symbol` no longer occurs in its file.
 3. A command is gone: the first token of a command line is a repo path (for example `scripts/build.mjs`, or `node scripts/build.mjs`'s second token) that no longer exists, or a `--flag` used with a repo script no longer occurs anywhere in that script's source. A line is split on `&&`, `||`, `;` and `|` outside quotes and backticks, so a quoted regex stays one word. Commands on PATH (`node`, `git`, `claude`, `pwsh`, `curl.exe`) are taken as present: a first token with no slash that is not a file in the repo is one.
 4. Age since the last clean run, shown second and never alone a reason.

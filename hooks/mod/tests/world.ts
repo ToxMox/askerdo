@@ -32,8 +32,9 @@ export type Run = { script: string; args: string[]; stdin?: string; env?: Record
 export const LOCAL_ROOT = 'http://127.0.0.1:7777/' + 'a'.repeat(32) + '/'
 const HOME = 'C:/Users/test-home'
 
-/* Each file's first plugin test runs while all ten files start at once and takes the engine's and the
-   mod's cold load; the kit has no setup step, so it gets room past its 5 s (2.4 to 4.8 s seen). */
+/* Each file's first plugin test runs while all the files start at once and takes the engine's and the
+   mod's cold load, and its second still shares the CPU with the others' loads; the kit has no setup step,
+   so they get room past its 5 s (5 to 9 s and 4 to 5 s seen at 14 files). */
 export const COLD_START = { timeoutMs: 10000 }
 /* a long case all on the kit's clock: with its session start (2 to 3 s in a full run) it takes 3.5 to 4.5 s
    on a quiet PC, so a loaded CPU passes 5 s; the band's one-row case takes 9 to 10 s in a full run and
@@ -204,7 +205,7 @@ export function world(on: any, opts: { store?: Record<string, unknown>; server?:
     }
     if (verb === 'register') {
       const p = JSON.parse(stdin || '{}')
-      /* each registration takes the next label, Q512 first */
+      /* each registration takes the next label, numbered up from 512 */
       const id = 'Q' + (512 + w.cliRuns().filter((r: any) => r.args[0] === 'register').length - 1)
       return json({ id, name: p.name, workstream: p.workstream || 'WS-11', thread: p.thread, boardUrl: 'http://board/q/' + id })
     }

@@ -17,10 +17,10 @@ const onboardRefs = (e) => (e.front.refs || []).map(String).filter((r) => r.star
 const isTheImports = (e, label) => KINDS.includes(e.kind) && (e.front.labels || []).includes(label) && onboardRefs(e).length > 0;
 const ofItem = (e, items) => onboardRefs(e).some((r) => items.some((i) => r === 'onboard:' + i || r.startsWith('onboard:' + i + '@')));
 
-/* What stops a record going: a ruling or fact the user has not withdrawn, work someone holds, or a
-   line or workstream holding a record outside the purge (deleting it would orphan that record). */
-function heldWhy(db, e, keys) {
-  if (e.kind === 'knowledge' && e.front.status !== 'withdrawn') return 'is ' + e.front.status + ': only the user\'s Withdraw press takes it away';
+/* What stops a record going: a ruling or fact the user has not withdrawn (a purge by ruling has the
+   user's cut instead), work someone holds, or a line or workstream holding a record outside the purge. */
+function heldWhy(db, e, keys, byRuling) {
+  if (e.kind === 'knowledge' && !byRuling && e.front.status !== 'withdrawn') return 'is ' + e.front.status + ': only the user\'s Withdraw press takes it away';
   if (e.kind === 'task' && db.stmt('SELECT 1 FROM run_tasks rt JOIN runs r ON r.id = rt.run AND r.ended IS NULL WHERE rt.task = ?').get(e.key)) return 'has a run open on it';
   if (e.kind === 'track') {
     if (db.stmt('SELECT 1 FROM leases WHERE track = ?').get(e.key)) return 'is held by a session';
@@ -36,15 +36,39 @@ function heldWhy(db, e, keys) {
   return null;
 }
 
+/* The user's cut a purge by ruling rests on: an answered question, or a confirmed decision in force. */
+function rulingOf(db, token, day) {
+  const e = resolveRecord(db, token, { kinds: ['knowledge', 'question'], day });
+  if (!e) throw new UsageError('--ruling names an answered Q-n or a confirmed decision K-n: ' + token);
+  if (e.kind === 'question' && e.front.status !== 'answered') throw new UsageError(e.label + ' is ' + e.front.status + ', not a ruling yet');
+  if (e.kind === 'knowledge' && (e.front.type !== 'decision' || e.front.status !== 'active' || e.front.confirmed !== true)) {
+    throw new UsageError(e.label + ' is not a confirmed decision in force: --ruling names an answered Q-n or a confirmed decision K-n');
+  }
+  return e;
+}
+
 function planOf(db, o, day) {
-  const label = String(o.label ?? '').trim().replace(/^(?!import:)/, 'import:');
-  if (!LABEL.test(label)) throw new UsageError('purge names the import by its label, import:<slug>');
   const ids = listOf(o.ids);
   const items = listOf(o.items);
+  const token = String(o.ruling ?? '').trim();
+  const ruling = token ? rulingOf(db, token, day) : null;
+  const named = String(o.label ?? '').trim();
+  if (ruling && (!ids.length || items.length || named)) throw new UsageError('a purge by --ruling names its records with --id only, and no import label');
+  const label = ruling ? null : named.replace(/^(?!import:)/, 'import:');
+  if (!ruling && !LABEL.test(label)) throw new UsageError('purge names the import by its label, import:<slug>, or the ruling that cut the records (--ruling with --id)');
   const gone = [];
   const foreign = [];
   let picked;
-  if (ids.length) {
+  if (ruling) {
+    picked = [];
+    for (const id of ids) {
+      const e = resolveRecord(db, id, { day });
+      if (!e) gone.push(id);
+      else if (e.kind !== 'knowledge') foreign.push({ id: e.label || id, kind: e.kind, why: 'is not a decision or knowledge record, the only kinds a purge by ruling takes' });
+      else if (e.key === ruling.key) foreign.push({ id: e.label || id, kind: kindWord(e), why: 'is the ruling this purge rests on' });
+      else picked.push(e);
+    }
+  } else if (ids.length) {
     picked = [];
     for (const id of ids) {
       const e = resolveRecord(db, id, { day });
@@ -62,7 +86,7 @@ function planOf(db, o, day) {
   let keys = new Set(uniq.map((e) => e.key));
   let held = [];
   for (;;) {
-    const now = uniq.filter((e) => keys.has(e.key)).map((e) => ({ e, why: heldWhy(db, e, keys) })).filter((x) => x.why);
+    const now = uniq.filter((e) => keys.has(e.key)).map((e) => ({ e, why: heldWhy(db, e, keys, Boolean(ruling)) })).filter((x) => x.why);
     if (!now.length) break;
     held = held.concat(now);
     for (const x of now) keys.delete(x.e.key);
@@ -72,7 +96,7 @@ function planOf(db, o, day) {
   for (const e of going) counts[kindWord(e)] = (counts[kindWord(e)] || 0) + 1;
   const handoffs = going.filter((e) => e.kind === 'track').reduce((n, e) => n + db.stmt('SELECT count(*) AS n FROM handoffs WHERE track = ?1 OR thread = ?1').get(e.key).n, 0);
   return {
-    label, going, counts, handoffs,
+    label, ruling: ruling ? ruling.label || ruling.key : null, going, counts, handoffs,
     held: [...foreign, ...held.map((x) => ({ id: x.e.label || x.e.key, kind: kindWord(x.e), why: x.why }))], gone,
   };
 }
@@ -107,20 +131,23 @@ function deleteRecord(db, e, day) {
   for (const r of runs) if (!db.stmt('SELECT 1 FROM run_tasks WHERE run = ?').get(r)) db.stmt('DELETE FROM runs WHERE id = ?').run(r);
 }
 
-/* importPurge { label, ids?, items?, yes? }: the records an import wrote (its import:<slug> label and an onboard:
-   ref), or those of them named by id or by onboard item. Without yes it counts and writes nothing. */
+/* importPurge { label, ids?, items?, ruling?, yes? }: the records an import wrote (its import:<slug> label and an
+   onboard: ref), or those named by id or onboard item; with ruling, the knowledge records named by id that the
+   user's ruling cut, whatever wrote them. Without yes it counts and writes nothing. */
 export function importPurge(db, input = {}, actor, opts) {
   const ctx = actorOf(actor, opts);
   const o = input && typeof input === 'object' && !Array.isArray(input) ? input : { label: input };
-  const shown = (p) => ({ label: p.label, counts: p.counts, handoffs: p.handoffs, records: p.going.map((e) => e.label || e.key), held: p.held, gone: p.gone });
+  const shown = (p) => ({ label: p.label, ...(p.ruling ? { ruling: p.ruling } : {}), counts: p.counts, handoffs: p.handoffs, records: p.going.map((e) => e.label || e.key), held: p.held, gone: p.gone });
   if (o.yes !== true) return readTx(db, () => ({ ...shown(planOf(db, o, ctx.day)), dryRun: true }));
   const out = tx(db, () => {
     const p = planOf(db, o, ctx.day);
     for (const e of p.going) deleteRecord(db, e, ctx.day);
     db.stmt('DELETE FROM overrides WHERE NOT EXISTS (SELECT 1 FROM override_items WHERE request = overrides.id)').run();
     if (p.going.length) {
-      logVerb(db, { ts: ctx.at, verb: 'delete', kind: 'import', id: p.label, name: p.label, by: ctx.by, pc: ctx.pc,
-        changes: Object.fromEntries(Object.entries(p.counts).map(([k, n]) => [k, [n, 0]])), note: 'purged: the records ' + p.label + ' wrote, deleted on the user\'s yes' });
+      const by = p.ruling || p.label;
+      logVerb(db, { ts: ctx.at, verb: 'delete', kind: p.ruling ? 'ruling' : 'import', id: by, name: by, by: ctx.by, pc: ctx.pc,
+        changes: Object.fromEntries(Object.entries(p.counts).map(([k, n]) => [k, [n, 0]])),
+        note: 'purged: the records ' + by + (p.ruling ? ' cut' : ' wrote') + ', deleted on the user\'s yes' });
     }
     return { ...shown(p), purged: true };
   });

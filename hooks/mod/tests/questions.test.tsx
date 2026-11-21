@@ -75,7 +75,7 @@ describe('the Questions pane', () => {
   /* the expanded card pinned at the top in one bordered box, the
      rest one index row each under it, oldest first; a name press pins, a chip press answers.
      a waiting question from another track is listed too, last, and answered there */
-  test('the pinned card at the top, the index rows under it, a name press pins and a chip answers', async ($: any, on: any) => {
+  test('the pinned card at the top, the index rows under it, a name press pins and a chip answers', COLD_START, async ($: any, on: any) => {
     const w = decisionWorld(on)
     /* Answer presses at once keeps the one-press answer, no strip */
     w.alias = { alias: '', presses: 'once' }
