@@ -401,6 +401,40 @@ before it, K on other tracks, U unplaced", naming the unplaced, so the
 card the user answers from shows it; the Tracks tab draws a "Found this
 arc" row per track that found any, the unplaced count first.
 
+### One question for a planned set of moves
+
+A planned set of moves across tracks is asked once, as one go question.
+The session takes the task the moves belong to in hand and registers one
+`ask` with its yes option marked `go` (`options[n].go: true`, on at most
+one option) and that task in `gates`, the moves listed in its gist. The
+board adds a line to the gist saying what answering it allows. Only the
+user answers it. While the answer stands on that option and the session
+has an open run on the open task, the session's filings and moves land
+at the place they name with no question. An
+amend to another letter or the task's close ends it. The
+doctor, the sweep, onboarding and a board review all take this road when
+they move work across tracks: the session asks, and an agent writes no
+tasks, drafting a list of moves that the session applies.
+
+The user has two more roads, which no session can turn on:
+
+- **The tray's Task placement bypass** covers every session or one named
+  session, for a time from the Bypass times setting; one session until it
+  ends (an idle end keeps it for up to 8 hours, so a reopen goes on with
+  it; any other end clears it); or every session until it is turned off.
+  A timed switch counts down on the band. Any tray switch outranks the
+  setting below and writes none of its layers.
+- **The Task placement setting** (`placement.mode`, Sessions): `ask`, the
+  built-in, or `model`, at the Settings layers, the more specific layer
+  winning. It changes by the user's press in the Settings tab or on the
+  board's settings page, and `settings set` refuses it.
+
+While a tray switch or the setting covers a session, its rules block
+says so. Under every road a move lands at the place named, another
+session's running task included; a placement question stays the user's
+to answer and still holds its track's finish, and an agent's filing is
+refused as always.
+
 ## Editing
 
 Field flips only, one flag per field:

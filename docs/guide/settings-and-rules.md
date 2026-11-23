@@ -66,6 +66,10 @@ On a board these are set at the default layer only.
 |`dispatch.outputRule`|Short reports|on|Each agent's final report stays under 2000 characters|
 |`doctor.drift`|Drift line|on|Home shows one line when the project's rules cite missing files or a retired workflow folder gains files|
 |`pointers.knowledge`|Knowledge pointers|on|A session editing a file a knowledge record names is pointed at that record|
+|`placement.mode`|Task placement|ask me|Whether a session asks you before it files work last on its track or off it, or lets the model choose the place|
+|`placement.times`|Bypass times|15, 60, 240, 480 minutes|The times the tray's Task placement bypass offers, up to 8, each from 1 to 10080 minutes|
+
+Task placement is set at any layer, the more specific layer winning, and changes only by your press in the Settings tab or on the board's settings page; `settings set` refuses it. Bypass times is read at the default layer. The tray's **Task placement bypass** menu outranks the setting and writes none of its layers: every session or one session for a time from the list, one session until it ends, or every session until you turn it off. A go answer does the same for one planned set of moves: your yes on a question with a `go` option carries every placement under the task it gates until that task closes. Under any of these a move lands at the place named, another session's running task included.
 
 The drift line is read once as each session starts: it names a path that CLAUDE.md, AGENTS.md or a rule line in force cites and that does not exist, a rule line over 400 characters, and, from the project's conversion map on the board, a cite into a folder the conversion retired and files in such a folder again since the last run. A retired cite or a retired folder holding files closes the line with "run the doctor" and a link to the doctor's runs once the doctor has run, else with `/askerdo:doctor`; a missing cite alone ends with `(/askerdo:doctor)`, and a long rule line alone names neither. It shows on Home only, never on the band.
 
@@ -133,6 +137,7 @@ node ~/.claude/askerdo/cli.mjs profile show-effective TR-12 --rules
 |Command alias|Your next session, or this one after `/clear`.|
 |Depth and agent guard settings|Within seconds in every open session.|
 |Test and dispatch settings, rule lines|From your next prompt in every open session, and in every agent dispatched after it.|
+|Task placement|At once: the board reads it on each filing.|
 |Board link and token|When this PC joins a board.|
 |Board backups folder|The next copy: `askerdo backup`, or the first session start of the next day.|
 |Docker board container|The first session start of the next day.|

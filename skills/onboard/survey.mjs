@@ -577,9 +577,12 @@ export function sameSubject(a, b) {
 export const grams = (ws, n = 6) => { const g = new Set(); for (let i = 0; i + n <= ws.length; i++) g.add(ws.slice(i, i + n).join(' ')); return g; };
 
 /* numbers with their units and flags: what a rule that says the same in other numbers differs in */
-const NUM_UNIT = /(?<![\w.-])\d+(?:\.\d+)?\s?(?:k|kb|mb|gb|ms|s|secs?|seconds?|mins?|minutes?|h|hours?|days?|%|khz|hz|tokens?|characters?|chars|words?|lines?|tool calls|calls?|files?|times)?(?![\w])/gi;
+const NUM_UNIT = /(?<![\w.-])\d+(?:\.\d+)?\s?(?:k|kb|mb|gb|ms|s|secs?|seconds?|mins?|minutes?|h|hours?|days?|%|khz|hz|tokens?|characters?|chars|words?|lines?|tool calls|calls?|files?|times)?(?![\w]|\.\d)/gi;
+/* section numbers of an outside document (terms 3.2 and 3.4.2) are no quantity of the rule's */
+const SECTION_REF = /(?:§+\s*|\b(?:sections?|clauses?|terms?|articles?|paragraphs?)\s+)\d+(?:\.\d+)*(?:(?:,\s*|\s+(?:and|or|to)\s+)\d+(?:\.\d+)*)*/gi;
+const unitOf = (m) => m.replace(/^[\d.\s]+/, '');
 const marksOf = (s) => {
-  const t = String(s || '').replace(/20\d\d-\d\d-\d\d/g, ' ');
+  const t = String(s || '').replace(/20\d\d-\d\d-\d\d/g, ' ').replace(SECTION_REF, ' ');
   return new Set([...t.matchAll(NUM_UNIT), ...t.matchAll(/(?<![\w-])--[a-z][\w-]*/gi)].map((m) => m[0].toLowerCase().replace(/\s+/g, ' ').trim()));
 };
 
@@ -614,7 +617,9 @@ export function matchRules(rows, board) {
     const { e, sure } = best;
     const ours = marksOf(src);
     const differs = [...[...ours].filter((m) => !e.marks.has(m)), ...[...e.marks].filter((m) => !ours.has(m))];
-    if (!sure && !differs.length) continue;
+    /* short of a sure match, a difference needs one quantity both state in the same unit */
+    const sameQuantity = [...ours].some((a) => !e.marks.has(a) && unitOf(a) && !a.startsWith('--') && [...e.marks].some((b) => b !== a && unitOf(b) === unitOf(a)));
+    if (!sure && !sameQuantity) continue;
     if (!differs.length) f.coveredBy = e.key;
     else f.conflict = { with: e.key, theirs: e.text, ours: src, differs };
   }

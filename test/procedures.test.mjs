@@ -515,6 +515,18 @@ test('the proc verbs on a board: scan from a second checkout, find, ran, trigger
     assert.ok(trig.some((c) => c.everywhere && slash(c.path).toLowerCase().startsWith(slash(pluginRoot).toLowerCase() + '/')), JSON.stringify(trig.map((c) => c.path)));
     assert.equal(slash(trig[0].path).toLowerCase(), (lane + '/docs/procedures/demo.md').toLowerCase(), 'the watcher sees it at its own checkout');
     assert.equal(JSON.parse((await cliRun(['show', id, '--json'], { env, cwd: dir })).out).kind, 'procedure');
+    /* the doctor's check judges from the card's clean run, and a read found current clears it with no run counted */
+    rmSync(join(lane, 'docs', 'procedures', 'bad.md'));
+    writeFileSync(join(lane, 'lib', 'a.mjs'), readFileSync(join(lane, 'lib', 'a.mjs'), 'utf8') + '// a later edit\n');
+    git(lane, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-am', 'a later edit');
+    const warned = async () => JSON.parse((await cliRun(['proc', 'scan', '--check', '--verified', '--json'], { env, cwd: lane })).out).files[0].warnings.filter((w) => w.startsWith('changed since')).length;
+    assert.equal(await warned(), 1);
+    const before = JSON.parse((await cliRun(['show', id, '--json'], { env, cwd: dir })).out);
+    const read = await cliRun(['proc', 'read', 'demo', '--note', 'read against the diff', '--json'], { env, cwd: lane });
+    assert.equal(read.code, 0, read.err);
+    assert.equal(await warned(), 0);
+    const after = JSON.parse((await cliRun(['show', id, '--json'], { env, cwd: dir })).out);
+    assert.deepEqual([after.runs, after.verified], [before.runs, before.verified]);
   } finally { await route.close(); }
 });
 

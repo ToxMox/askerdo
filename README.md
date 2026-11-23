@@ -133,6 +133,16 @@ The [docs index](docs/README.md) also lists the reference Claude reads and the b
 
 Every option lives in the Settings tab of the AskerDo pane (`/askerdo pane`, then Settings): each setting with what it does, an example, where its value comes from, and a chip to choose where a board user sets it. On a PC on a board, in a terminal, `node ~/.claude/askerdo/cli.mjs settings` lists the same rows and `settings set <key> <value>` changes one (`settings unset <key>` puts it back): `contract.<option>` for a contract option, `on` or `off` for a toggle, a JSON list for `contract.custom`. In text mode there is no launcher, so use the Settings tab (where `queue` switches between `text` and `off`), and a write lands in `config.json`; for a board user a contract option lands on their profile on the board first, and a refused or unreachable board writes nothing. Each write regenerates the output style on the spot; it never touches `settings.json`, which stays the configure skill's job. A refused value says why in the setting's own words and writes nothing.
 
+## Task placement
+
+A session files work it finds at a real place on the track it holds; last on that track or anywhere off it, it asks you first. Three roads take that question away, each yours to turn on:
+
+- **A go answer.** A planned set of moves across tracks is asked once, as one question. Your yes carries every placement under the task it gates until that task closes.
+- **The tray.** The tray's right-click menu has **Task placement bypass**: every session or one session, for a time from your list, one session until it ends, or every session until you turn it off. Any tray switch outranks the setting.
+- **The Task placement setting.** On the Settings tab's Sessions sub-tab: `ask me`, the built-in, or `let the model choose`, at any layer, the more specific layer winning. It changes by your press.
+
+Under each road a move lands at the place named, another session's running task included, and agents draft lists of moves that their session applies.
+
 ## The six skills
 
 |Skill|What it does|

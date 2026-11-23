@@ -57,6 +57,7 @@ export function cardView(front) {
     ...(front.everywhere ? { everywhere: true } : {}), ...(front.live ? { live: true } : {}),
     ...(front.record === 'command' ? { record: 'command' } : {}),
     ...(front.vouched ? { vouched: front.vouched } : {}),
+    ...(front.readCurrent ? { readCurrent: front.readCurrent } : {}),
     ...(front.openTasks && front.openTasks.length ? { openTasks: front.openTasks } : {}),
   };
 }

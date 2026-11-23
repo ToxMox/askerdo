@@ -599,6 +599,17 @@ answer's inbox event names the task created, or the outcome. A track
 is not finished or dropped while a placement question of its work is
 open.
 
+**A go question** asks a planned set of moves across tracks once. It is
+an ordinary question with one option marked `go: true` and a non-empty
+`gates`; the board stores the mark as the front key `goOption` and adds
+a line to the gist saying what answering it lets the session do. Only
+the user answers it, as a placement question. While the answer stands on
+that option and the session has an open run on the open task it gates,
+the session's filings and moves land at the place named with no question.
+An amend to another letter or the task's close
+ends it. `work-system.md` (One question for a planned set
+of moves) has the tray's bypass and the Task placement setting beside it.
+
 ## Answering
 
 One write path: every answer, wherever it happens, lands on the board

@@ -600,9 +600,11 @@ test('questions pane: cards in the band order, rows with the pick starred, slots
   assert.match(questionsHeader(split), /^1 .*\b2 from elsewhere/);
   /* the asleep ones ride apart, in no count, the waking record its own linked piece */
   const nap = questionsModel({ sid: 's1', local: 'http://127.0.0.1:5/' + 'a'.repeat(32) + '/', questions: [{ id: 'Q1', name: 'mine', session: 's1' }],
-    asleep: [{ id: 'Q8', name: 'later', wake: 'until T-398 is completed', record: 'T-398' }, { id: 'Q9', name: 'far', wake: 'until Nov 20', project: 'tides' }] });
+    asleep: [{ id: 'Q8', key: 'abcd2345', name: 'later', wake: 'until T-398 is completed', record: 'T-398' }, { id: 'Q9', name: 'far', wake: 'until Nov 20', project: 'tides' }] });
   assert.deepEqual([nap.own, nap.elsewhere, nap.cards.length, nap.asleep.map((q) => q.id), nap.asleep[1].project], [1, 0, 1, ['Q8', 'Q9'], 'tides']);
   assert.ok(nap.asleep[0].pieces.some((p) => p.text === 'T-398' && p.url) && !nap.asleep[1].pieces.some((p) => p.url));
+  /* a sleeping row opens its question's page */
+  assert.match(String(nap.asleep[0].href), /abcd2345/);
   const [c, d] = m.cards;
   assert.equal(c.name, 'store shape');
   assert.equal(c.crux, 'two writers');

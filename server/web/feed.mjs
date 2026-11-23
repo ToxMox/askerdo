@@ -12,7 +12,7 @@ const two = (n) => String(n).padStart(2, '0');
 const VERB_WORDS = {
   create: 'created', update: 'updated', edit: 'edited', answer: 'answered', amend: 'amended', close: 'closed',
   reopen: 'reopened', note: 'noted', drop: 'dropped', snooze: 'snoozed', wake: 'woke', surface: 'surfaced',
-  subscribe: 'subscribed', link: 'linked', unlink: 'unlinked', delete: 'deleted', bind: 'bound', handoff: 'handed off', join: 'joined',
+  subscribe: 'subscribed', link: 'linked', unlink: 'unlinked', delete: 'deleted', bind: 'bound', handoff: 'handed off', join: 'joined', bypass: 'switched',
   /* a profile line's kind is profile, so its verb words only the act */
   'profile-define': 'defined', 'profile-edit': 'edited', 'profile-add': 'added', 'profile-remove': 'removed',
 };

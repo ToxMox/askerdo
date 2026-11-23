@@ -81,6 +81,8 @@ test('a plugin run waits for a live run queued before it; a dead runner\'s turn 
 
   /* a plugin run naming files holds the plugin turn: a node run naming files waits for it */
   const files = await takeTurn('plugin', { dir, pollMs: 10 });
+  /* turns order by the millisecond and a tie goes to the lower pid, so the second must start later */
+  await new Promise((ok) => setTimeout(ok, 5));
   const look = queue('node', { pid: process.ppid });
   await new Promise((ok) => setTimeout(ok, 150));
   assert.deepEqual([look.done, look.told], [false, [[process.pid]]], 'the node look waits for the plugin file run');

@@ -395,7 +395,8 @@ function questionList(v, key) {
 }
 
 
-function validatePayload(raw, strict) {
+/* `gated`: a rewording's question keeps its own gates, so its go is judged by them */
+function validatePayload(raw, strict, gated) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new UsageError('register payload must be a JSON object');
   const need = (k) => {
     if (typeof raw[k] !== 'string' || !raw[k].trim()) throw new UsageError('register payload needs a non-empty ' + k + ' string');
@@ -484,6 +485,14 @@ function validatePayload(raw, strict) {
     if (seenType.has(t)) throw new UsageError('option type "' + t + '" appears twice; an option type is unique within the question');
     seenType.add(t);
   }
+  /* the go mark leaves the option here and is stored as the front's goOption */
+  const goes = p.options.filter((o) => o.go !== undefined && o.go !== false);
+  if (goes.some((o) => o.go !== true)) throw new UsageError('go on an option is true, or left out');
+  if (goes.length > 1) throw new UsageError('go marks one option, the yes');
+  if (goes.length && !goes[0].type.trim()) throw new UsageError('the go option needs its letter');
+  if (goes.length && !(gated === undefined ? p.gates.length > 0 : gated)) throw new UsageError('a go option names the task it frees in gates');
+  p.goOption = goes.length ? goes[0].type.trim() : undefined;
+  p.options = p.options.map(({ go: _go, ...o }) => o);
   if (p.pick) {
     const typed = p.options.filter((o) => o.type.trim());
     if (typed.length) {
@@ -507,6 +516,43 @@ function validatePayload(raw, strict) {
   }
   p.placement = raw.placement;
   return p;
+}
+
+/* ---- the go answer ---- */
+
+const GO_LINE = /^\*\*Go:\*\* .*(?:\r?\n|$)/gm;
+const NO_GO_ON_LOOK = "a look's question cannot carry a go: asking it ends the session's run on the look, so the go would free nothing";
+const goWords = (letter, tasks) => '**Go:** answering ' + letter + ' lets the session working ' + tasks.join(' or ')
+  + ' file and move work across tracks with no further question until ' + (tasks.length > 1 ? 'that task' : tasks[0]) + ' closes.';
+/* the board's own line, so the model cannot leave it out or word it */
+const withGoLine = (text, letter, tasks) => [String(text).replace(GO_LINE, '').trimEnd(), goWords(letter, tasks)].join('\n');
+
+export const goAnswersIt = (id) => id + ' carries a go that frees a session from placement questions, so only the user answers it: by pressing its card or the band, or typing its token in chat';
+
+/* the row that made the go stand: the answer, or an amend coming back to it (a note-only amend gives nothing) */
+const goGiven = (db, key, letter) => db.stmt(`SELECT max(seq) AS s FROM activity WHERE record = ? AND verb IN ('answer', 'amend')
+  AND json_extract(diff, '$.chosen[1]') = ? AND coalesce(json_extract(diff, '$.chosen[0]'), '') <> ?`).get(key, letter, letter).s || 0;
+const lastClose = (db, key) => db.stmt(`SELECT max(seq) AS s FROM activity WHERE record = ?
+  AND json_extract(diff, '$.status[1]') IN ('done', 'dropped')`).get(key).s || 0;
+
+/* The answered go covering a session's open work: { question, task } by label, or null. An amend
+   to another letter or the task's close ends it, and a reopen does not bring a closed task's go back. */
+export function goFrees(db, session) {
+  const held = db.stmt(`SELECT DISTINCT rt.task AS key, t.label FROM runs r JOIN run_tasks rt ON rt.run = r.id JOIN records t ON t.key = rt.task
+    WHERE r.session = ? AND r.worker = 'session' AND r.ended IS NULL AND coalesce(t.status, '') NOT IN ('done', 'dropped')`).all(session);
+  if (!held.length) return null;
+  const rows = db.stmt(`SELECT key FROM records WHERE kind = 'question' AND status = 'answered' AND json_extract(fields, '$.goOption') IS NOT NULL`).all();
+  for (const { key } of rows) {
+    const q = withSections(db, readRec(db, key));
+    const gated = held.filter((t) => listOf(q.front, 'gates').includes(t.key));
+    if (!gated.length) continue;
+    const pick = answeredPick({ id: q.front.id, answer: q.sections['Answer'] ?? '', options: parseOptions(q.sections['Options']) });
+    if (pick !== q.front.goOption) continue;
+    const given = goGiven(db, key, pick);
+    const task = gated.find((t) => lastClose(db, t.key) < given);
+    if (task) return { question: q.front.id, task: task.label };
+  }
+  return null;
 }
 
 function headlineWarnings(id, p) {
@@ -704,6 +750,8 @@ export function register(db, payload, actor, opts = {}) {
     if (p.workstream) p.workstream = refFor(db, p.workstream, 'workstream', d);
     if (p.track) p.track = refFor(db, p.track, 'track', d);
     p.gates = [...new Set(p.gates.map((g) => refFor(db, g, 'task', d)))];
+    if (p.goOption && p.gates.some(isLook(db))) throw new UsageError(NO_GO_ON_LOOK);
+    if (p.goOption) p.gist = withGoLine(p.gist, p.goOption, p.gates.map((g) => labelOf(db, g)));
     const at = stamp(opts);
     const { rulings } = rulingChecks(db, p, strict, d);
     const forced = rulings.length > 0 && !p.blocking;
@@ -723,7 +771,7 @@ export function register(db, payload, actor, opts = {}) {
       created: p.created || at, asked: p.asked, pick: p.pick, crux: p.crux, project: p.project,
       projectRepo: p.projectRepo, workstream: p.workstream, track: p.track,
       gates: p.gates, revisits: p.revisits, cites: p.cites, labels: p.labels, refs: refsFor(db, p.refs, d), mission: p.mission, session: p.session,
-      pc: pcOfCall(payload, actor), placement: p.placement,
+      pc: pcOfCall(payload, actor), placement: p.placement, goOption: p.goOption,
       evidence: p.evidence, labelHistory: [id + ' ' + d],
     });
     p.reverses = rulings.map(reversesBlock).join('\n\n');
@@ -837,6 +885,7 @@ export function answer(db, input = {}, actor, opts = {}) {
   return tx(db, () => {
     const d = today(opts);
     const q = loadQuestion(db, id, d);
+    if (q.front.goOption && /^session:/.test(byOf(who))) throw new UsageError(goAnswersIt(q.front.id) + '; nothing was written');
     const owner = ownerReport(db, q.front);
     if (q.front.status !== 'dropped' && beforeReword(q, read)) {
       throw new UsageError(q.front.id + ' was reworded after version ' + read + ', the one this answer was read from;'
@@ -1320,10 +1369,12 @@ function reword(db, q, raw, at, d, warnings) {
   const f = q.front;
   let p;
   try {
-    p = validatePayload({ ...raw, session: f.session || raw.session, projectRepo: f.projectRepo || raw.projectRepo, projectDir: f.projectDir || raw.projectDir }, true);
+    p = validatePayload({ ...raw, session: f.session || raw.session, projectRepo: f.projectRepo || raw.projectRepo, projectDir: f.projectDir || raw.projectDir }, true, listOf(f, 'gates').length > 0);
   } catch (e) {
     throw e instanceof UsageError ? new UsageError(e.message.replace(/^register payload/, 'the reworded payload')) : e;
   }
+  if (p.goOption && listOf(f, 'gates').some(isLook(db))) throw new UsageError(NO_GO_ON_LOOK);
+  if (p.goOption) p.gist = withGoLine(p.gist, p.goOption, listOf(f, 'gates').map((g) => labelOf(db, g)));
   const { rulings } = rulingChecks(db, p, true, d);
   if (rulings.length && !p.blocking) warnings.push(f.id + ' reverses a ruling, so it is stored blocking');
   if (rulings.length) p.blocking = true;
@@ -1334,6 +1385,7 @@ function reword(db, q, raw, at, d, warnings) {
   if (p.pick) next.pick = p.pick; else delete next.pick;
   if (p.topic !== undefined) next.topic = p.topic;
   if (p.mission !== undefined) next.mission = p.mission;
+  if (p.goOption) next.goOption = p.goOption; else delete next.goOption;
   const body = renderBody(next, p);
   const now = questionSections(body, '');
   const parts = WORDING.filter((k) => !sameJson(f[k], next[k]));
@@ -1414,6 +1466,15 @@ export function editQuestion(db, input = {}, actor, opts = {}) {
       gained = addRefs.filter((g) => !cur.includes(g) && !removeRefs.includes(g));
       const next = cur.concat(addRefs.filter((g) => !cur.includes(g))).filter((g) => !removeRefs.includes(g));
       if (next.length !== cur.length || next.some((g, i) => g !== cur[i])) { q.front.gates = next; changed.push('gates'); }
+      if (q.front.goOption && changed.includes('gates')) {
+        /* the user's yes covers the tasks it named: a gate added after it would widen what it frees */
+        if (gained.length && !['open', 'snoozed'].includes(q.front.status)) throw new UsageError(q.front.id + ' is ' + q.front.status + ', and its go covers only the tasks it named when the user answered: ask a new question for ' + gained.map((g) => labelOf(db, g)).join(', '));
+        if (gained.some(isLook(db))) throw new UsageError(NO_GO_ON_LOOK);
+        const left = listOf(q.front, 'gates');
+        /* no gate left frees nothing, so the mark and its line go */
+        if (!left.length) delete q.front.goOption;
+        q.body = left.length ? q.body.replace(GO_LINE, goWords(q.front.goOption, left.map((g) => labelOf(db, g))) + '\n') : q.body.replace(GO_LINE, '');
+      }
     }
     if (rewording) {
       const kept = scopeKept(db, worded.p, q.front, d);

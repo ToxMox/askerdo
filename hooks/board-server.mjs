@@ -30,7 +30,8 @@ import { CARD_ID, REC_ID, evidenceOf, filesOf, normDir, refShape } from '../lib/
 import { isFullStamp, stampNow } from '../lib/stamps.mjs';
 import { isKey } from '../lib/record-ids.mjs';
 import { answerToken } from '../lib/answer-token.mjs';
-import { BoardCallError, boardJoinCode, boardLoginLink, boardToken, boardUrl as boardServerUrl, joinLine, loginUrl, reachableUrl, useSavedOptions } from '../lib/board-call.mjs';
+import { bypassTray } from '../lib/bypass-words.mjs';
+import { BoardCallError, boardCall, boardJoinCode, boardLoginLink, boardToken, boardUrl as boardServerUrl, joinLine, loginUrl, reachableUrl, useSavedOptions } from '../lib/board-call.mjs';
 import { boardIdentity, boardUrl, codeFresh, ensureRoot, isLiveRoot, mergeUnderway, probe } from '../lib/board-ensure.mjs';
 import { HOST_ONLY, codeLoads, hostedHere, readHost, restartLocalServer, superviseHost } from '../lib/board-host.mjs';
 import { WEB } from '../server/paths.mjs';
@@ -99,6 +100,8 @@ let waitingCardsCache = [];
 /* the hover's asleep count and its first two named questions */
 let asleepCache = 0;
 let asleepCardsCache = [];
+/* the board's bypassRead; null sends no block, so a tray on an older board draws no submenu */
+let bypassCache = null;
 /* the recent files' own cache, set by the one builder that re-resolves
    them, so a board gone offline answers the hello with the last list. */
 let recentCache = [];
@@ -648,6 +651,7 @@ function syncTray() {
   waitingCardsCache = t.waitingCards;
   asleepCache = t.asleep;
   asleepCardsCache = t.asleepCards;
+  bypassCache = t.bypass;
 }
 
 /* Started only from announce(): an ADOPTED start exits long before this, which
@@ -745,7 +749,9 @@ function trayPayload() {
   const settings = loadSettings(root);
   trayOff = !settings.enabled;
   const at = notifyNow();
+  const bypass = bypassTray(bypassCache, at);
   return {
+    ...(bypass ? { bypass } : {}),
     instance,
     dot: dotCache,
     blocking: blockingCache,
@@ -1153,6 +1159,8 @@ function trayDigest(t) {
     t.recent.map((r) => r.id + ':' + r.index).join(','),
     t.pausedUntil,
     t.pauseLabel,
+    /* a lapsed switch moves no row, and its label leaves this block when it lapses */
+    JSON.stringify(t.bypass ?? null),
   ].join('|');
 }
 
@@ -1263,6 +1271,8 @@ function handle(req, res) {
   if (req.method === 'GET' && rest === 'api/notify') return notifyGet(res);
   if (req.method === 'POST' && rest === 'api/notify') return notifyApi(req, res);
   if (req.method === 'POST' && rest === 'api/notify/test') return notifyTest(req, res);
+  /* the tray's placement bypass press: the exe finds it by swapping api/notify for api/bypass */
+  if (req.method === 'POST' && rest === 'api/bypass') return bypassApi(req, res);
   /* the tray's Add a PC page and the route its script mints a join code through */
   if (req.method === 'GET' && rest === 'add-pc') return addPcPage(res);
   if (req.method === 'POST' && rest === 'api/join-code') return joinCodeApi(res);
@@ -2261,6 +2271,20 @@ function notifyApi(req, res) {
       appendLog(root, 'board notify failed: ' + ((e && e.message) || e));
       return sendJson(res, 500, { error: 'the notification setting could not be written' });
     }
+  });
+}
+
+/* The tray's press, as the user's act, straight to the board; the answer is the server's own word. */
+function bypassApi(req, res) {
+  readBody(req, res, (parsed) => {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return sendJson(res, 400, { error: 'a bypass press is an object' });
+    if (!boardServerUrl()) return sendJson(res, 409, { error: 'this PC is not on a board, so it has no placement to bypass' });
+    return boardCall('bypassPress', parsed, { user: 'tray', direct: true }).then((read) => {
+      bypassCache = read;
+      if (localBoard) localBoard.setBypass(read);
+      kickTick();
+      return sendJson(res, 200, { ok: true, bypass: bypassTray(read, notifyNow()) });
+    }, (e) => (e && e.name === 'UsageError' ? sendJson(res, 400, { error: e.message }) : apiFail(res, e)));
   });
 }
 

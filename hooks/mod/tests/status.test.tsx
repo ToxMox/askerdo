@@ -250,6 +250,41 @@ describe('the status line', () => {
   /* narrowing, the gaps tighten; the task's long name is cut first, its id
      and count kept, then the track's, then the task's name goes; then the track, the task and the percents
      drop to their icons; the mark and the context ring's percent stay */
+  /* a timed bypass counts down on the band at every width; the quiet master switch and the setting draw nothing */
+  test('the band counts down a timed bypass and draws nothing for the quiet switch or none', HEAVY, async ($: any, on: any) => {
+    const w = world(on)
+    const near = w.bandOf
+    let bypass: any = { label: 'every session until 15:40', ends: new Date(Date.now() + 42 * 60000 - 5000).toISOString() }
+    w.bandOf = (...a: any[]) => ({ ...near(...a), bypass })
+    await start($, w)
+    await $.session.measure({ context: { window: 1000000, percent: 12, tokens: 120000 }, changed: ['context'] })
+    await w.clock.settle()
+    const drawn = async (bodyColumns: number) => {
+      const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: { ...BAND, bodyColumns } })
+      const s = await ui.find({ key: 'status-bypass' })
+      const words = s ? plain(faceOf(s).find((c: any) => c && c.type === 'Text')?.children.join('')) : undefined
+      await ui.unmount()
+      return words
+    }
+    /* the pane's four widths in cells: 238, 438, 900 and 1400 px */
+    expect(await drawn(166)).toBe('bypass 42m')
+    expect(await drawn(106)).toBe('bypass 42m')
+    expect(String(await drawn(52))).toContain('42m')
+    expect(await drawn(28)).toBe('42m')
+    bypass = { label: 'every session until you turn it off', quiet: true }
+    w.change()
+    await w.clock.settle()
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    expect(await drawn(106)).toBeUndefined()
+    bypass = null
+    w.change()
+    await w.clock.settle()
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    expect(await drawn(106)).toBeUndefined()
+  })
+
   test('the status row shrinks in its fixed order and keeps its right end', HEAVY, async ($: any, on: any) => {
     const w = world(on)
     w.questions = []

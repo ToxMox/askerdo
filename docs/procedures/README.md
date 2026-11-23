@@ -101,7 +101,7 @@ The References list is the authoritative set of paths for staleness. Every repo 
 
 ## How the card judges staleness
 
-From the file alone plus git, against the commit at which the procedure was last run clean (`PR-n`'s verified commit, per repo):
+From the file alone plus git, against the commit at which the procedure was last run clean (`PR-n`'s verified commit, per repo), or a later commit a session marked with `askerdo proc read <name>` after reading the steps against the changes and finding them current. A read moves no verified commit and counts no run, and the next clean run replaces it:
 
 1. A referenced path changed: `git log --format=%H <verified>..HEAD -- <path>` is non-empty. The card names the path and links the diff. A referenced folder that holds at least half of its repo's files (the repo root, or a project folder that holds nearly everything) is too broad to say anything about the steps, since nearly every commit touches it: only the paths inside it that Steps or Verify name count as changes, and with none named only its removal does. The parser's lint warns on such a folder, so the card names the files its steps use instead.
 2. A referenced path is gone at HEAD, or a `::symbol` no longer occurs in its file.

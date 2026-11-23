@@ -37,10 +37,11 @@ const reEscape = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /* A step its task's worker may not be able to do: it names the user, a look or a sitting, real use,
    or a later session, merge, release, install or restart before it can be checked. Candidates only: the session judges. */
 const OWED = [
-  ['look', /\b(?:a|the|his|her|their|your|live) (?:look|sitting)\b|\bsitting\b(?![.\w/-])|\blooks? (?:at|over) (?:it|them|the (?:pane|band|page|card|app))\b/i],
+  ['look', /\b(?:a|the|his|her|their|your|live) (?:look|sitting)\b(?!['’]s\b| reader)|\bsitting\b(?![.\w/-]| reader)|\blooks? (?:at|over) (?:it|them|the (?:pane|band|page|card|app))\b/i],
   ['use', /\bin (?:real|daily|everyday|live) use\b|\bsighting\b|\bin the wild\b|\bseen (?:it )?(?:in|on) (?:a |his |the )?real\b/i],
   ['later', /\b(?:later|next|another|a fresh|the following) session\b|\b(?:after|once|when|at) (?:(?:the|a|its|his|each|next) )*(?:(?:merge|release|update)d?|(?:install|restart|reload)(?:ed)?)\b/i],
 ];
+export const JUDGED_WRONG = 'wrong';
 export function owedStep(text, who) {
   const t = String(text || '');
   const names = [...new Set(['the user', "the user's", 'your', ...list(who).filter(Boolean)])];
@@ -283,6 +284,8 @@ export function answerCalls(proposal, { depth = Boolean(proposal.depth) } = {}) 
       for (const f of folders) if (file && under(file, f.path) && !f.answeredBy) f.answeredBy = c.id;
     }
   }
+  /* a step the session judged wrong: its key holds the step's words, so changed words are read again */
+  for (const key of list(proposal.judgedWrong)) answers.push({ call: key, ask: 'a step the doctor flagged, judged wrong', letter: JUDGED_WRONG, label: 'judged wrong', subjects: [] });
   return { items, folders, waiting, answers };
 }
 

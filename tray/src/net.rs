@@ -31,7 +31,10 @@ use serde_json::Value;
 use crate::http::{self, Pull};
 use crate::sse;
 use crate::url;
-use crate::{App, Asleep, Card, Dot, EXIT_GONE, EXIT_INSTANCE, Recent, alert, opener, tray};
+use crate::{
+    App, Asleep, Bypass, BypassOn, BypassSession, BypassTime, Card, Dot, EXIT_GONE, EXIT_INSTANCE,
+    Recent, alert, opener, tray,
+};
 
 /* THE MENU'S CAP, applied AGAIN on arrival: the server counts to five and a
    server that sent more is not trusted to have counted. */
@@ -51,6 +54,11 @@ const ASLEEP_MAX: usize = 2;
    the same posture drain() takes everywhere, a body this client did not ask for
    must not grow a buffer without end */
 const PAUSE_BODY_MAX: usize = 16 * 1024;
+/* the bypass answer carries the whole tray block, session list included */
+const BYPASS_BODY_MAX: usize = 64 * 1024;
+/* the wire bounds on a bypass time (the setting's own range) and a session id */
+const BYPASS_MINUTES_MAX: u64 = 10080;
+const SESSION_ID_MAX: usize = 128;
 
 const PING_EVERY: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -120,7 +128,7 @@ pub fn run(app: Arc<App>, hwnd: isize) {
                            one of them is None and the last known values stand: a
                            long stream outage leaves the menu showing the last
                            state the stream told it, exactly as the tooltip does. */
-                        apply(&app, hwnd, Some(dot), None, None, None, None, None, None, None, None);
+                        apply(&app, hwnd, Some(dot), None, None, None, None, None, None, None, None, None);
                     }
                     Ping::Different => {
                         app.quit(EXIT_INSTANCE, hwnd, "the ping answered from another instance");
@@ -301,6 +309,7 @@ pub(crate) fn state_frame(app: &Arc<App>, hwnd: isize, data: &str) -> Option<u64
         count_of(tray, "asleep").unwrap_or(0),
         tray.get("asleepQuestions").and_then(asleeps_of).unwrap_or_default(),
     ));
+    let bypass = tray.get("bypass").and_then(bypass_of);
     /* THE FIRST FRAME IS ITSELF A FACT, and the menu reads it: until one lands,
        the counts line has nothing but the spawn argv's blocking count and would
        otherwise print a `0 waiting` no server ever said. It is set here rather
@@ -321,6 +330,7 @@ pub(crate) fn state_frame(app: &Arc<App>, hwnd: isize, data: &str) -> Option<u64
         paused,
         label,
         asleep,
+        bypass,
     );
     tray.get("beatMs")
         .and_then(|v| v.as_u64())
@@ -474,6 +484,44 @@ fn asleeps_of(v: &Value) -> Option<Vec<Asleep>> {
     Some(out)
 }
 
+/* the bypass block, each entry checked before the cap as the question
+   lines are. A block missing a list is None, so the last one stands. */
+pub(crate) fn bypass_of(v: &Value) -> Option<Bypass> {
+    let list = |key: &str| v.get(key).and_then(|x| x.as_array());
+    let (on, times, sessions) = (list("on")?, list("times")?, list("sessions")?);
+    let label = |e: &Value| {
+        let s = e.get("label")?.as_str()?;
+        (!s.trim().is_empty()).then(|| cut_chars(s, CARD_NAME_MAX))
+    };
+    Some(Bypass {
+        on: on
+            .iter()
+            .filter_map(|e| Some(BypassOn { n: e.get("n")?.as_u64()?, label: label(e)? }))
+            .take(tray::BYPASS_ON_MAX)
+            .collect(),
+        times: times
+            .iter()
+            .filter_map(|e| {
+                /* the setting stores its times as text, so a digit string counts */
+                let m = e.get("minutes")?;
+                let minutes = m.as_u64().or_else(|| m.as_str()?.parse().ok())?;
+                (1..=BYPASS_MINUTES_MAX).contains(&minutes).then_some(())?;
+                Some(BypassTime { minutes: minutes as u32, label: label(e)? })
+            })
+            .take(tray::BYPASS_TIMES_MAX)
+            .collect(),
+        sessions: sessions
+            .iter()
+            .filter_map(|e| {
+                let id = e.get("session")?.as_str()?;
+                (!id.is_empty() && id.len() <= SESSION_ID_MAX).then_some(())?;
+                Some(BypassSession { session: id.to_string(), label: label(e)? })
+            })
+            .take(tray::BYPASS_SESSIONS_MAX)
+            .collect(),
+    })
+}
+
 /* On CHARACTER boundaries, so a scalar is never split. No ellipsis: this is the
    wire bound, and the menu's own cut adds the dots. */
 pub(crate) fn cut_chars(s: &str, n: usize) -> String {
@@ -534,8 +582,8 @@ fn ping_answer<'a>(app: &Arc<App>, header: impl Fn(&str) -> Option<&'a str>) -> 
 
 /* ---- the pause the menu posts ------------------------------------ */
 
-/* THE ONE PLACE THIS EXE WRITES ANYTHING ANYWHERE, and it writes it to the
- * board server rather than to a store: a POST of one verb to the NOTIFY route
+/* THE PAUSE, written to the board server rather than to a store, as every
+ * write of this exe is: a POST of one verb to the NOTIFY route
  * the server handed over in `--notify`. It is not `--settings`: that flag is
  * the settings PAGE, and a POST to a page route is a 404 (measured).
  *
@@ -621,8 +669,81 @@ pub fn pause(app: Arc<App>, hwnd: isize, token: &str) {
             "menu pause ok: {}",
             label.clone().unwrap_or_else(|| "-".into())
         ));
-        apply(&app, hwnd, None, None, None, None, None, None, paused, label, None);
+        apply(&app, hwnd, None, None, None, None, None, None, paused, label, None, None);
     });
+}
+
+/* the bypass route sits beside the notify route the server handed over.
+   A notify URL of any other shape names no route, so the menu draws no submenu. */
+pub(crate) fn bypass_url(notify: &str) -> Option<String> {
+    notify
+        .strip_suffix("api/notify")
+        .map(|head| format!("{head}api/bypass"))
+}
+
+/* A press, net::pause's shape: off the message loop, one journal line on a
+   failure, and the server's own block applied. The journal never names the session. */
+pub fn bypass(app: Arc<App>, hwnd: isize, body: String) {
+    let Some(raw) = app.args.notify.as_deref().and_then(bypass_url) else {
+        app.journal.line("menu bypass: no bypass route to post to");
+        return;
+    };
+    std::thread::spawn(move || {
+        app.journal.line(&format!("menu chose bypass {}", press_words(&body)));
+        let Some(target) = url::parse(&raw) else {
+            app.journal.line("menu bypass: the route will not parse");
+            return;
+        };
+        let headers = [
+            ("User-Agent", agent(&app)),
+            ("Content-Type", "application/json".to_string()),
+        ];
+        let req = http::Request {
+            method: "POST",
+            url: &target,
+            headers: &headers,
+            body: Some(body.as_bytes()),
+            connect_timeout: CONNECT_TIMEOUT,
+            io_timeout: PING_TIMEOUT,
+        };
+        let mut resp = match http::send(req) {
+            Ok(r) => r,
+            Err(e) => {
+                app.journal.line(&format!("menu bypass failed: {e}"));
+                return;
+            }
+        };
+        if !(200..300).contains(&resp.status) {
+            app.journal.line(&format!("menu bypass answered {}", resp.status));
+            return;
+        }
+        let answer = resp.drain(BYPASS_BODY_MAX);
+        let Ok(value) = serde_json::from_slice::<Value>(&answer) else {
+            app.journal.line("menu bypass: the answer was not JSON");
+            return;
+        };
+        let ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        let block = value.get("bypass").and_then(bypass_of);
+        app.journal.line(&format!(
+            "menu bypass {}: {} on",
+            if ok { "ok" } else { "refused" },
+            block.as_ref().map_or_else(|| "-".to_string(), |b| b.on.len().to_string())
+        ));
+        apply(&app, hwnd, None, None, None, None, None, None, None, None, None, block);
+    });
+}
+
+/* what a press asked for, every key but the session's id */
+fn press_words(body: &str) -> String {
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return "-".into();
+    };
+    ["act", "scope", "until", "minutes", "n", "all"]
+        .iter()
+        .filter_map(|k| v.get(*k))
+        .map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /* THE RECENT FILES MENU'S CLICK, net::pause's exact shape.
@@ -676,6 +797,7 @@ pub(crate) fn apply(
     paused: Option<String>,
     pause_label: Option<String>,
     asleep: Option<(u32, Vec<Asleep>)>,
+    bypass: Option<Bypass>,
 ) {
     let mut moved = false;
     if let Ok(mut face) = app.face.lock() {
@@ -732,6 +854,12 @@ pub(crate) fn apply(
         {
             face.asleep = count;
             face.asleep_cards = list;
+            moved = true;
+        }
+        if let Some(block) = bypass
+            && face.bypass.as_ref() != Some(&block)
+        {
+            face.bypass = Some(block);
             moved = true;
         }
     }
@@ -795,6 +923,7 @@ mod tests {
                 pause_label: String::new(),
                 asleep: 0,
                 asleep_cards: Vec::new(),
+                bypass: None,
                 told: false,
             }),
             journal: Journal::open(None),
@@ -876,7 +1005,10 @@ mod tests {
             &app,
             r#"{"tray":{"dot":"blocking","blocking":3,"waiting":5,
                "questions":[{"id":"Q7","name":"one"}],
-               "pausedUntil":"until-resume","pauseLabel":"until I resume"}}"#,
+               "pausedUntil":"until-resume","pauseLabel":"until I resume",
+               "bypass":{"on":[{"n":4,"label":"every session until 15:40"}],
+                 "times":[{"minutes":15,"label":"15 min"},{"minutes":"60","label":"1 h"},{"minutes":0,"label":"dropped"}],
+                 "sessions":[{"session":"sid-1","label":"Field bugs, this PC"},{"label":"no id"}]}}}"#,
         );
         /* a frame with the tray object and nothing in it: every value stands */
         read(&app, r#"{"tray":{}}"#);
@@ -885,6 +1017,16 @@ mod tests {
         assert_eq!(cards.len(), 1);
         assert_eq!(paused, "until-resume");
         assert_eq!(label, "until I resume");
+        let held = app.face.lock().unwrap().bypass.clone().expect("the bypass block stands");
+        assert_eq!(held.on[0].n, 4);
+        assert_eq!(held.times.iter().map(|t| t.minutes).collect::<Vec<_>>(), vec![15, 60]);
+        assert_eq!(held.sessions.len(), 1, "bad entries are dropped");
+
+        /* a block missing a list is malformed and stands; a present empty `on` clears */
+        read(&app, r#"{"tray":{"bypass":{"on":[]}}}"#);
+        assert_eq!(app.face.lock().unwrap().bypass.as_ref().unwrap().on.len(), 1);
+        read(&app, r#"{"tray":{"bypass":{"on":[],"times":[],"sessions":[]}}}"#);
+        assert!(app.face.lock().unwrap().bypass.as_ref().unwrap().on.is_empty());
 
         /* one field at a time moves and the rest stand */
         read(&app, r#"{"tray":{"waiting":9}}"#);

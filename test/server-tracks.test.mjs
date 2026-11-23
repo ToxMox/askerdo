@@ -21,6 +21,7 @@ const k = await import('../server/verbs/kickoff.mjs');
 const { endRun, openRun, taskRuns } = await import('../server/verbs/runs.mjs');
 const { decide } = await import('../server/verbs/decisions.mjs');
 const { APPROVED } = await import('../server/verbs/placement-seam.mjs');
+const { bypassBand, bypassTray } = await import('../lib/bypass-words.mjs');
 
 function board() {
   const db = freshBoard();
@@ -946,4 +947,84 @@ test('the conversion map keeps one row per source, flags a gone record, drops a 
   /* a handoff and a rule line are checked too */
   runVerb(db, 'conversionPut', { project: P, run: 'r4', rows: [{ source: 'docs/x.md', kind: 'file', records: ['T-99', 'TR-77.1', 'nobody/no-such-line'] }] }, 'cli');
   assert.deepEqual(runVerb(db, 'conversionMap', { project: P }).rows.find((r) => r.source === 'docs/x.md').gone, ['T-99', 'TR-77.1', 'nobody/no-such-line'], 'a record the board lacks is gone');
+});
+
+/* the placement bypass: one held track, work on it, and another track to file onto */
+function bypassLine(session = 's1') {
+  const db = board();
+  const S = { session };
+  const line = t.newTrack(db, { workstream: 'WS-1', name: 'Held line', session }, S);
+  const first = task(db, line.id, 'First on the line');
+  w.taskUpdate(db, { id: first.id, inHand: true }, S);
+  const other = t.newTrack(db, { workstream: 'WS-1', name: 'Other line' }, 'cli');
+  const file = (name) => runVerb(db, 'createRecord', { name, description: 'd', tier: 3, track: other.id, whyElsewhere: 'it is the other line' }, S);
+  return { db, S, line, first, other, file };
+}
+
+test('a tray switch lets an off-track filing land, and a session cannot press one', () => {
+  const { db, S, other, file } = bypassLine();
+  assert.ok(file('Asked first').asked, 'with no switch the filing is asked');
+  assert.throws(() => runVerb(db, 'bypassPress', { act: 'on', scope: 'every', until: 'off' }, S), /press/);
+  runVerb(db, 'bypassPress', { act: 'on', scope: 'session', session: 's1', until: 'time', minutes: 15 }, { user: 'tray' });
+  const made = file('Lands now');
+  assert.deepEqual([made.asked, made.track], [undefined, other.id]);
+  /* a third inbox wake lands at the date named */
+  const inboxed = runVerb(db, 'createRecord', { name: 'Inbox work', description: 'd', tier: 2, unplaced: 'waits on a reply', wake: '2099-01-01' }, S);
+  runVerb(db, 'editRecord', { id: inboxed.id, wake: '2099-02-01' }, S);
+  const third = runVerb(db, 'editRecord', { id: inboxed.id, wake: '2099-03-01' }, S);
+  assert.deepEqual([third.placed.asked, third.placed.wake], [undefined, '2099-03-01']);
+});
+
+test('Bypass times live at the default layer alone', () => {
+  const { db, line } = bypassLine();
+  const user = { user: 'tray' };
+  assert.throws(() => runVerb(db, 'settingsSet', { key: 'placement.times', value: ['5'], at: 'track', record: line.id }, user), /default layer/);
+  runVerb(db, 'settingsSet', { key: 'placement.times', value: ['5'], at: 'default' }, user);
+  assert.deepEqual(runVerb(db, 'bypassRead', {}, user).times, [5]);
+  const row = runVerb(db, 'settings', { record: line.id }).rows.find((r) => r.key === 'placement.times');
+  assert.deepEqual(row.places.map((p) => p.level), ['default'], 'the Settings row offers no narrower layer');
+});
+
+test("the tray's switch line keeps the PC and end time past a long track name", () => {
+  const now = new Date(2026, 10, 23, 12, 0);
+  const ends = new Date(2026, 10, 23, 16, 4).toISOString();
+  const where = { track: 'TR-70', trackName: 'The four field bugs from the Tidewatch session', pc: 'scratch-pc' };
+  const [row] = bypassTray({ rows: [{ n: 1, scope: 'session', session: 's', until: 'time', ends, where }] }, now).on;
+  assert.ok(row.label.length <= 40 && row.label.includes('scratch-pc') && row.label.includes('16:04'), row.label);
+});
+
+test('a go answer frees the session working its gated task until that task closes', () => {
+  const { db, S, first, file } = bypassLine();
+  const asked = q.register(db, { name: 'the moves', gist: 'A planned set of moves.', projectDir: 'C:/r', session: 's1', blocking: true, ask: 'Move them (a, my pick) or not (b)?', pick: 'a', gates: [first.id],
+    options: [{ type: 'a', option: 'yes', go: true }, { type: 'b', option: 'no' }] }, S, { strict: false, inherit: false });
+  assert.ok(file('Before the answer').asked);
+  assert.throws(() => q.answer(db, { id: asked.id, pick: 'a' }, S), /only the user/);
+  q.answer(db, { id: asked.id, pick: 'a' }, { user: 's1' });
+  assert.equal(file('Under the go').asked, undefined);
+  w.taskUpdate(db, { id: first.id, status: 'done' }, S);
+  assert.ok(file('After the close').asked, 'the close ends it with nothing to clear');
+  w.taskUpdate(db, { id: first.id, status: 'open' }, S);
+  w.taskUpdate(db, { id: first.id, inHand: true, reason: 'back on it' }, S);
+  assert.ok(file('After the reopen').asked, 'a reopen does not bring the spent go back');
+});
+
+test('the band says the master switch is on while a one-session switch is the row it draws', () => {
+  const ends = new Date(Date.now() + 60000).toISOString();
+  const rows = [{ n: 1, scope: 'every', until: 'off' }, { n: 2, scope: 'session', session: 's1', until: 'time', ends }];
+  const mine = bypassBand({ rows }, 's1', Date.now());
+  assert.deepEqual([mine.ends, mine.quiet, mine.master], [ends, undefined, true]);
+  assert.equal(bypassBand({ rows: rows.slice(1) }, 's1', Date.now()).master, undefined);
+});
+
+test("another session's running task is asked with no switch, and moves under one", () => {
+  const { db, S, line, other } = bypassLine();
+  const theirs = task(db, line.id, 'Running elsewhere');
+  w.taskUpdate(db, { id: theirs.id, inHand: true, takeOver: true, reason: 'their work' }, { session: 's2' });
+  const on = (tr) => Boolean(db.prepare('SELECT 1 FROM track_items WHERE track = ? AND task = ?').get(tr.key, theirs.key));
+  const move = () => runVerb(db, 'editRecord', { id: theirs.id, tier: 3, track: other.id, whyElsewhere: 'it is the other line' }, S);
+  assert.ok(move().asked, 'with no switch it is asked');
+  assert.ok(on(line), 'and it stays on its track');
+  runVerb(db, 'bypassPress', { act: 'on', scope: 'every', until: 'off' }, { user: 'tray' });
+  assert.equal(move().asked, undefined);
+  assert.ok(on(other), 'under a switch it lands at the place named');
 });

@@ -9,7 +9,7 @@ import { join } from 'node:path';
 
 import { clausesOf, coverage, covers } from '../skills/onboard/coverage.mjs';
 import { cardRow, cardText } from '../skills/onboard/cards.mjs';
-import { applyPlan, claudeText, cliRunner, gatesOf, handover, keptBack, rehearse, runCoverage, undoImport } from '../skills/onboard/apply.mjs';
+import { applyPlan, claudeText, cliRunner, gatesOf, handover, keptBack, rehearse, runCoverage, sectionSaid, undoImport } from '../skills/onboard/apply.mjs';
 import { claudeLedger } from '../skills/onboard/survey.mjs';
 import { buildPlan, withFacts } from '../skills/onboard/plan.mjs';
 import { boardRecords, evidenceOf } from '../skills/onboard/map.mjs';
@@ -265,6 +265,22 @@ test('a coverage gap holds back the delete of its folder and the line edits of i
 
 /* the section goes into the instruction file the plan names; a split clause keeps its words;
    Codex's override is written from the rewritten file and the board's rules, and the undo writes it again */
+test('an instruction file that already states the board keeps its words, with no second AskerDo section', async (t) => {
+  const p = fixture(t);
+  const said = '# Proj\n\nThis project is on the board, workstream WS-3. Resume with `/askerdo resume TR-18`.\n';
+  writeFileSync(join(p.dir, 'CLAUDE.md'), said);
+  p.git(['add', 'CLAUDE.md']);
+  p.git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'the file states the board']);
+  p.put('plan.json', { made: 'p1', project: { dir: p.dir }, label: 'import:proj', steps: [], items: [], folders: [], section: 'CLAUDE.md', claude: [{ path: 'CLAUDE.md', clauses: [] }] });
+  p.manifest([]);
+  p.clean();
+  assert.match(sectionSaid({ section: 'CLAUDE.md', project: { dir: p.dir } })[0], /no AskerDo section/, 'the rehearsal says so');
+  const closed = sectionSaid({ section: 'CLAUDE.md', project: { dir: p.dir } }, [{ id: 'TR-18', state: 'done' }])[0];
+  assert.ok(closed.includes('TR-18') && !closed.includes('already states'), 'a closed track is not a statement of the board');
+  await handover(p.work, { cli: CLI, log: () => {} });
+  assert.equal(readFileSync(join(p.dir, 'CLAUDE.md'), 'utf8'), said);
+});
+
 test('the section goes into AGENTS.md, a split clause keeps its words, and the Codex override follows the rewrite and the undo', async (t) => {
   const p = fixture(t);
   const SPLIT = 'The Viewer never runs node logic and hosts WebSockets on port 5000.';

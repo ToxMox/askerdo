@@ -5,6 +5,7 @@
 import { UsageError } from './labels.mjs';
 import { isKey } from '../records.mjs';
 import { ROLE_RE, agentsBlockFor, blockOf } from '../rules-block.mjs';
+import { endWords } from './bypass-rows.mjs';
 
 /* The working-rule line each value writes into the rules in force; the settings'
    examples read these same lines. */
@@ -165,6 +166,23 @@ export const SETTINGS = Object.freeze({
     line: 'A session editing a file a knowledge record names is pointed at that record.',
     changes: "On, an edit of a file one of a knowledge record's file globs takes gets a toast and a one-line pointer naming the record and its title, once per record in a session (a read or a search too, when the glob is marked for it); nothing is blocked. Off, knowledge records point at nothing. Decisions and procedure cards point either way.",
     example: { kind: 'pair', a: ['Off', 'An edit of src/db/schema.ts draws no pointer, whatever the knowledge records name.'], b: ['On', 'An edit of src/db/schema.ts: knowledge K-41 (Migrations run in order) is about it; askerdo show K-41 reads it whole.'] },
+  },
+  /* the permanent half of the placement bypass; a session never moves the mode (press) */
+  'placement.mode': {
+    kind: 'choice', values: ['ask', 'model'], def: 'ask', press: true, label: 'Task placement', takes: 'placement',
+    line: 'Whether a session asks you before it puts found work anywhere but a real place on its own track.',
+    changes: "Ask me keeps the question for work placed last on a track, on another track, in an inbox or for a later session. Let the model choose lands it at the place the session names, another session's running task included. The narrowest layer wins, and a bypass from the tray outranks it.",
+    choices: { ask: 'ask me', model: 'let the model choose' },
+    example: { kind: 'values', values: {
+      ask: 'A session wants to put found work on another track: you get a question with the two places, and nothing is created until you answer.',
+      model: 'A session puts found work on another track: it lands there with no question.',
+    } },
+  },
+  'placement.times': {
+    kind: 'texts', def: ['15', '60', '240', '480'], minutes: true, defaultOnly: true, label: 'Bypass times', takes: 'placement',
+    line: "The lengths of time the tray's task placement bypass offers.",
+    changes: 'Each entry is a whole number of minutes from 1 to 10080, at most 8 entries. The tray lists them for every session and for one session.',
+    example: { kind: 'text', text: '15, 60, 240 and 480: the tray offers 15 minutes, 1 hour, 4 hours and 8 hours.' },
   },
   /* a board user's options (config.json less the board keys and the queue,
      which the join sets per PC), read from the profiles held on default */
@@ -353,8 +371,9 @@ export const TAKES_EFFECT = Object.freeze({
   backups: 'The next copy: askerdo backup, or the first session start of the next day.',
   presses: "This session's cards at once when saved from its Settings tab; other open sessions at their next start.",
   updates: "The app's switch at once; the app looks for a new AskerDo as each session starts.",
-  drift: 'Each session at its next start: Home reads the line once as the session starts.',
+  drift: 'Within seconds in every open session: Home reads the line again when a profile changes.',
   pointers: "From your next prompt in every open session, its agents' edits included: the session reads the rules in force again when a profile changes.",
+  placement: 'At once, on any PC: the board reads it on each filing.',
 });
 /* settings that are gone; a stored value is ignored, a new set refused in these words */
 export const RETIRED = Object.freeze({ 'contract.name': 'The name setting is retired: the contract always says "the user" (contract.name)' });
@@ -386,6 +405,9 @@ function wordsValue(key, spec, raw) {
     try { v = JSON.parse(String(raw ?? '').trim() || '[]'); } catch { v = null; }
     if (!Array.isArray(v) || v.some((x) => typeof x !== 'string') || JSON.stringify(v).length > 64 * 1024) {
       throw refuse(key, spec, 'is a JSON list of strings, at most 64 KB', raw);
+    }
+    if (spec.minutes && (v.length > 8 || v.some((x) => !/^\d{1,5}$/.test(x) || Number(x) < 1 || Number(x) > 10080))) {
+      throw refuse(key, spec, 'is at most 8 whole numbers of minutes, each from 1 to 10080', raw);
     }
     return v;
   }
@@ -664,7 +686,7 @@ const fmt = (key, v) => {
   if (kind === 'bool') return v ? 'on' : 'off';
   if (kind === 'choice') return String(v);
   if (kind === 'text') return JSON.stringify(v);
-  if (kind === 'texts') return (Array.isArray(v) ? v.length : 0) + ' rules';
+  if (kind === 'texts') return (Array.isArray(v) ? v.length : 0) + (SETTINGS[key].minutes ? ' times' : ' rules');
   if (kind === 'lines' || kind === 'slugs') return (Array.isArray(v) ? v : []).map((x) => (x && x.slug) || x).join(' ') || 'none';
   return v + ' percent';
 };
@@ -683,7 +705,7 @@ export function effectiveText(eff) {
    where it comes from, and the values it takes (or why it is read only). */
 const rowValue = (r) => (r.kind === 'tokens' ? Math.floor(r.value / 1000) + 'k' : r.kind === 'bool' ? (r.value ? 'on' : 'off')
   : r.kind === 'percent' ? r.value + ' percent' : r.kind === 'text' ? JSON.stringify(r.value)
-    : r.kind === 'texts' ? (Array.isArray(r.value) ? r.value.length : 0) + (r.key === 'review.ignore' ? ' globs' : ' rules') : String(r.value));
+    : r.kind === 'texts' ? (Array.isArray(r.value) ? r.value.length : 0) + (r.key === 'review.ignore' ? ' globs' : r.key === 'placement.times' ? ' times' : ' rules') : String(r.value));
 const rowFrom = (r) => (r.layer === 'built-in' ? 'built in' : r.layer === 'pc' ? 'this PC'
   : (r.layer === 'default' ? 'default' : r.layer + ' ' + r.record) + (r.profile ? ' (' + r.profile + ')' : ''));
 const rowTakes = (r) => (r.values ? r.values.join(', ') : r.kind === 'bool' ? 'on, off' : r.kind === 'percent' ? '1 to 99'
@@ -780,7 +802,7 @@ const RULE_KEYS = ['tests.policy', 'tests.fullRun', 'tests.pinWording', 'dispatc
 /* The one renderer: every surface (the injected block, show-effective --rules,
    the main session's section) prints this. Two blocks: the session's and its
    agents'; the top-level text is the agents', the one a brief gets. */
-export function rulesBlock(eff) {
+export function rulesBlock(eff, now = Date.now()) {
   const src = (s) => (s.profile ? s.profile + ' on ' + s.record : 'built in');
   const rows = [];
   for (const k of RULE_KEYS) {
@@ -788,6 +810,13 @@ export function rulesBlock(eff) {
     if (t) rows.push({ rule: k, text: t, source: src(eff.settings[k]) });
   }
   for (const l of eff.lines || []) rows.push({ rule: l.slug, text: l.text, source: src(l), ...(l.for ? { for: l.for } : {}), ...(l.role ? { role: l.role } : {}) });
+  /* rulesFor is memoized and a lapse moves no row, so a passed end drops the line here */
+  const b = eff.bypass;
+  if (b && !(b.ends && !(Date.parse(b.ends) > now))) {
+    const span = b.ends ? 'until ' + endWords(b.ends, now) : b.words;
+    rows.push({ rule: 'placement-bypass', source: "the user's switch", for: 'session',
+      text: 'Task placement is on bypass for this session ' + span + ": filings and moves land at the place you name with no question, another session's running task included." });
+  }
   const split = rows.some((r) => r.for);
   const session = blockOf(eff.record, rows.filter((r) => r.for !== 'agents'), split ? 'this session' : '');
   /* a role's lines ride only a dispatch playing that role (agentsBlockFor) */
@@ -858,11 +887,11 @@ export function contractHeld(data) {
 
 /* ---- the settings list: one row per setting for every renderer --- */
 
-export const FAMILIES = Object.freeze(['contract', 'handoffs and context', 'agents', 'tests', 'reviews', 'dispatch', 'rule lines', 'doctor', 'pointers', 'this PC']);
-const FAMILY_BY = { contract: 'contract', main: 'handoffs and context', agent: 'agents', tests: 'tests', review: 'reviews', dispatch: 'dispatch', rules: 'rule lines', doctor: 'doctor', pointers: 'pointers' };
+export const FAMILIES = Object.freeze(['contract', 'handoffs and context', 'task placement', 'agents', 'tests', 'reviews', 'dispatch', 'rule lines', 'doctor', 'pointers', 'this PC']);
+const FAMILY_BY = { contract: 'contract', main: 'handoffs and context', placement: 'task placement', agent: 'agents', tests: 'tests', review: 'reviews', dispatch: 'dispatch', rules: 'rule lines', doctor: 'doctor', pointers: 'pointers' };
 /* the pane's sub-tabs and the board page's groups, in order */
 export const TABS = Object.freeze([['replies', 'Replies'], ['sessions', 'Sessions'], ['agents', 'Agents'], ['tests', 'Tests'], ['rules', 'Rules'], ['pc', 'This PC']]);
-const TAB_BY = { contract: 'replies', main: 'sessions', agent: 'agents', dispatch: 'agents', tests: 'tests', review: 'tests', rules: 'rules', doctor: 'sessions', pointers: 'sessions' };
+const TAB_BY = { contract: 'replies', main: 'sessions', placement: 'sessions', agent: 'agents', dispatch: 'agents', tests: 'tests', review: 'tests', rules: 'rules', doctor: 'sessions', pointers: 'sessions' };
 /* the scope chip's words for a layer, and whom a value set there reaches */
 const SCOPE = { 'built-in': 'built-in', default: 'everywhere', project: 'this project', workstream: 'this workstream', track: 'this track only', task: 'this task only', pc: 'this PC' };
 const REACH = {
@@ -879,6 +908,8 @@ const copyOf = (key, spec, board) => ({ label: spec.label, line: spec.line, chan
 function shapeOf(key, spec, board) {
   const head = key.split('.')[0];
   const row = { key, family: spec.pc ? 'this PC' : FAMILY_BY[head], tab: spec.pc ? 'pc' : TAB_BY[head], ...copyOf(key, spec, board), kind: spec.kind };
+  if (spec.press) row.press = true;
+  if (spec.defaultOnly) row.defaultOnly = true;
   if (spec.kind !== 'secret') row.builtIn = spec.def;
   if (spec.kind === 'choice') Object.assign(row, { values: spec.values.slice(), choices: { ...spec.choices } });
   if (spec.kind === 'percent') Object.assign(row, { min: 1, max: 99 });
@@ -924,8 +955,12 @@ function boardRows(data, chain, { board, under } = {}) {
     const p = { level: c.level, record: c.key, scope: SCOPE[c.level], reaches: REACH[c.level], profiles: names, profile: setter };
     if (!setter) return p;
     const value = settingsOf(profileOf(data, setter))[key];
-    return { ...p, value, overridden: key.startsWith('contract.') ? [] : overriddenAt(data, under, key, c, value) };
+    return { ...p, value, overridden: key.startsWith('contract.') || SETTINGS[key].defaultOnly ? [] : overriddenAt(data, under, key, c, value) };
   };
+  /* a setting read at default alone offers that one place and shows that layer's value */
+  const atDefault = eff ? chain.slice(0, 1) : null;
+  const effDefault = eff ? resolveChain(data, atDefault) : null;
+  const activeDefault = eff ? activeAt(data, atDefault) : [];
   for (const [key, spec] of Object.entries(SETTINGS)) {
     if (spec.list) continue;
     const row = shapeOf(key, spec, board);
@@ -936,11 +971,11 @@ function boardRows(data, chain, { board, under } = {}) {
       if (data) row.places = [place(key, { level: 'default', key: 'default' }, ((data.subscriptions && data.subscriptions.default) || noSub()).add.slice().sort())];
       row.overridden = [];
     } else if (eff) {
-      const s = eff.settings[key];
+      const s = (spec.defaultOnly ? effDefault : eff).settings[key];
       Object.assign(row, from(s.value, s.level, s.record, s.profile), { editable: true, changed: s.level !== 'built-in' });
-      row.places = chain.map((c, i) => place(key, c, active[i]));
+      row.places = spec.defaultOnly ? [place(key, atDefault[0], activeDefault[0])] : chain.map((c, i) => place(key, c, active[i]));
       const at = chain.find((c) => c.level === s.level) || { level: 'built-in' };
-      row.overridden = overriddenAt(data, under, key, at, s.value);
+      row.overridden = spec.defaultOnly ? [] : overriddenAt(data, under, key, at, s.value);
     } else Object.assign(row, from(spec.def, 'built-in'), { editable: false, why: NEEDS_BOARD, changed: false });
     rows.push(row);
   }

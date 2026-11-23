@@ -11,13 +11,13 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { homedir } from 'node:os';
 import { basename, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dataDir } from '../../lib/node-helpers.mjs';
+import { dataDir, deletedLogArgs } from '../../lib/node-helpers.mjs';
 import { sharedName } from '../../lib/project-id.mjs';
 import { DEFAULT_CLI, DORMANT_DAYS, cliJson, matchRules, sameSubject, survey, surveyLines, tokens } from '../onboard/survey.mjs';
 import { clausesOf, covers } from '../onboard/coverage.mjs';
 import { kebab } from '../onboard/cites.mjs';
-import { folderKey, owedStep, readFacts } from '../onboard/plan.mjs';
-import { IN_GIT, projectRoots, resolver } from '../onboard/instructions.mjs';
+import { JUDGED_WRONG, folderKey, owedStep, readFacts } from '../onboard/plan.mjs';
+import { IN_GIT, closedResume, projectRoots, resolver } from '../onboard/instructions.mjs';
 import { coveredBy, linesHold, seedCovers } from '../onboard/map.mjs';
 
 /* the checks of what a session meets run by default; the knowledge check runs at depth */
@@ -78,7 +78,7 @@ export function callOf(x) {
 
 /* Files a line names, under a folder or a bare name with an extension the repo would hold; a folder
    alone (`config/` in a rule) names a place, never a file that could be gone; one the handover marked in git is history. */
-const PATHISH = /(?<![\w/.:@~-])((?:[\w.-]+\/)+[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{1,8}|[\w-]+(?:\.[\w-]+)*\.(?:md|markdown|txt|json|ya?ml|toml|mjs|cjs|py|ps1|sh))(?![\w/-])/g;
+const PATHISH = /(?<![\w/.:@~<>{}-])((?:[\w.-]+\/)+[\w-]+(?:\.[\w-]+)*\.[A-Za-z0-9]{1,8}|[\w-]+(?:\.[\w-]+)*\.(?:md|markdown|txt|json|ya?ml|toml|mjs|cjs|py|ps1|sh))(?![\w/<{-])/g;
 export const pathsIn = (text) => {
   const s = String(text || '');
   return [...new Set([...s.matchAll(PATHISH)].filter((m) => !IN_GIT.test(s.slice(m.index + m[0].length))).map((m) => m[1]))];
@@ -91,6 +91,20 @@ export function holder(root, files) {
     if (set.has(q) || files.some((f) => f.startsWith(q + '/'))) return true;
     if (!q.includes('/') && files.some((f) => f.endsWith('/' + q))) return true;
     return existsSync(join(root, q));
+  };
+}
+
+/* git once held a path: a commit deleted it, on a merged branch too (--full-history). One it never held (a phone's
+   files folder) is no gone file; git not answering keeps the finding. */
+export function heldOnce(root) {
+  const at = new Map();
+  return (p) => {
+    const q = p.replace(/^\.\//, '');
+    if (!at.has(q)) {
+      const r = spawnSync('git', deletedLogArgs(q), { cwd: root, encoding: 'utf8', windowsHide: true });
+      at.set(q, r.status !== 0 || Boolean(r.stdout.trim()));
+    }
+    return at.get(q);
   };
 }
 
@@ -158,7 +172,7 @@ export function readDoctor(cli, doc, env = process.env, { knowledge, spawns, dep
   }
   const snoozed = ((get(['list', '--project', root, '--snoozed'], {}, ['shape']) || {}).questions || []);
   /* proc scan --check exits 1 when a card has errors, which is when its report matters */
-  const cards = get(['proc', 'scan', '--check', '--project', root], { okExit: [1] }, ['cards']) || null;
+  const cards = get(['proc', 'scan', '--check', '--verified', '--project', root], { okExit: [1] }, ['cards']) || null;
   /* a park condition on a record already ended is refused: the parked tracks' named records, read for their state */
   const known = new Set([...bs.tasks.map((x) => x.id), ...bs.tracks.map((x) => x.id)]);
   const named = [...new Set(bs.tracks.filter((t) => t.state === 'parked' && !t.unpark).map((t) => (UNPARK_ID.exec(t.parkReason || '') || [])[0]).filter((id) => id && !known.has(id)))];
@@ -233,6 +247,7 @@ export function checkRules(doc, extra) {
   /* a folder an earlier run retired, named by its path in a line */
   const ends = endsOf(doc.conversion);
   const heldAt = keptAt(root);
+  const once = heldOnce(root);
   const owned = new Set((bs.profiles || []).filter((p) => p.here && !p.elsewhere && !p.builtIn).map((p) => p.profile));
   const builtIns = (bs.rules || []).filter((r) => r.source === 'built in');
   const lineOf = (profile, slug) => (((bs.profiles || []).find((p) => p.profile === profile) || {}).lines || []).find((l) => l.slug === slug) || {};
@@ -253,7 +268,7 @@ export function checkRules(doc, extra) {
     if (text.length > LINE_MAX || /(\.\.\.|…)$/.test(text.trim())) finds.push({ kind: 'long', evidence: text.length + ' characters' + (text.length <= LINE_MAX ? ', ending in a cut' : ''), fix: { op: 'profile rule-add', profile, slug: r.rule, for: r.for || null, sourceText: text, target, was } });
     /* one finding per line; a gone file under a retired folder is that folder's */
     const cited = new Map();
-    for (const p of pathsIn(text).filter((x) => !has(x))) { const e = endOf(ends, p); cited.set(e ? e.path : p, e); }
+    for (const p of pathsIn(text).filter((x) => !has(x))) { const e = endOf(ends, p); if (e || once(p)) cited.set(e ? e.path : p, e); }
     /* a kept path inside a retired folder is no cite of it */
     const bare = (e) => ends.filter((k) => k.fate === 'keep' && k.path.startsWith(e.path + '/')).reduce((t, k) => t.split(k.path).join(' '), text);
     for (const e of ends.filter((x) => x.fate !== 'keep')) {
@@ -372,7 +387,10 @@ export function checkTasks(doc, extra) {
   for (const t of open) {
     const b = blocks.get(t.id);
     const close = t.close && typeof t.close === 'object' ? t.close : null;
-    const owed = b ? (b.steps || []).map((s) => ({ ...s, why: owedStep(s.text, who) })).filter((s) => s.why) : [];
+    /* a look task's steps are the look; a step judged wrong stays judged while its words are the same */
+    const isLook = b && (b.labels || []).includes('look');
+    const stepKey = (s) => 'checkup:tasks:' + t.id + ':step:' + createHash('sha1').update(String(s.text)).digest('hex').slice(0, 8);
+    const owed = b && !isLook ? (b.steps || []).map((s) => ({ ...s, why: owedStep(s.text, who), key: stepKey(s) })).filter((s) => s.why && !(extra.judgedSteps || new Set()).has(s.key)) : [];
     if (owed.length) {
       const track = (b && b.track) || null;
       /* a later session's check waits on its track for the next session: an asked place, so each draft
@@ -525,14 +543,20 @@ export function checkCards(doc, extra) {
   const rows = [];
   const label = 'import:' + doc.project.slug;
   for (const f of ((extra.cards || {}).files || [])) {
+    /* proc scan --check names each card by its file name under the procedures folder */
+    const file = f.file || f.path || 'docs/procedures/' + f.name;
+    const changed = [];
     for (const [i, e] of [...(f.errors || []), ...(f.warnings || []), ...(f.lints || [])].entries()) {
       const msg = typeof e === 'string' ? e : e.message || e.text || JSON.stringify(e);
       if (importsOnly(doc.project.dir, label, msg)) continue;
-      /* proc scan --check names each card by its file name under the procedures folder */
-      const file = f.file || f.path || 'docs/procedures/' + f.name;
+      if (CHANGED.test(msg)) { changed.push(msg); continue; }
       rows.push(checkRow('cards', file + '#' + (i + 1), { title: file + ': ' + msg, where: { file, line: (e && e.line) || undefined }, evidence: msg, sourceText: msg,
         fix: { after: { home: 'fix', path: file, edit: 'edit ' + file, what: 'fix ' + file + ': ' + clip(msg, 200) + ' (the session edits it on the go)' } }, why: 'proc scan --check reports it' }));
     }
+    /* one row a card: a change is a read of its steps, and the mark records a read that found them current */
+    if (changed.length) rows.push(checkRow('cards', file + ':read', { title: file + ': ' + changed.length + ' referenced path' + (changed.length > 1 ? 's' : '') + ' changed since its last clean run or read', where: { file }, evidence: changed.join('; '), sourceText: changed.join('\n'),
+      fix: { op: 'proc read', args: ['proc', 'read', basename(file, '.md'), '--project', doc.project.dir, '--note', 'read against the changes in a doctor run'], target: file },
+      why: 'read the steps against these diffs: edit what moved on the go; a card that reads current keeps this mark, which counts apart from a run' }));
   }
   return rows;
 }
@@ -561,6 +585,7 @@ export function checkRepo(doc, extra) {
   const rows = [];
   const root = doc.project.dir;
   const live = liveCite(root, extra.files || []);
+  const once = heldOnce(root);
   const ins = doc.instructions;
   const guides = ins && Array.isArray(ins.files) ? ins.files.map((x) => x.file).filter((f) => !OVERRIDE.test(f)) : ['CLAUDE.md', 'AGENTS.md'];
   const seen = new Set();
@@ -572,9 +597,19 @@ export function checkRepo(doc, extra) {
     /* facts from before the instruction files had ledgers: every line is a clause */
     const clauses = ins ? listed : text.split('\n').map((l, i) => ({ line: i + 1, clause: l })).filter((c) => c.clause.trim());
     const lines = text.split('\n');
+    /* a resume line naming only closed tracks, in a file's own words or its generated section, is refused at its first call */
+    const tracks = (doc.board || {}).tracks || [];
+    const closed = closedResume(text, tracks);
+    if (closed.length) {
+      const at = lines.findIndex((l) => l.includes('/askerdo resume ' + closed[0])) + 1;
+      const ws = new Set(tracks.filter((t) => closed.includes(t.id)).map((t) => t.workstream));
+      const live = tracks.filter((t) => ws.has(t.workstream) && !['done', 'dropped', 'folded'].includes(t.state)).map((t) => t.id);
+      push(g + '#L' + at + ':closed-resume', { title: g + ' line ' + at + ' resumes ' + closed.join(', ') + ', closed on the board', where: { file: g, line: at }, evidence: closed.join(', ') + ' closed; live on its workstream: ' + (live.join(', ') || 'none'), sourceText: lines[at - 1],
+        fix: { after: { home: 'fix', path: g, edit: 'edit ' + g, what: 'repoint ' + g + ' line ' + at + ': its resume command names ' + closed.join(', ') + ', which the board has closed' + (live.length ? '; live there: ' + live.join(', ') : '; no track is live there, so name the workstream alone') + ' (the session edits it on the go)' } }, why: 'a session following it is refused at its first call' });
+    }
     for (const c of clauses) {
       const cited = pathsIn(c.clause);
-      const gone = cited.filter((p) => !live(p, g));
+      const gone = cited.filter((p) => !live(p, g) && once(p));
       if (!gone.length) continue;
       const src = lines[c.line - 1] || c.clause;
       if (gone.length === cited.length && ins) {
@@ -725,6 +760,7 @@ export function doctor(dir, { work, cli = DEFAULT_CLI, board = true, env = proce
   const unread = new Set([...(extra.unread || []), ...(surveyErrors.length || !doc.board ? ['rules', 'shape', 'tasks', 'reconcile'] : [])]);
   /* a finding the user left stays left while its subjects are unchanged: the map holds its call answered with leave */
   const answered = new Map(((doc.conversion && doc.conversion.calls) || []).filter((c) => c.state === 'unchanged' && c.answer).map((c) => [c.call, c.answer]));
+  extra.judgedSteps = new Set([...answered].filter(([k, a]) => a === JUDGED_WRONG && /:step:/.test(k)).map(([k]) => k));
   const leftBefore = (x) => { if (!x.call || !answered.has(x.id)) return false; const o = callOf(x).options; return answered.get(x.id) === o[o.length - 1].letter; };
   const markLeft = (xs) => { for (const x of xs.filter((y) => !y.covered && leftBefore(y))) { Object.assign(x, { cut: true, dropped: 'left last time', leftLast: true, why: 'left last time: ' + (x.why || '') }); delete x.call; } };
   const found = {

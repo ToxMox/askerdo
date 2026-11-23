@@ -4,7 +4,7 @@
  * under the chip. Drawn from the read alone; index.ts owns the read and the writes. */
 import { cellWidth, clampWords, dotPicture, statusPicture, switchPicture } from '../../lib/mod-core.mjs'
 import { PRESS_RIM, SKY, pressFace, pressOver } from './status.tsx'
-import { FOLD_CELLS, OPEN, SHUT, fitWords, foldEnd, foldHead, foldRing, paneCells } from './fold.tsx'
+import { CELL_NARROW, FOLD_CELLS, OPEN, SHUT, fitWords, foldEnd, foldHead, foldRing, paneCells } from './fold.tsx'
 
 /* where a write goes: a layer and its record (none for default and this PC) */
 export type SettingsPlace = { level: string; record?: string | null }
@@ -21,7 +21,7 @@ export type SettingsView = {
   phone?: { busy?: boolean; url?: string; expires?: string; rows?: string[]; error?: string }
 }
 /* json: settings --json; error: the last read failed (the rows are the read before) */
-export type SettingsModel = { json?: any; error?: string; track?: { id: string; name: string } | null; project?: string }
+export type SettingsModel = { json?: any; error?: string; track?: { id: string; name: string } | null; project?: string; bypass?: { quiet?: boolean } | null }
 export type SettingsActions = {
   redraw: () => void
   set: (key: string, value: string, at?: SettingsPlace) => void
@@ -43,6 +43,8 @@ const WIDE = 80
 const MID = 60
 /* the chip's column on a wide row, in cells */
 const CHIP_COLS = 18
+const MASTER_ON = 'Every session is on bypass from the tray until you turn it off; this setting takes over again then.'
+const BYPASS_TIMES = 'placement.times'
 const AUDIENCE: Record<string, string> = { session: 'for the session', agents: 'for its agents', both: 'for both' }
 const LEVELS = ['default', 'project', 'workstream', 'track', 'task']
 
@@ -55,7 +57,7 @@ export function valueWords(row: any, v = row.value): string {
   if (row.kind === 'bool') return v ? 'on' : 'off'
   if (row.kind === 'choice') return (row.choices && row.choices[v]) || String(v)
   if (row.kind === 'text') return v === '' ? 'none' : String(v)
-  if (row.kind === 'texts') return Array.isArray(v) ? (v.length ? v.length + ' lines' : 'none') : String(v)
+  if (row.kind === 'texts') return Array.isArray(v) ? (v.length ? plural(v.length, row.key === BYPASS_TIMES ? 'time' : 'line') : 'none') : String(v)
   return String(v)
 }
 /* the CLI's words for a value */
@@ -236,7 +238,7 @@ const CELL_PX = 8.453, CARD_CELLS = 3
    zone, a whole number of px a module, as large as the card allows up to 6. */
 export function qrPicture(rows: string[], cols: number): { source: string; alt: string; width: number; height: number } {
   const n = rows.length + 2 * QR_QUIET
-  const scale = Math.max(2, Math.min(6, Math.floor(((cols - CARD_CELLS) * CELL_PX) / n)))
+  const scale = Math.max(2, Math.min(6, Math.floor(((cols - CARD_CELLS) * CELL_NARROW) / n)))
   let d = ''
   rows.forEach((row, y) => {
     for (const m of row.matchAll(/1+/g)) d += 'M' + ((m.index || 0) + QR_QUIET) + ' ' + (y + QR_QUIET) + 'h' + m[0].length + 'v1h-' + m[0].length + 'z'
@@ -260,7 +262,7 @@ function phoneRow(d: Draw): any {
   const parts: any[] = [labelOf(d, PHONE), <Box key="set-line-phone"><Text dimColor wrap="wrap">{PHONE.line}</Text></Box>]
   if (live) {
     const pic = qrPicture(p.rows as string[], d.cols)
-    if (d.desk) parts.push(<Box key="set-phone-qr" flexShrink={0} alignSelf="flex-start"><Svg source={pic.source} alt={pic.alt} width={pic.width} height={pic.height} /></Box>)
+    if (d.desk) parts.push(<Box key="set-phone-qr" flexShrink={0} alignSelf="flex-start"><Svg source={pic.source} alt={pic.alt} width={pic.width} /></Box>)
     /* the terminal draws no Svg: the link itself, to open on the phone */
     else parts.push(<Box key="set-phone-url"><Text wrap="wrap">{p.url}</Text></Box>)
     parts.push(<Box key="set-phone-until"><Text dimColor wrap="wrap">{'It signs in one phone, once, until ' + clockWords(p.expires as string) + '.'}</Text></Box>)
@@ -288,6 +290,9 @@ function settingRow(d: Draw, row: any): any {
   const k = row.key
   const ring = moreRing(d, k)
   const help = <Box key={'set-help-' + k}><Text dimColor wrap="wrap">{row.line}</Text></Box>
+  /* the tray's master switch outranks this row while it is on */
+  const master = k === 'placement.mode' && d.m.bypass && d.m.bypass.master
+    ? <Box key="set-bypass-on"><Text color="warning" wrap="wrap">{MASTER_ON}</Text></Box> : null
   const tail: any[] = []
   if (d.v.more.has(k)) tail.push(moreFold(d, row))
   if (d.v.picker === k) tail.push(picker(d, row))
@@ -307,7 +312,7 @@ function settingRow(d: Draw, row: any): any {
     return (
       <Box key={'set-row-' + k} flexDirection="column" rowGap={0.5}>
         <Box key={'set-grid-' + k} flexDirection="row" columnGap={2} alignItems="flex-start">
-          <Box key={'set-lc-' + k} width={0} flexGrow={5} flexDirection="column" rowGap={0.3}>{[labelOf(d, row), help]}</Box>
+          <Box key={'set-lc-' + k} width={0} flexGrow={5} flexDirection="column" rowGap={0.3}>{[labelOf(d, row), help, master].filter(Boolean)}</Box>
           <Box key={'set-cc-' + k} width={0} flexGrow={4} flexDirection="column" rowGap={0.5}>{[ctl, note]}</Box>
           <Box key={'set-kc-' + k} width={CHIP_COLS} flexShrink={0} flexDirection="row" justifyContent="flex-end">{chipBox}</Box>
           <Box key={'set-fc-' + k} flexShrink={0} marginLeft={-1}>{ring}</Box>
@@ -321,6 +326,7 @@ function settingRow(d: Draw, row: any): any {
     <Box key={'set-row-' + k} flexDirection="column" rowGap={0.5}>
       {labelOf(d, row, ring)}
       {help}
+      {master}
       <Box key={'set-ck-' + k} flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={0.5} alignItems="center">
         <Box key={'set-cc-' + k} flexShrink={1} minWidth={0} {...(fill ? { width: '100%' } : {})}>{ctl}</Box>
         <Box key={'set-kc-' + k} flexShrink={1} minWidth={0}>{chipBox}</Box>
@@ -404,7 +410,7 @@ function control(d: Draw, row: any): any {
       <Box key={'set-ctl-' + k} flexDirection="column" rowGap={0.5} flexShrink={1} minWidth={0}>
         {items.length ? items : <Text key={'set-noitems-' + k} dimColor>None here.</Text>}
         <Box key={'set-addrow-' + k} flexDirection="row" columnGap={1} alignItems="center">
-          <Box key={'set-inbox-' + k} flexShrink={1} minWidth={0}><Input key={fieldKey(d.v, 'set-in-' + k, k)} placeholder="your own rule" value={d.v.drafts[k] || ''} onInput={keep} onSubmit={add} /></Box>
+          <Box key={'set-inbox-' + k} flexShrink={1} minWidth={0}><Input key={fieldKey(d.v, 'set-in-' + k, k)} placeholder={k === BYPASS_TIMES ? 'minutes, as 90' : 'your own rule'} value={d.v.drafts[k] || ''} onInput={keep} onSubmit={add} /></Box>
           {actButton(d, 'set-add-' + k, 'Add', () => add())}
         </Box>
       </Box>)

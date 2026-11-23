@@ -435,4 +435,20 @@ describe('the mod section', () => {
     await w.call($, { tool: 'mcp__askerdo__answer', id: 'L3', pick: 'b' })
     expect(w.last('answer Q514').args).toEqual(expect.arrayContaining(['b', '--session']))
   })
+
+  /* a go question kept before the session engaged is still the user's alone to answer */
+  test('a kept go question takes a session\'s answer only from a message of the user and files it with their mark', async ($: any, on: any) => {
+    const w = world(on)
+    w.tracks[0].session = undefined
+    await start($, w)
+    await $.turn.start({ text: 'work', turnId: 't1' })
+    const options = [{ type: 'a', option: 'move them', go: true }, { type: 'b', option: 'ask each' }]
+    await w.call($, { tool: ASK, tool_use_id: 'tu-1', name: 'the moves', ask: ASKED, gist: 'Six moves.', blocking: true, options, pick: 'a', gates: ['T-42'] })
+    expect((await w.call($, { tool: 'mcp__askerdo__answer', id: 'L1', pick: 'a' })).deny).toContain('press its card')
+    await $.prompt.submit({ text: 'L1a' })
+    expect((await w.call($, { tool: 'mcp__askerdo__answer', id: 'L1', pick: 'a' })).result).toContain('L1a')
+    await $.command.run({ command: 'askerdo', args: 'board' })
+    await w.clock.settle()
+    expect(w.last('answer').args).toEqual(['answer', 'Q512', '--pick', 'a', '--user', 'sess-1', '--json'])
+  })
 })

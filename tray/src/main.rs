@@ -137,6 +137,33 @@ pub struct Asleep {
     pub wake: String,
 }
 
+/* one switch on, one time to offer and one session to pick, all worded by
+   the server. A session's id rides for the post and is never drawn. */
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BypassOn {
+    pub n: u64,
+    pub label: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BypassTime {
+    pub minutes: u32,
+    pub label: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BypassSession {
+    pub session: String,
+    pub label: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Bypass {
+    pub on: Vec<BypassOn>,
+    pub times: Vec<BypassTime>,
+    pub sessions: Vec<BypassSession>,
+}
+
 pub struct Face {
     pub dot: Dot,
     pub blocking: u32,
@@ -168,6 +195,9 @@ pub struct Face {
        wears a crescent over quiet and waiting, never over blocking */
     pub asleep: u32,
     pub asleep_cards: Vec<Asleep>,
+    /* None until a server sends the block, so a board with no bypass
+       route draws no submenu */
+    pub bypass: Option<Bypass>,
     /* WHETHER THE STREAM HAS SAID ANYTHING YET. False from the spawn argv until
        the first hello lands, which is what lets the counts line say `connecting`
        rather than a fabricated `0 waiting` beside the argv's blocking count. */
@@ -336,6 +366,7 @@ fn main() {
             pause_label: String::new(),
             asleep: 0,
             asleep_cards: Vec::new(),
+            bypass: None,
             told: false,
         }),
         journal: Journal::open(args.log.clone()),

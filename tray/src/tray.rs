@@ -40,7 +40,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::registry::{self, wide};
-use crate::{App, Asleep, Card, Dot, EXIT_OK, Face, Recent, alert, console, icon, net};
+use crate::{App, Asleep, Bypass, Card, Dot, EXIT_OK, Face, Recent, alert, console, icon, net};
 
 /* The ten faces, compiled in: an install that lost an asset cannot leave this
    tray blank. FIVE PER
@@ -99,6 +99,15 @@ const IDM_CARD_SLOTS: usize = 10;
    the two must never share a slot. */
 pub const IDM_RECENT_BASE: usize = 200;
 const IDM_RECENT_SLOTS: usize = 5;
+/* the bypass block, one running id per press line, each frozen with its
+   post body. The caps bound the range: times plus the open-ended line, for every
+   session and for each picked one, then a Turn off per switch and Turn all off. */
+pub const IDM_BYPASS_BASE: usize = 300;
+pub(crate) const BYPASS_TIMES_MAX: usize = 8;
+pub(crate) const BYPASS_SESSIONS_MAX: usize = 16;
+pub(crate) const BYPASS_ON_MAX: usize = 16;
+const IDM_BYPASS_SLOTS: usize =
+    (BYPASS_TIMES_MAX + 1) * (BYPASS_SESSIONS_MAX + 1) + BYPASS_ON_MAX + 1;
 const ICON_ID: u32 = 1;
 
 /* THE MENU'S OWN CUT, over the WHOLE line rather than over the name: forty
@@ -147,6 +156,8 @@ struct State {
        same reason, in its own id range because a recent line POSTs an open where
        a card line shell-opens a URL. */
     recent_urls: Vec<String>,
+    /* the bypass lines' post bodies, frozen the same way */
+    bypass_bodies: Vec<String>,
 }
 
 thread_local! {
@@ -226,6 +237,7 @@ impl Window {
                     taskbar_created,
                     card_urls: Vec::new(),
                     recent_urls: Vec::new(),
+                    bypass_bodies: Vec::new(),
                 });
             });
             add_icon();
@@ -398,6 +410,12 @@ pub enum Line {
         url: String,
     },
     Item { id: usize, label: String },
+    /* a bypass line: its id and the JSON body it posts, frozen together */
+    Press {
+        id: usize,
+        label: String,
+        body: String,
+    },
     Submenu { label: String, entries: Vec<Line> },
     Separator,
     /* a line that is there to be READ rather than clicked (Resume now while
@@ -497,6 +515,12 @@ pub fn menu_model(
        submenu whose every entry fails silently reads worse than no submenu. */
     if notify.is_some() {
         lines.push(pause_line(face));
+    }
+    /* rides --notify too, and only once a server has sent the block */
+    if let (Some(url), Some(block)) = (notify, face.bypass.as_ref())
+        && net::bypass_url(url).is_some()
+    {
+        lines.push(bypass_line(block));
     }
     lines.push(Line::Separator);
     lines.push(Line::Item {
@@ -612,6 +636,83 @@ fn pause_line(face: &Face) -> Line {
     }
 }
 
+/* THE BYPASS SUBMENU. Every word but the fixed ones is the server's, end
+   clock included; a session's id goes in a post body and never in a label. */
+fn bypass_line(block: &Bypass) -> Line {
+    let mut next = IDM_BYPASS_BASE;
+    let mut press = |label: &str, body: serde_json::Value| {
+        let id = next;
+        next += 1;
+        Line::Press {
+            id,
+            label: menu_label(&cut(label, LINE_MAX)),
+            body: body.to_string(),
+        }
+    };
+    let times = &block.times[..block.times.len().min(BYPASS_TIMES_MAX)];
+
+    let mut every: Vec<Line> = times
+        .iter()
+        .map(|t| {
+            press(
+                &t.label,
+                serde_json::json!({"act": "on", "scope": "every", "minutes": t.minutes, "until": "time"}),
+            )
+        })
+        .collect();
+    every.push(press(
+        "Until I turn it off",
+        serde_json::json!({"act": "on", "scope": "every", "until": "off"}),
+    ));
+
+    let mut one: Vec<Line> = Vec::new();
+    for s in block.sessions.iter().take(BYPASS_SESSIONS_MAX) {
+        let mut entries: Vec<Line> = times
+            .iter()
+            .map(|t| {
+                press(
+                    &t.label,
+                    serde_json::json!({
+                        "act": "on", "scope": "session", "session": s.session,
+                        "minutes": t.minutes, "until": "time"
+                    }),
+                )
+            })
+            .collect();
+        entries.push(press(
+            "Until it ends",
+            serde_json::json!({"act": "on", "scope": "session", "session": s.session, "until": "ended"}),
+        ));
+        one.push(Line::Submenu {
+            label: menu_label(&cut(&s.label, LINE_MAX)),
+            entries,
+        });
+    }
+    if one.is_empty() {
+        one.push(Line::Grayed(menu_label("No session holds a track")));
+    }
+
+    let mut entries = vec![
+        Line::Submenu { label: menu_label("Every session"), entries: every },
+        Line::Submenu { label: menu_label("One session"), entries: one },
+    ];
+    let on = &block.on[..block.on.len().min(BYPASS_ON_MAX)];
+    if !on.is_empty() {
+        entries.push(Line::Separator);
+    }
+    for row in on {
+        entries.push(Line::Grayed(menu_label(&cut(&row.label, LINE_MAX))));
+        entries.push(press("Turn off", serde_json::json!({"act": "off", "n": row.n})));
+    }
+    if on.len() >= 2 {
+        entries.push(press("Turn all off", serde_json::json!({"act": "off", "all": true})));
+    }
+    Line::Submenu {
+        label: menu_label("Task placement bypass"),
+        entries,
+    }
+}
+
 /* THE CARD'S PERMANENT URL, the SAME shape lib/notify.mjs builds for the
    popup's card and hooks/board-server.mjs serves: the board root (the
    protocol pins the trailing slash) plus `r/` plus the key, or the
@@ -715,6 +816,34 @@ pub fn pick_recent(urls: &[String], id: usize) -> Option<&str> {
     }
 }
 
+/* the bypass lines' bodies into their slots, walking the submenus */
+pub fn bypass_bodies(model: &MenuModel) -> Vec<String> {
+    fn walk(lines: &[Line], out: &mut [String]) {
+        for line in lines {
+            match line {
+                Line::Press { id, body, .. } => {
+                    if let Some(slot) = id.checked_sub(IDM_BYPASS_BASE).and_then(|n| out.get_mut(n)) {
+                        *slot = body.clone();
+                    }
+                }
+                Line::Submenu { entries, .. } => walk(entries, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = vec![String::new(); IDM_BYPASS_SLOTS];
+    walk(&model.lines, &mut out);
+    out
+}
+
+pub fn pick_bypass(bodies: &[String], id: usize) -> Option<&str> {
+    let slot = id.checked_sub(IDM_BYPASS_BASE)?;
+    match bodies.get(slot) {
+        Some(body) if !body.is_empty() => Some(body.as_str()),
+        _ => None,
+    }
+}
+
 /* the menu opens with the plugin version this tray was started under,
    greyed: a line to read, never to click, so no command id moves. */
 pub fn with_version(mut model: MenuModel, version: &str) -> MenuModel {
@@ -731,7 +860,7 @@ pub fn with_version(mut model: MenuModel, version: &str) -> MenuModel {
 /* Everything the menu needs, read out of the thread-local state in ONE borrow
    so nothing is held across the Win32 calls below. */
 fn menu(hwnd: HWND) {
-    let Some((model, urls, recent, line)) = STATE.with(|c| {
+    let Some((model, urls, recent, presses, line)) = STATE.with(|c| {
         let state = c.borrow();
         let s = state.as_ref()?;
         let face = s.app.face.lock().ok()?;
@@ -748,6 +877,7 @@ fn menu(hwnd: HWND) {
         );
         let urls = card_urls(&model);
         let recent = recent_urls(&model);
+        let presses = bypass_bodies(&model);
         let line = format!(
             "menu {} blocking {} waiting {} cards {} waiting cards {} recent paused {}",
             face.blocking,
@@ -761,7 +891,7 @@ fn menu(hwnd: HWND) {
                 face.pause_label.as_str()
             },
         );
-        Some((model, urls, recent, line))
+        Some((model, urls, recent, presses, line))
     }) else {
         return;
     };
@@ -781,6 +911,7 @@ fn menu(hwnd: HWND) {
         if let Some(s) = c.borrow_mut().as_mut() {
             s.card_urls = urls;
             s.recent_urls = recent;
+            s.bypass_bodies = presses;
         }
     });
 
@@ -828,7 +959,7 @@ unsafe fn append(menu: HMENU, line: &Line) {
             Line::Counts(label) | Line::Grayed(label) => {
                 AppendMenuW(menu, MF_GRAYED | MF_STRING, 0, wide(label).as_ptr());
             }
-            Line::Item { id, label } | Line::Card { id, label, .. } => {
+            Line::Item { id, label } | Line::Card { id, label, .. } | Line::Press { id, label, .. } => {
                 AppendMenuW(menu, MF_STRING, *id, wide(label).as_ptr());
             }
             Line::Submenu { label, entries } => {
@@ -847,13 +978,13 @@ unsafe fn append(menu: HMENU, line: &Line) {
 
 /* ---- the click --------------------------------------------------------- */
 
-/* EVERY ONE OF THESE IS A SHELL OPEN OR A PAUSE POST, and Exit is untouched.
-   The pause ids do NOT do the network call here: the menu is built on the
+/* EVERY ONE OF THESE IS A SHELL OPEN OR A POST, and Exit is untouched.
+   The post ids do NOT do the network call here: the menu is built on the
    MESSAGE LOOP THREAD inside the WM_RBUTTONUP handler, and a blocking POST here
-   would hold the shell's own menu open on a network read. net::pause spawns a
-   short-lived thread and returns at once. */
+   would hold the shell's own menu open on a network read. net::pause and
+   net::bypass spawn a short-lived thread and return at once. */
 fn command(id: usize) {
-    let Some((app, hwnd, urls, recent)) = STATE.with(|c| {
+    let Some((app, hwnd, urls, recent, presses)) = STATE.with(|c| {
         let state = c.borrow();
         let s = state.as_ref()?;
         Some((
@@ -861,6 +992,7 @@ fn command(id: usize) {
             s.hwnd as isize,
             s.card_urls.clone(),
             s.recent_urls.clone(),
+            s.bypass_bodies.clone(),
         ))
     }) else {
         return;
@@ -898,10 +1030,14 @@ fn command(id: usize) {
         IDM_PAUSE_RESUME_UNTIL => net::pause(app, hwnd, TOK_FOREVER),
         IDM_RESUME => net::pause(app, hwnd, TOK_RESUME),
         other => {
-            /* THREE BLOCKS, each read out of the vector THIS open froze and
-               never out of the live Face. A recent file POSTs an open where a
-               card shell-opens a URL, so its range is tested first. */
-            if other >= IDM_RECENT_BASE {
+            /* FOUR BLOCKS, each read out of the vector THIS open froze and
+               never out of the live Face, highest range first. A recent file
+               POSTs an open where a card shell-opens a URL. */
+            if other >= IDM_BYPASS_BASE {
+                if let Some(body) = pick_bypass(&presses, other) {
+                    net::bypass(app, hwnd, body.to_string());
+                }
+            } else if other >= IDM_RECENT_BASE {
                 if let Some(url) = pick_recent(&recent, other) {
                     picked(&app, "recent file", url);
                     net::open_ref(app, url);
@@ -1160,10 +1296,11 @@ fn cut_units(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        IDM_CARD_BASE, IDM_RECENT_BASE, IDM_WAIT_BASE, LINE_MAX, Line, card_urls, cut, menu_label,
-        menu_model, pick, pick_recent, recent_urls, tooltip, with_version, art_index, TIP_MAX,
+        IDM_BYPASS_BASE, IDM_CARD_BASE, IDM_RECENT_BASE, IDM_WAIT_BASE, LINE_MAX, Line,
+        bypass_bodies, card_urls, cut, menu_label, menu_model, pick, pick_bypass, pick_recent,
+        recent_urls, tooltip, with_version, art_index, TIP_MAX,
     };
-    use crate::{Asleep, Card, Dot, Face, Recent};
+    use crate::{Asleep, Bypass, BypassOn, BypassSession, BypassTime, Card, Dot, Face, Recent};
 
     const BOARD: &str = "http://127.0.0.1:4321/s/";
     const SETTINGS: &str = "http://127.0.0.1:4321/s/notifications";
@@ -1193,6 +1330,7 @@ mod tests {
             pause_label: label.to_string(),
             asleep: 0,
             asleep_cards: Vec::new(),
+            bypass: None,
             told: true,
         }
     }
@@ -1215,7 +1353,9 @@ mod tests {
             .iter()
             .map(|l| match l {
                 Line::Counts(s) | Line::Grayed(s) => s.clone(),
-                Line::Card { label, .. } | Line::Item { label, .. } => label.clone(),
+                Line::Card { label, .. } | Line::Item { label, .. } | Line::Press { label, .. } => {
+                    label.clone()
+                }
                 Line::Submenu { label, .. } => label.clone(),
                 Line::Separator => "-".into(),
             })
@@ -1921,6 +2061,87 @@ mod tests {
 
         let m = menu_model(&recent_face(&[("T-86", 0, "ship & tell notes.md")]), None, None, None, None, BOARD);
         assert_eq!(cards_of(&m.lines)[0].0, "ship && tell notes.md");
+    }
+
+    /* ---- the placement bypass ----------------------------------- */
+
+    fn bypass_face(on: &[(u64, &str)]) -> Face {
+        let mut f = face(0, 0, &[], "");
+        f.bypass = Some(Bypass {
+            on: on.iter().map(|(n, l)| BypassOn { n: *n, label: (*l).into() }).collect(),
+            times: vec![
+                BypassTime { minutes: 15, label: "15 min".into() },
+                BypassTime { minutes: 60, label: "1 h".into() },
+            ],
+            sessions: vec![BypassSession { session: "sid-secret".into(), label: "Field bugs, PC two".into() }],
+        });
+        f
+    }
+
+    fn bypass_entries(lines: &[Line]) -> Vec<Line> {
+        lines
+            .iter()
+            .find_map(|l| match l {
+                Line::Submenu { label, entries } if label == "Task placement bypass" => Some(entries.clone()),
+                _ => None,
+            })
+            .expect("the bypass submenu")
+    }
+
+    fn sub_of(line: &Line) -> &[Line] {
+        match line {
+            Line::Submenu { entries, .. } => entries,
+            other => panic!("not a submenu: {other:?}"),
+        }
+    }
+
+    fn posted(line: &Line, frozen: &[String]) -> serde_json::Value {
+        let Line::Press { id, .. } = line else { panic!("not a press: {line:?}") };
+        serde_json::from_str(pick_bypass(frozen, *id).expect("frozen at its id")).unwrap()
+    }
+
+    /* both pickers, each line's id answering its own post from the frozen table,
+       and the session's id in the post and in no label */
+    #[test]
+    fn the_bypass_pickers_freeze_each_lines_post() {
+        let m = menu_model(&bypass_face(&[(3, "every session until 15:40"), (5, "Field bugs until it ends")]), None, None, Some(NOTIFY), None, BOARD);
+        let frozen = bypass_bodies(&m);
+        let entries = bypass_entries(&m.lines);
+
+        let every = sub_of(&entries[0]);
+        assert_eq!(labels(every), vec!["15 min", "1 h", "Until I turn it off"]);
+        assert_eq!(posted(&every[1], &frozen), serde_json::json!({"act": "on", "scope": "every", "minutes": 60, "until": "time"}));
+        assert_eq!(posted(&every[2], &frozen), serde_json::json!({"act": "on", "scope": "every", "until": "off"}));
+
+        let session = sub_of(&sub_of(&entries[1])[0]);
+        assert_eq!(labels(session), vec!["15 min", "1 h", "Until it ends"]);
+        assert_eq!(
+            posted(&session[0], &frozen),
+            serde_json::json!({"act": "on", "scope": "session", "session": "sid-secret", "minutes": 15, "until": "time"})
+        );
+        assert_eq!(
+            posted(&session[2], &frozen),
+            serde_json::json!({"act": "on", "scope": "session", "session": "sid-secret", "until": "ended"})
+        );
+        assert!(!format!("{:?}", labels(sub_of(&entries[1]))).contains("sid-secret"));
+        assert!(!labels(session).iter().any(|l| l.contains("sid-secret")));
+
+        /* the turn-off block: a greyed line and its press per switch, then all */
+        assert_eq!(
+            labels(&entries[2..]),
+            vec!["-", "every session until 15:40", "Turn off", "Field bugs until it ends", "Turn off", "Turn all off"]
+        );
+        assert_eq!(posted(&entries[6], &frozen), serde_json::json!({"act": "off", "n": 5}));
+        assert_eq!(posted(&entries[7], &frozen), serde_json::json!({"act": "off", "all": true}));
+        assert_eq!(pick_bypass(&frozen, IDM_BYPASS_BASE - 1), None);
+    }
+
+    /* nothing on draws no separator and no turn-off line */
+    #[test]
+    fn no_bypass_on_draws_no_turn_off_lines() {
+        let m = menu_model(&bypass_face(&[]), None, None, Some(NOTIFY), None, BOARD);
+        let entries = bypass_entries(&m.lines);
+        assert_eq!(labels(&entries), vec!["Every session", "One session"]);
     }
 
     /* BEFORE THE FIRST FRAME nothing is drawn from the stream at all, and the

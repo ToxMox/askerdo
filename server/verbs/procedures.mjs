@@ -60,6 +60,7 @@ function vouchOn(front, { at, by }) {
   const v = front.verified || {};
   const was = front.vouched && v.self === front.vouched.head ? front.vouched.was : v.self;
   front.verified = { ...v, self: at };
+  delete front.readCurrent;
   front.vouched = { head: at, ...(by && by !== at ? { by } : {}), ...(was ? { was } : {}) };
   return at === by ? 'verified at ' + at.slice(0, 7) + ' by the conversion handover, which wrote this card or found it current before its first commit'
     : 'verified commit kept at ' + at.slice(0, 7) + ', its base before the conversion handover edited it, so the edit is no run';
@@ -318,7 +319,7 @@ export function recordRun(db, { name, result, note, fixed, oneOff, filed, projec
       front.lastRun = ctx.at;
       if (Array.isArray(stale)) front.stale = stale;
       /* a clean run's commit is the run's own record, never the handover's to withdraw */
-      if (result === 'clean') { front.verified = verified; front.verifiedAt = ctx.at; delete front.vouched; }
+      if (result === 'clean') { front.verified = verified; front.verifiedAt = ctx.at; delete front.vouched; delete front.readCurrent; }
       if (outcome && outcome.kind === 'filed') { front.filedTasks = filedTasks; front.flag = lead; }
       else if (!waits.length) front.flag = '';
     }, ctx, runNote);
@@ -328,6 +329,23 @@ export function recordRun(db, { name, result, note, fixed, oneOff, filed, projec
       ...(outcome ? { outcome: { kind: outcome.kind, ref: outcome.ref, ...(step ? { step } : {}) } } : {}), ...(waits.length ? { openTasks: waits } : {}),
       ...(f.cleanRuns >= SCRIPT_AFTER ? { suggestScript: f.id + ' ran clean ' + f.cleanRuns + ' times in a row: its steps could become a script, with the file pointing at it.' } : {}),
     };
+  });
+}
+
+/* `proc read <name>`: a session read the card against the changes and found it current. The commit it read at counts
+   for staleness apart from a run: the verified commit and the run counts stay, and the next clean run clears it. */
+export function recordRead(db, { name, note, project = '', repo = '', heads = {}, stale } = {}, actor) {
+  if (!heads.self) throw new UsageError('a read names the commit it read at');
+  const text = String(note || '').replace(/\s+/g, ' ').trim();
+  const home = project ? normPath(project) : '';
+  return tx(db, () => {
+    const { row } = cardNamed(db, name, home, repo || home.toLowerCase(), actor);
+    const ctx = actorOf(actor);
+    const f = updateCard(db, row, (front) => {
+      front.readCurrent = { heads, at: ctx.at, ...(text ? { note: text } : {}) };
+      if (Array.isArray(stale)) front.stale = stale;
+    }, ctx, 'read current at ' + heads.self.slice(0, 7) + (text ? ': ' + text : ''));
+    return { id: f.id, slug: f.slug, name: f.name, readCurrent: f.readCurrent, stale: f.stale || [] };
   });
 }
 

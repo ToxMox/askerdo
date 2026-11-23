@@ -97,6 +97,15 @@ const CITE = /(?<![\w/.:@~$%-])((?:[\w.-]+\/)+(?:[\w*-]+(?:\.[\w*-]+)*\.[A-Za-z0
    placeCite puts the note past a code span's backticks or a link's closing parenthesis */
 export const IN_GIT = /^[`\])]* \(in git at [0-9a-f]+\)/;
 
+/* a file that states the board in its own words (a workstream and a resume command) takes no section beside them */
+export const statesBoard = (text) => !/^##\s+AskerDo\s*$/m.test(text) && /\bWS-\d+\b/.test(text) && /\/askerdo resume\b/.test(text);
+/* the tracks such a file resumes, when the board holds them all and all are closed; a track it does not hold is not judged */
+export function closedResume(text, tracks) {
+  const named = [...new Set([...String(text).matchAll(/\/askerdo resume (TR-\d+)/g)].map((m) => m[1]))];
+  const state = new Map((tracks || []).map((t) => [t.id, t.state]));
+  return named.length && named.every((id) => ['done', 'dropped', 'folded'].includes(state.get(id))) ? named : [];
+}
+
 /* Each path a text names, with its line and whether an instruction file imports it (`@path`). */
 export function citesOfText(text) {
   const out = [];

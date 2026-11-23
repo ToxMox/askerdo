@@ -5,7 +5,7 @@ import { tempDir } from './helpers/sandbox.mjs';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { callOf, checkCards, checkKnowledge, checkRules, checkShape, checkTasks, doctor, reconcile, scopeHit } from '../skills/doctor/checks.mjs';
+import { callOf, checkCards, checkKnowledge, checkRepo, checkRules, checkShape, checkTasks, doctor, heldOnce, reconcile, scopeHit } from '../skills/doctor/checks.mjs';
 import { buildPlan } from '../skills/onboard/plan.mjs';
 import { undoArgs } from '../skills/onboard/apply.mjs';
 
@@ -93,6 +93,10 @@ test('a rule line citing a file the repo lacks and a task on no track become che
   assert.deepEqual(shaped[0].fields.moves.map((m) => [m.check, m.track, m.wake]), [[3, 'TR-4', 'next-session']]);
   /* from a session holding that track the ladder takes it at tier 2 */
   assert.equal(checkTasks(tdoc, { ...textra, held: 'TR-4' })[0].fields.moves[0].tier, 2);
+  /* a look task's steps are the look, and a step judged wrong stays judged while its words are the same */
+  const flagged = (over, more = {}) => checkTasks(tdoc, { ...textra, ...more, blocks: new Map([...textra.blocks].map(([k, b]) => [k, k === 'T-1' ? { ...b, ...over } : b])) }).some((r) => r.id.endsWith('T-1:steps'));
+  const judgedSteps = new Set(shaped[0].fields.steps.map((s) => s.key));
+  assert.deepEqual([flagged({ labels: ['look'] }), flagged({}, { judgedSteps }), flagged({ steps: [{ n: 2, text: 'Sam looks at the band again' }] }, { judgedSteps })], [false, false, true]);
   assert.ok(!checkShape(tdoc, { inbox: [] }).some((r) => /T-5/.test(r.id)));
   const look = shaped[1].fields.fix;
   assert.deepEqual(undoArgs({ fix: true, op: look.op, args: look.args, target: look.target }), ['task', 'edit', 'T-2', '--remove-label', 'look']);
@@ -188,5 +192,31 @@ console.log(JSON.stringify(o || (a.includes('--project') ? { questions: [] } : [
   assert.equal(checkCards(doc, cards(1)).length, 0);
   writeFileSync(join(repo, 'CLAUDE.md'), '# Ops, by hand\n');
   git('commit', '-q', '-am', 'a hand edit');
-  assert.equal(checkCards(doc, cards(2)).length, 1);
+  const [row] = checkCards(doc, cards(2));
+  assert.deepEqual([checkCards(doc, cards(2)).length, row.fields.fix.op], [1, 'proc read'], 'a changed path is a read of the card, one row a card');
+  /* a template and a path git never held are no gone files; one a commit deleted is */
+  writeFileSync(join(repo, 'old.json'), '{}\n');
+  git('add', 'old.json');
+  git('commit', '-q', '-m', 'add');
+  git('rm', '-q', 'old.json');
+  git('commit', '-q', '-m', 'remove');
+  const said = (text, decisions = []) => checkRules({ ...doc, board: { profiles: [{ profile: 'ops', here: true, lines: [] }], decisions, rules: [{ rule: 'l', text, source: 'ops on ' + repo }] } }, { files: [] });
+  assert.equal(said('Keep `notes/<package>-state.md` and the phone file `files/play.json`.').length, 0);
+  assert.equal(said('Read `old.json` first.').length, 1);
+  /* a folder a commit deleted and a file moved under a new parent were held; a folder git never had was not */
+  for (const f of ['gone/a.md', 'notes/plan.md']) { mkdirSync(join(repo, f, '..'), { recursive: true }); writeFileSync(join(repo, f), 'one\ntwo\nthree\n'); }
+  git('add', 'gone', 'notes');
+  git('commit', '-q', '-m', 'add the two');
+  git('rm', '-q', '-r', 'gone');
+  mkdirSync(join(repo, 'archive'));
+  git('mv', 'notes', 'archive/notes');
+  git('commit', '-q', '-m', 'delete one, move the other');
+  const once = heldOnce(repo);
+  assert.deepEqual(['gone/', 'gone', 'notes/plan.md', 'phone/files'].map(once), [true, true, true, false]);
+  /* a file stating the board by a closed track is a finding; by a live one it is not */
+  const states = (id, head = 'On the board, WS-3.') => { writeFileSync(join(repo, 'CLAUDE.md'), head + ' Resume with `/askerdo resume ' + id + '`.\n'); return checkRepo({ ...doc, board: { tracks: [{ id: 'TR-1', state: 'done', workstream: 'WS-3' }, { id: 'TR-2', state: 'waiting', workstream: 'WS-3' }] } }, { files: ['CLAUDE.md'] }).filter((x) => x.id.includes('closed-resume')); };
+  assert.deepEqual([states('TR-1').length, states('TR-2').length, states('TR-1', '## AskerDo\n\n-').length], [1, 0, 1]);
+  /* an outside document's section numbers are no difference from a ruling on another subject */
+  const r3 = [{ id: 'K-9', title: 'R3', ruling: 'It must work on any Google Home or Nest speaker, not one model.' }];
+  assert.equal(said('Before advice on a Google Home or Nest speaker, read the Cast terms 3.2 and 3.4.2.', r3).length, 0);
 });

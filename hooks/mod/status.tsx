@@ -9,7 +9,7 @@ type CardPart = { text: string; tone?: string; pic?: any; href?: string; weight?
 /* an agent's row in its card, its depth bar drawn on the desktop */
 type CardRow = { id: string; job: string; detail: string; tone: string; done?: boolean; meter?: any; under?: number }
 export type StatusSegment = {
-  key: string; text: string; tone: string; tip: string; press?: string; href?: string; pic?: any; empty?: boolean
+  key: string; text: string; tone: string; tip: string; press?: string; href?: string; pic?: any; empty?: boolean; short?: string
   card?: { title: string; parts: CardPart[]; press?: string; rows?: CardRow[]; head?: CardHead; groups?: CardFact[][]; where?: CardFact[] | null; questions?: any[]; here?: any; foot?: string; asleep?: any[]; asleepMore?: number }
 }
 /* a tooltip's head and its groups of facts, each led by a picture */
@@ -253,7 +253,7 @@ function deskCard(els: any, s: StatusSegment, svg: any, pressed: boolean, cols?:
   ]
 }
 
-/* the mark's asleep rows after its folder and branch, each the dim crescent, the name and what wakes it dim */
+/* the mark's asleep rows after its folder and branch, each the dim crescent, the number and name, what wakes it dim */
 function asleepGroup(els: any, c: NonNullable<StatusSegment['card']>, k: string): any {
   const { Box, Svg, Text } = els
   const rows = c.asleep || []
@@ -271,7 +271,7 @@ function asleepGroup(els: any, c: NonNullable<StatusSegment['card']>, k: string)
       </Box>
     )
   }
-  const facts: CardFact[] = rows.map((q: any) => ({ lead: moon, lines: [[{ text: q.name + (q.project ? ', in ' + q.project : '') }, { text: 'asleep ' + q.wake, tone: 'dim' }]] }))
+  const facts: CardFact[] = rows.map((q: any) => ({ lead: moon, lines: [[{ text: q.id + ' ' + q.name + (q.project ? ', in ' + q.project : '') }, { text: q.wake, tone: 'dim' }]] }))
   const more = c.asleepMore ? [{ lead: moon, lines: [[{ text: 'and ' + c.asleepMore + ' more in the Questions tab', tone: 'dim' }]] }] : []
   /* a long wake wraps on with the name */
   const long = (l: CardPart[], key: string) => line(l, key) || (l.length > 1 ? <Box key={key}><Text wrap="wrap">{l[0].text}<Text dimColor>{', ' + l[1].text}</Text></Text></Box> : null)
@@ -530,7 +530,7 @@ export const partsLive = (s: StatusSegment): any => ({ parts: ((s.card && s.card
    task's and the track's icons, then the rate rings (the pane's copy wraps instead); the mark with its
    count and the context ring always stay. `over`: a segment's label cut (a string) or dropped (null);
    `gone`: a segment not drawn. */
-const SHRINK = ['task', 'hour', 'week', 'agents', 'health']
+const SHRINK = ['task', 'hour', 'week', 'agents', 'health', 'bypass']
 const LAST = ['shelf', 'task', 'thread', 'week', 'hour']
 const TRACK_MIN = 4
 const TASK_MIN = 6
@@ -598,8 +598,10 @@ function shrinkPlan(segs: StatusSegment[], budget: number | undefined, desk: boo
     if (width(1) <= budget) return { gap: 1, over, gone }
   }
   for (const k of SHRINK) {
-    if (!segs.some((s) => s.key === k)) continue
-    over.set(k, null)
+    const s = segs.find((x) => x.key === k)
+    if (!s) continue
+    /* a bypass's countdown stays when its word goes */
+    over.set(k, s.short ?? null)
     if (width(1) <= budget) return { gap: 1, over, gone }
   }
   /* the pane's copy wraps instead */

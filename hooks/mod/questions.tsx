@@ -133,8 +133,8 @@ export function questionsTree(els: any, m: any, view: QuestionsView, act: Questi
   return <Box key="questions" flexDirection="column" rowGap={1}>{rows}</Box>
 }
 
-/* the snoozed questions last, under a dim heading shut until pressed; open, each its name in full,
-   what wakes it dim (the waking record linked), and a Wake press that takes no model turn */
+/* the snoozed questions last, under a dim heading shut until pressed; open, each its number and name
+   in full, opening its page, what wakes it dim (the waking record linked), and a Wake press that takes no model turn */
 function asleepFold(els: any, list: any[], open: boolean, act: QuestionsActions, columns?: number, surface?: string, keep?: number): any {
   const { Box, Button, Svg, Text } = els
   const desk = surface === 'desktop' && !!Svg
@@ -161,10 +161,13 @@ function asleepFold(els: any, list: any[], open: boolean, act: QuestionsActions,
     const wake = linkLine(els, parts, 'asleep-wake-' + q.id, desk, false) || <Text dimColor wrap="wrap">{pieces.map((p: any) => p.text).join('')}</Text>
     const press = st === 'busy' ? <Text dimColor>waking</Text>
       : <Button key={'wake-' + q.id} label="Wake" onPress={() => { if (act.wake) act.wake(q.id) }} />
+    const where = q.project ? ', in ' + q.project : ''
+    const title = (q.href ? linkLine(els, [{ text: q.id, href: q.href, tone: 'sky' }, { text: ' ' + q.name, href: q.href }, ...(where ? [{ text: where, href: q.href, tone: 'dim' }] : [])], 'asleep-open-' + q.id, desk) : null)
+      || <Text wrap="wrap"><Text bold>{q.id}</Text>{' ' + q.name}{where ? <Text dimColor>{where}</Text> : ''}</Text>
     return (
       <Box key={'asleep-' + q.id} flexDirection="row" columnGap={1} alignItems="flex-start">
         <Box key={'asleep-text-' + q.id} flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
-          <Text wrap="wrap">{q.name}{q.project ? <Text dimColor>{', in ' + q.project}</Text> : ''}</Text>
+          {title}
           <Box key={'asleep-when-' + q.id} minWidth={0}>{wake}</Box>
           {st && st !== 'busy' ? <Text color="warning" wrap="wrap">{st}</Text> : null}
         </Box>

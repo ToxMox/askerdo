@@ -712,10 +712,13 @@ export function world(on: any, opts: { store?: Record<string, unknown>; server?:
     taskRuns: (i) => ({ task: i.task, key: 'k' + i.task, runs: w.boardRuns.filter((r: any) => r.tasks.includes(String(i.task))).sort((a: any, b: any) => b.run - a.run).map(shapeRun) }),
   }
   /* a board verb passed through: the pressed row leaves, its asker's inbox hears it */
+  w.bypassEnds = [] as any[]
   w.serverBy['/local/verbs/'] = (e: any) => {
     if (w.serverDown) refused()
     const name = decodeURIComponent(String(e.url).split('/local/verbs/')[1])
     const body = JSON.parse(e.init.body)
+    /* every session's start and end sends it, so it is kept apart from the verbs a case counts */
+    if (name === 'bypassEnded') { w.bypassEnds.push(body.input); return answer(200, { ok: true, result: { ended: 0 } }) }
     w.verbs.push({ name, body })
     if (w.fail[name]) return answer(400, { ok: false, error: w.fail[name] })
     if (Object.hasOwn(runVerbs, name)) {
@@ -779,7 +782,7 @@ export function world(on: any, opts: { store?: Record<string, unknown>; server?:
     const get = ((e.init && e.init.method) || 'GET') === 'GET'
     const call = /\/local\/(cli|mod|look)$/.test(String(e.url))
     /* the run verbs (the run timer's among them) are read from w.verbs, never with the alert's posts */
-    const run = /\/local\/verbs\/(openRun|renewLease|renewRuns|endRun|sessionRuns|taskRuns|trackView|decisionsFor)$/.test(String(e.url))
+    const run = /\/local\/verbs\/(openRun|renewLease|renewRuns|endRun|sessionRuns|taskRuns|trackView|decisionsFor|bypassEnded)$/.test(String(e.url))
     ;(get ? w.reads : call ? w.posts : run ? w.runPosts : w.fetches).push({ url: e.url, init: e.init, body: JSON.parse((e.init && e.init.body) || '{}') })
     const hit = (by: Record<string, any>) => { const k = Object.keys(by).find((x) => String(e.url).includes(x)); return k ? by[k] : undefined }
     const v = hit(w.fetchBy) ?? hit(w.serverBy) ?? w.fetchAnswer

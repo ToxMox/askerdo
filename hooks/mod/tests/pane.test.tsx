@@ -1,8 +1,8 @@
 /* The AskerDo pane (its Home and Tracks tabs) and the AskUserQuestion redraw under `claude plugin test`, on the terminal and the desktop. */
 import { describe, expect, test } from 'claude-code/testing'
 import { COLD_START, HEAVY, plain, pressAgain, start, world } from './world.ts'
-import { PX_ROW } from '../home.tsx'
-import { paneCells } from '../fold.tsx'
+import { CELL_NARROW, paneCells } from '../fold.tsx'
+import { qrPicture } from '../settings.tsx'
 
 const PLUGIN = 'askerdo'
 const PANE_ID = 'askerdo'
@@ -409,6 +409,28 @@ describe('the AskerDo pane', () => {
 
   /* the held track's lines by default, the switch the whole workstream; a press
      selects and fills the strip, the second opens; the picture fits the width the pane reports */
+  test('Home reads its drift line again once a rule edit mends the cause, and not on a load where nothing moved', async ($: any, on: any) => {
+    const w = world(on)
+    w.drift = { text: 'Drift: rule r cites docs/gone.md (missing)', watch: ['docs/gone.md'], doctor: false }
+    await start($, w, 'desktop')
+    const ui = await mount($, 'desktop', 'home')
+    await w.clock.settle()
+    expect(!!(await ui.find({ key: 'home-drift' }))).toBe(true)
+    const reads = () => w.runs.filter((r: any) => r.script.endsWith('drift.mjs')).length
+    const before = reads()
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    expect(reads()).toBe(before)
+    w.drift = null
+    w.profilesAt = 1
+    w.change()
+    await w.clock.advance(15000)
+    await w.clock.settle()
+    expect(reads()).toBe(before + 1)
+    expect(await ui.find({ key: 'home-drift' })).toBeUndefined()
+    await ui.unmount()
+  })
+
   test("Home draws the held track's lines and switches to the whole workstream; a press selects, the next opens; its heading folds it, kept on this PC", async ($: any, on: any) => {
     /* Where we stand shut before a restart, as the store keeps it, which answers a moment late
        after the restart (registered before the world's, so it stands above that answer) */
@@ -485,10 +507,13 @@ describe('the AskerDo pane', () => {
       if (surface === 'desktop') {
         await ui.press({ key: 'graph-all' })
         expect((await pic(ui)).source).toContain('data-k="pill:TR-6"')
-        /* each press lies where its thing is drawn, down the whole picture: a Box's top margin
-           counts the engine's half-line rows, the row unit Home draws with */
-        const zones = (await ui.findAll({ type: 'Box' })).filter((z: any) => /^gz-/.test(String(z.key)))
-        const tops = zones.map((z: any) => [Number(String(z.key).split('-').pop()), z.props.marginTop * PX_ROW])
+        /* each press lies where its thing is drawn, down the whole picture, as a share of
+           its height that holds at any font: the rows above it in the column grow by its top */
+        const boxes = await ui.findAll({ type: 'Box' })
+        const tops = boxes.filter((z: any) => /^gz-/.test(String(z.key))).map((z: any) => {
+          const above = boxes.find((b: any) => b.key === String(z.key).replace(/^gz-/, 'gza-'))
+          return [Number(String(z.key).split('-').pop()), above ? above.props.flexGrow : 0]
+        })
         expect([tops.some(([y]) => y > 40), tops.filter(([y, top]) => Math.abs(y - top) > 0.5)]).toEqual([true, []])
         /* the workstream's inbox opened, a row's wake names the track it waits on, and the due row's reads due in amber */
         await ui.press({ key: 'fold-inbox' })
@@ -505,7 +530,7 @@ describe('the AskerDo pane', () => {
     /* a narrow pane draws for its own width, never shrunk from a wider picture */
     /* at the narrowest pane (238 px) the long name, wider than the line, wraps whole at a word, or ends in an ellipsis */
     const narrow = await mount($, 'desktop', 'home', PANE_ID, { ...PANE, bodyColumns: 28 })
-    expect((await pic(narrow)).width).toBeLessThanOrEqual(28 * 8.453)
+    expect((await narrow.find({ key: 'graph-pic' }))!.props.width).toBeLessThanOrEqual(28)
     const crumbLine = String(await textOf(narrow, 'graph-crumbs')).replace(String(await textOf(narrow, 'crumb-hold')), '')
     const crumbWords = crumbLine.slice(crumbLine.indexOf('TR-3')).trim(), wholeCrumb = 'TR-3 ' + view.tracks[0].name, cutAt = crumbWords.replace(/…$/, '')
     /* longer than a line, wrapping, and whole or cut at a word with its ellipsis */
@@ -654,6 +679,8 @@ describe('the AskerDo pane', () => {
       const code = async () => (await ui.findAll({ type: 'Svg' })).find((n: any) => String(n.props.alt).startsWith('QR code'))
       if (surface === 'desktop') expect((await code())!.props.source).toContain('viewBox="0 0 29 29"')
       else expect((await ui.find({ key: 'set-phone-url' }))!.text).toContain('/login/once')
+      /* at the narrowest pane under the System font (31 cells of 7.547 px) a sign-in code stays inside its card */
+      expect(qrPicture(Array(37).fill('1'.repeat(37)), 31).width).toBeLessThanOrEqual((31 - 3) * CELL_NARROW)
       expect((await ui.find({ key: 'set-row-phone' }))!.text).toContain('once, until')
       await w.clock.advance(21000)
       await w.clock.settle()

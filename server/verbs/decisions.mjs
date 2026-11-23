@@ -6,7 +6,7 @@ import { readTx, tx } from '../db.mjs';
 import { actorOf, labelOf, logRow } from '../records.mjs';
 import { UsageError, loadEntry, resolveRecord, shownFront } from './labels.mjs';
 import { WORK_KINDS, knowledgePayload, markSuperseded, mintKnowledge, orderFront, projectName, shownSectionsOf } from './work.mjs';
-import { answer, parseOptions, questionSections } from './questions.mjs';
+import { answer, goAnswersIt, parseOptions, questionSections } from './questions.mjs';
 import { isPlacement, userAnswersIt } from './placement-answer.mjs';
 
 const ACTIVE = `SELECT key, fields, body FROM records WHERE kind = 'knowledge' AND status = 'active'
@@ -70,6 +70,7 @@ function settleQuestion(db, f, actor) {
   if (!front || (front.status !== 'open' && front.status !== 'snoozed')) return {};
   /* a ruling never answers a placement question: it stays open for the user's own act */
   if (isPlacement(front)) return { warning: userAnswersIt(front.id) + '; this ruling left it open' };
+  if (front.goOption) return { warning: goAnswersIt(front.id) + '; this ruling left it open' };
   const num = String(front.id).replace(/^Q/, '');
   // Only the question's own option letters count, and a space only after the Q: "the 3 a.m. build" answers nothing.
   const letters = parseOptions(questionSections(q.body || '', '').sections['Options'])

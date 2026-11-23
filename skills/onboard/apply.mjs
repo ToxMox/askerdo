@@ -23,7 +23,7 @@ import { coverage, lineEditHeld, recordReader, repointGaps, table } from './cove
 import { SESSION_READS, citer, fencedLines, folderRe, fromRoot, inText, isGlob, linksIn, MD, nearestOf, printed, relFrom, resolveFrom, UP_PATH, wrapLead } from './cites.mjs';
 import { CALL, NONE, RUN, blobsOf, boardRecords, folderSig, isFolder, parseTree } from './map.mjs';
 import { blockAt } from './survey.mjs';
-import { DEFAULT_MODE, instructionFiles, kindOf as fileKind, pathsFront } from './instructions.mjs';
+import { DEFAULT_MODE, closedResume, instructionFiles, kindOf as fileKind, pathsFront, statesBoard } from './instructions.mjs';
 import { refreshAgentsOverride } from '../../lib/agents-override.mjs';
 
 const DEFAULT_CLI = join(homedir(), '.claude', 'askerdo', 'cli.mjs');
@@ -129,7 +129,7 @@ const KIND = {
 const FIX_KIND = {
   'profile rule-add': 'rule line', 'profile rule-clear': 'rule clear', 'knowledge amend': 'knowledge amend', 'knowledge edit': 'knowledge ref',
   'knowledge supersede': 'knowledge supersede', 'track park': 'park condition', 'edge add': 'task edge', 'question edit': 'question gate',
-  wake: 'question wake', drop: 'question drop',
+  wake: 'question wake', drop: 'question drop', 'proc read': 'card read',
 };
 /* a task fix is named by what it changes */
 const taskFixKind = (s) => {
@@ -849,7 +849,7 @@ export function rehearsalReport(work, { plan, manifest, cov, written = [], undo 
   out.push('## Coverage', '', table(cov), '');
   const gates = gatesOf(plan, cov, repoState(plan.project.dir));
   const go = gates.filter((g) => g.go);
-  out.push('## The handover, one commit on the go', '', '- ' + (plan.cards || []).length + ' cards, ' + (plan.lineEdits || []).length + ' line edits of kept files, ' + (plan.claude || []).length + ' instruction files from their ledgers.');
+  out.push('## The handover, one commit on the go', '', '- ' + (plan.cards || []).length + ' cards, ' + (plan.lineEdits || []).length + ' line edits of kept files, ' + (plan.claude || []).length + ' instruction files from their ledgers.', ...sectionSaid(plan, ((readFacts(work) || {}).board || plan.board || {}).tracks));
   out.push(...go.map((g) => '- ' + g.path + ': ' + (g.end === 'move' ? 'moves to ' + g.to : g.end === POINT ? 'a pointer at ' + g.to : g.end === 'retire' ? 'retires' : 'goes') + ' (' + counted(g.files, 'file') + ')'));
   out.push(...gates.filter((g) => g.hold).map((g) => '- ' + g.path + ' stays: ' + g.why), '');
   if ((plan.unlinked || []).length) out.push('## Links the plan dropped', '', ...plan.unlinked.map((u) => '- ' + (u.kind || 'Edge') + ': ' + u.item + ' names ' + u.names + ', which ' + u.why + '.'), '');
@@ -962,6 +962,13 @@ export function claudeText(text, claude, board) {
   const body = kept.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '');
   return board ? body + '\n\n## AskerDo\n\n' + boardParagraph(board) + '\n' : body + '\n';
 }
+export const sectionSaid = (plan, tracks) => {
+  const was = plan.section ? readText(join(plan.project.dir, plan.section)) : null;
+  if (was === null) return [];
+  const closed = statesBoard(was) ? closedResume(was, tracks) : [];
+  if (closed.length) return ['- ' + plan.section + ' resumes only ' + closed.join(', ') + ', which the board has closed: it gains no AskerDo section, and its resume command needs a live track.'];
+  return ['- ' + plan.section + (statesBoard(was) ? ' already states the board, so it gains no AskerDo section.' : /^##\s+AskerDo\s*$/m.test(was) ? ': its AskerDo section is written again.' : ' gains an AskerDo section.')];
+};
 export function boardParagraph({ workstream, track, profile, label } = {}) {
   const names = [].concat(profile || []);
   const ws = [].concat(workstream || []);
@@ -1524,19 +1531,22 @@ export async function handover(work, { board = 'live', cli = DEFAULT_CLI, file =
     stays = ledgers.filter((x) => mine(x.ledger.path)).flatMap((x) => x.back);
     if (stays.length) log('Clauses that stay while what they load is held (' + stays.length + '):\n  ' + stays.map((s) => s.path + ': ' + s.why).join('\n  '));
     for (const l of ledgers.map((x) => x.ledger).filter((x) => mine(x.path) && !done('rewrite', x.path))) {
-      if (!l.clauses.some((c) => c.fate === 'carried' || c.fate === 'dropped' || c.fate === 'split') && l.path !== section) continue;
+      const moves = l.clauses.some((c) => c.fate === 'carried' || c.fate === 'dropped' || c.fate === 'split');
+      if (!moves && l.path !== section) continue;
       const c = (cov.claude || []).find((x) => x.path === l.path);
       if (c && c.blocked) { skipped.push({ path: l.path, why: c.gaps.length + ' clauses with no fate or backing (apply.mjs --coverage lists them)' }); continue; }
       if (repo.changed.has(l.path)) { skipped.push({ path: l.path, why: 'it has uncommitted changes, which a commit of its path would carry' }); continue; }
       /* never a new instruction file (a CLAUDE.md would hide an AGENTS.md Claude reads), and only one git keeps */
       const was = readText(join(dir, l.path));
       if (was === null) { skipped.push({ path: l.path, why: 'it is not in the repo, and the handover makes no instruction file' }); continue; }
+      const own = l.path === section && statesBoard(was);
+      if (own && !moves) continue;
       /* a private file (CLAUDE.local.md, or one git ignores) is never committed: its skip is expected, not a failure */
       const priv = /(^|\/)CLAUDE\.local\.md$/i.test(l.path) || !repo.untracked.includes(l.path);
       if (!repo.tracked.has(l.path)) { skipped.push({ path: l.path, why: 'git does not track it, so its words would have no copy: edit it by hand on the user\'s word', ...(priv ? { expected: true } : {}) }); continue; }
       let text;
-      try { text = eolLike(join(dir, l.path), claudeText(was, l, l.path === section ? boardIds(manifest, plan, undefined, was) : null)); } catch (e) { skipped.push({ path: l.path, why: e.message }); continue; }
-      const left = l.path === section ? stateProblems(text.slice(text.lastIndexOf('## AskerDo')), { state: 10240, line: 400 }) : [];
+      try { text = eolLike(join(dir, l.path), claudeText(was, l, l.path === section && !own ? boardIds(manifest, plan, undefined, was) : null)); } catch (e) { skipped.push({ path: l.path, why: e.message }); continue; }
+      const left = l.path === section && !own ? stateProblems(text.slice(text.lastIndexOf('## AskerDo')), { state: 10240, line: 400 }) : [];
       if (left.length) { skipped.push({ path: l.path, why: 'the board paragraph does not fit: ' + left.join('; ') }); continue; }
       /* a rewrite that changes nothing (a doctor run that moves no clause) has nothing to commit */
       if (text === readFileSync(join(dir, l.path), 'utf8')) continue;

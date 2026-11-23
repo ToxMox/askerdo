@@ -14,7 +14,7 @@ const GROUPS = [
   ['Conversion map', ['conversion', 'conversion put', 'conversion drop', 'purge']],
   ['Knowledge and decisions', ['knowledge new', 'knowledge supersede', 'knowledge amend', 'knowledge edit', 'knowledge retire', 'knowledge reinstate', 'decide', 'decisions', 'decisions triggers']],
   ['Settings and profiles', ['settings', 'settings set', 'settings unset', 'settings rule', 'profile add', 'profile remove', 'profile show-effective', 'profile rule-add', 'profile rule-drop', 'profile rule-clear', 'profile define', 'profile delete', 'profile list', 'profile guard']],
-  ['Procedures', ['proc scan', 'proc ran', 'proc drafts', 'proc find', 'proc triggers']],
+  ['Procedures', ['proc scan', 'proc ran', 'proc read', 'proc drafts', 'proc find', 'proc triggers']],
   ['Overrides', ['override request', 'override decide', 'override unscrub']],
   ['This PC and the board', ['board', 'board here', 'timings', 'projects', 'projects scan', 'projects forget', 'projects rename', 'login', 'join-code', 'join', 'upkeep', 'upkeep on', 'upkeep off', 'status', 'board move', 'backup', 'restore', 'legacy', 'help']],
 ];

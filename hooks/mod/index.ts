@@ -341,7 +341,7 @@ function routeVersion($: any, env: Record<string, string>): Promise<string> {
 }
 
 /* the scripts the local server runs in process (lib/mod-scripts.mjs) */
-const ROUTED_SCRIPTS = ['mod-alias', 'mod-contract', 'mod-inbox', 'mod-queue', 'rules', 'depth-marker', 'drift', 'mod-carrier']
+const ROUTED_SCRIPTS = ['mod-alias', 'mod-contract', 'mod-inbox', 'mod-queue', 'rules', 'depth-marker', 'drift', 'mod-carrier', 'placement-press']
 
 /* Which route runs an argv, or null for a process. */
 function routeOf(argv: string[]): { path: string; args: string[] } | null {
@@ -719,7 +719,11 @@ async function followFolder($: any): Promise<void> {
   feed.own = undefined
   /* the old project's scope too, so its Needs-you link goes with it */
   band.scope = undefined
+  /* a read in flight is of the old folder: its answer must not land here */
+  drift.gen++
   drift.line = null
+  drift.key = undefined
+  drift.watch = []
   kick($, true)
   void readWhere($).then(() => readDrift($)).catch(() => {})
 }
@@ -760,28 +764,47 @@ async function readWhere($: any): Promise<void> {
   }
 }
 
-/* the drift line on Home, read once per folder: at the session's start and after a
-   move, never per turn or on a timer. Off when the rules say doctor.drift is false; no band, no toast */
-const drift: { root?: string; line: { text: string; doctor: boolean } | null; gen: number } = { line: null, gen: 0 }
+/* the drift line on Home, read at the session's start and again at a band load
+   once what it reads moved: the folder, a profile, a doctor or onboard run, CLAUDE.md, AGENTS.md or a
+   path the line names. A few stats per load, the read itself never per turn or on a timer.
+   Off when the rules say doctor.drift is false; no band, no toast */
+const drift: { key?: string; watch: string[]; checking?: boolean; again?: boolean; line: { text: string; doctor: boolean } | null; gen: number } = { watch: [], line: null, gen: 0 }
+async function driftKey($: any, root: string): Promise<string> {
+  const near = band.near || {}
+  const stamps = await Promise.all(['CLAUDE.md', 'AGENTS.md', ...drift.watch].map(async (f) => {
+    try { const st = await $.fs.stat(root + '/' + f.replace(/\/+$/, '')); return f + ':' + st.size + ':' + st.mtimeMs } catch { return f + ':-' }
+  }))
+  return [root, guard.profilesAt ?? '', near.cardsAt ?? '', ...stamps].join('|')
+}
 async function readDrift($: any): Promise<void> {
   const root = where.now && where.now.root
   /* after the band's first load too, which carries the held track the rules read keys on */
-  if (!root || !band.loaded || drift.root === root) return
-  drift.root = root
-  const gen = ++drift.gen
-  /* the prompt's own cached rules read; with no board the setting is its default, on */
-  const b = await readRules($).catch(() => null)
-  if (gen !== drift.gen) return
-  let line: any = null
-  if (!(b && b.values && b.values['doctor.drift'] === false)) {
-    const r = await spawn($, ['node', $.plugin.root + '/scripts/drift.mjs', '--root', root], { timeoutMs: 15000, stdin: JSON.stringify((b && b.rows) || []) }).catch(() => null)
-    try { line = r && r.exitCode === 0 ? JSON.parse(String(r.stdout || '')) : null } catch {}
+  if (!root || !band.loaded) return
+  /* a call during a read runs once after it, so a folder's move is never left unread */
+  if (drift.checking) { drift.again = true; return }
+  drift.checking = true
+  try {
+    if ((await driftKey($, root)) === drift.key) return
+    const gen = ++drift.gen
+    /* the prompt's own cached rules read; with no board the setting is its default, on */
+    const b = await readRules($).catch(() => null)
+    if (gen !== drift.gen) return
+    let line: any = null
+    if (!(b && b.values && b.values['doctor.drift'] === false)) {
+      const r = await spawn($, ['node', $.plugin.root + '/scripts/drift.mjs', '--root', root], { timeoutMs: 15000, stdin: JSON.stringify((b && b.rows) || []) }).catch(() => null)
+      try { line = r && r.exitCode === 0 ? JSON.parse(String(r.stdout || '')) : null } catch {}
+    }
+    if (gen !== drift.gen) return
+    drift.watch = line && Array.isArray(line.watch) ? line.watch.map(String) : []
+    drift.key = await driftKey($, root)
+    const next = line && typeof line.text === 'string' ? { text: line.text, doctor: !!line.doctor } : null
+    if ((next && next.text) === (drift.line && drift.line.text)) return
+    drift.line = next
+    laterRedraw($)
+  } finally {
+    drift.checking = false
+    if (drift.again) { drift.again = false; void readDrift($).catch(() => {}) }
   }
-  if (gen !== drift.gen) return
-  const next = line && typeof line.text === 'string' ? { text: line.text, doctor: !!line.doctor } : null
-  if ((next && next.text) === (drift.line && drift.line.text)) return
-  drift.line = next
-  laterRedraw($)
 }
 
 /* the doctor's run report sits on its card; a card with no run yet has nothing to open */
@@ -971,6 +994,7 @@ const askSchema = (n: string) => ({
           whyPick: { type: 'string', description: 'Optional: why pick it' },
           whyNot: { type: 'string', description: 'Optional: why not' },
           undo: { type: 'string', description: 'Optional: how hard to undo ("easy", "painful" or "one-way" plus a few words)' },
+          go: { type: 'boolean', description: 'true on the one yes option of a planned set of moves across tracks: answering it lets the session holding the gated task in hand file and move work with no further question until that task closes. Needs gates; only ' + n + ' can answer it' },
         },
       },
     },
@@ -1076,7 +1100,9 @@ const toolsFor = (n: string) => [
       + '"Before the release, should the next step build just the size report at each handoff (a, my pick), all three drift checks '
       + 'from the design notes (b), or nothing until after the release (c)?" '
       + 'A question that reopens an answered one names it in revisits with a reversal, its ask leading with Reversal of Q-n, and may share a reply with other questions; one that only mentions an answered question lists it in cites. '
-      + 'A question whose answer a task needs gates it (gates). A look at finished work is one question listing what needs ' + n + '\'s eye, never one per item, '
+      + 'A question whose answer a task needs gates it (gates). '
+      + 'A planned set of moves across tracks is asked once: take the task in hand first, then one ask with its yes option marked go and that task in gates; its answer, which only ' + n + ' can give, carries every placement by the session holding that task until the task closes. '
+      + 'A look at finished work is one question listing what needs ' + n + '\'s eye, never one per item, '
       + 'gating its look task (labelled look); registering it ends this session\'s run on that task. '
       + 'A subagent never calls it: its question goes to the session that dispatched it. '
       + 'In a session that has not used AskerDo, the question stays with the session under a local label (L1, answered L1a) and is filed on the board only if the session uses AskerDo.',
@@ -1802,7 +1828,56 @@ async function fromNear($: any, sid: string, cwd: string, near: any, gen: number
   /* a profile edit anywhere is read again at the next load */
   const edited = guard.profilesAt !== undefined && guard.profilesAt !== near.profilesAt
   guard.profilesAt = near.profilesAt
+  bypassMoved($, near.bypass)
   return { found, rows, open: new Set(qs.flatMap((q: any) => [q.key, q.id]).filter(Boolean)), edited }
+}
+
+/* the switch on this session, as the band read it: a move reads the rules again, as a profile edit
+   does; a timed one redraws at each minute of its countdown and reads them again at its end, which moves no row */
+const byTick: { key?: string; b?: any; timer?: any } = {}
+function bypassMoved($: any, b: any): void {
+  const key = b ? JSON.stringify(b) : ''
+  if (key === byTick.key) return
+  byTick.key = key
+  byTick.b = b
+  rules.loading = undefined
+  bypassArm($)
+}
+function bypassArm($: any): void {
+  try { if (byTick.timer) byTick.timer.cancel() } catch {}
+  byTick.timer = undefined
+  const b = byTick.b
+  const ends = b && !b.quiet && b.ends ? Date.parse(b.ends) : NaN
+  if (!Number.isFinite(ends)) return
+  const left = ends - Date.now()
+  if (left <= 0) { rules.loading = undefined; return }
+  try {
+    byTick.timer = $.clock.after((left % 60000 || 60000) + 20, ran('bypass countdown', () => {
+      byTick.timer = undefined
+      quietRedraw($, ['hint'])
+      bypassArm($)
+    }))
+  } catch {}
+}
+
+/* a session's end or start tells the board, for a one-session switch; never a throw, and an older board has no verb */
+async function bypassEnd($: any, sid: string, reason: string): Promise<void> {
+  if (!sid) return
+  await localVerb($, 'bypassEnded', { input: { session: sid, reason }, session: sid }).catch(() => {})
+}
+/* A hot reload runs session.start again in the same process, whose environment it keeps (the engine's
+   plugin guide): only a start this process has not yet seen for this id counts. '*': a /clear changed the id here */
+async function bypassStart($: any): Promise<void> {
+  const sid = String((await $.session.id()) || '')
+  if (!sid) return
+  let was = ''
+  try { was = String((await $.env.get('ASKERDO_BYPASS_SEEN')) || '') } catch {}
+  if (was === sid) return
+  try { await $.env.set('ASKERDO_BYPASS_SEEN', sid) } catch {}
+  if (was === '*') return
+  /* the local server may not be up yet at a cold start */
+  if (!(await localBase($))) { const over = await seamEnv($); await liveBase($, await callerEnv($, over), over).catch(() => null) }
+  await bypassEnd($, sid, 'start')
 }
 
 /* the band's own inbox peek, when it read every box of this session's lineage */
@@ -3350,10 +3425,25 @@ const atArgs = (at?: SettingsPlace) => (!at || at.level === 'pc' ? [] : [...(at.
 const oneLine = (s: string) => String(s || '').replace(/\s+/g, ' ').trim()
 /* a refusal in the verb's own words, without the CLI's prefix */
 const refusal = (r: Run) => oneLine(r.err).replace(/^AskerDo: /, '') || 'the CLI failed (exit ' + r.code + ')'
-async function settingsWrite($: any, argv: string[], key: string, done: (r: Run) => { text: string; dim?: string }): Promise<void> {
+/* a press-only setting's write, the user's own, through the route; a server that will not run it
+   leaves a process with no script to start, which is said in words */
+async function pressWrite($: any, press: { act: string; key: string; value?: string; at?: SettingsPlace }, dir: string, track?: string): Promise<Run> {
+  const at = press.at && press.at.level !== 'pc' ? press.at : undefined
+  const record = at ? (at.level === 'project' ? at.record || dir : at.record || undefined) : track || dir
+  const body = { act: press.act, key: press.key, ...(press.value !== undefined ? { value: press.value } : {}), at: at && at.level, record, project: dir }
+  const r = await spawn($, ['node', $.plugin.root + '/scripts/placement-press.mjs', '--session', await sessionId($)], { timeoutMs: 15000, stdin: JSON.stringify(body) })
+  const out = String(r.stdout || '')
+  const said = String(r.stderr || '').replace(/^(AskerDo|placement-press): /gm, '').trim()
+  const err = /Cannot find module/.test(said) ? 'the local server did not take this press; nothing changed. Start a new session and press it again' : said
+  const run: Run = { ok: r.exitCode === 0, code: r.exitCode, out, err }
+  if (run.ok) { try { run.json = JSON.parse(out) } catch { run.ok = false; run.err = 'the press answered something that is not JSON' } }
+  return run
+}
+const pressOf = (act: string, key: string, value?: string, at?: SettingsPlace) => (readRows().find((x: any) => x.key === key) || {}).press ? { act, key, value, at } : undefined
+async function settingsWrite($: any, argv: string[], key: string, done: (r: Run) => { text: string; dim?: string }, press?: { act: string; key: string; value?: string; at?: SettingsPlace }): Promise<void> {
   const have = sread.have || {}
   const dir = have.dir || await projectDir($)
-  const r = await cli($, [...argv, ...(have.track ? ['--track', have.track] : []), '--project', dir, '--json'])
+  const r = press ? await pressWrite($, press, dir, have.track) : await cli($, [...argv, ...(have.track ? ['--track', have.track] : []), '--project', dir, '--json'])
   /* a list's add field empties after an add and keeps its words after a refusal; any other field
      goes back to the stored value after a refusal, the refusal line under it */
   const list = (readRows().find((x: any) => x.key === key) || {}).kind === 'texts'
@@ -3414,10 +3504,10 @@ function settingsActions($: any): any {
     redraw: () => qpaneRedraw($, PANE_ONLY),
     phone: () => { void phoneLink($).catch((e: any) => { sview.phone = { error: String((e && e.message) || e) }; qpaneRedraw($, PANE_ONLY) }) },
     set: (key: string, value: string, at?: SettingsPlace) => {
-      void settingsWrite($, ['settings', 'set', key, value, ...atArgs(at)], key, (r) => savedWords(key, r, false)).catch(() => {})
+      void settingsWrite($, ['settings', 'set', key, value, ...atArgs(at)], key, (r) => savedWords(key, r, false), pressOf('set', key, value, at)).catch(() => {})
     },
     unset: (key: string, at?: SettingsPlace) => {
-      void settingsWrite($, ['settings', 'unset', key, ...atArgs(at)], key, (r) => savedWords(key, r, true)).catch(() => {})
+      void settingsWrite($, ['settings', 'unset', key, ...atArgs(at)], key, (r) => savedWords(key, r, true), pressOf('unset', key, undefined, at)).catch(() => {})
     },
     /* a rule line rides a profile: added or dropped (switched off) on the home profile, which the
        verb holds on default in the same write, or cleared from the profile it is on */
@@ -4156,7 +4246,7 @@ function paneBuild($: any, tab: PaneTab, cols: any, surface: string, now: number
     const read = settingsRead($)
     const held = heldNow()
     return Object.assign(m, { settings: { json: read && read.json, error: read && read.error, track: held && held.id ? { id: held.id, name: held.name } : null,
-      project: read && read.dir ? whereParts(read.dir).name : undefined } })
+      project: read && read.dir ? whereParts(read.dir).name : undefined, bypass: band.near && band.near.bypass } })
   }
   const b = bandParts($)
   /* the copy draws no hover cards; the dock pane does not lift them, so they would draw empty.
@@ -5881,7 +5971,7 @@ function statusOf($: any): any {
     shelf: band.shelf, elsewhere: band.elsewhere, asleep: band.asleep, here: { pc: hereNow().pc }, now, segment,
     /* what the track's and task's tooltips read beside them */
     graph: band.graph, handoffs: band.near && band.near.handoffs, questions: band.questions, local: band.local,
-    version: ownVersion($), health: healthShown($),
+    version: ownVersion($), health: healthShown($), bypass: band.near && band.near.bypass,
   })
   /* the AskerDo button's card names the folder and branch too */
   const facts = whereFacts(where.now)
@@ -6200,6 +6290,14 @@ function userSaid(e: any): void {
   if (userWords.length > 40) userWords.shift()
 }
 const isPlacement = (q: any) => !!q && ((Array.isArray(q.labels) && q.labels.includes('placement')) || !!q.placement)
+/* a go question frees a session's placement, so like a placement question only the user answers it */
+const isGo = (q: any) => !!q && typeof q.goOption === 'string' && !!q.goOption
+const usersAlone = (q: any) => isPlacement(q) || isGo(q)
+const keptGo = (q: any) => Array.isArray(q.payload && q.payload.options) && q.payload.options.some((o: any) => o && o.go === true)
+const GO_ASKS = 'whether this session may file and move work across tracks'
+const asksWhat = (q: any) => (isGo(q) ? GO_ASKS : 'where found work goes')
+const notNamed = (id: string, n: string, what: string) => 'answer refused: ' + id + ' asks ' + nameOf() + ' ' + what + ', and no message of theirs since it was asked names it. '
+  + 'Have them press its card or the band, or type its token (' + n + 'a, ' + n + 'b and on) in chat; then record what they typed.'
 const userNamed = (q: any, label: string) => {
   const since = Date.parse(String(q.created || '')) || 0
   const letters = (Array.isArray(q.options) ? q.options : []).map((o: any) => o && o.type)
@@ -6210,7 +6308,7 @@ async function shellPlacementAnswer($: any, cmd: string): Promise<string> {
   for (const id of hubAnswers(cmd)) {
     if (!id || /[$`%]/.test(id)) return 'refused: name the question this answer or drop records by its number, so AskerDo can tell whether it is ' + nameOf() + '\'s alone. Carry on with the work in hand.'
     const q = await cli($, ['show', id, '--json']).catch(() => null)
-    if (q && q.ok && isPlacement(q.json)) return placementOnly(String(q.json.id || id))
+    if (q && q.ok && usersAlone(q.json)) return placementOnly(String(q.json.id || id), asksWhat(q.json))
   }
   return ''
 }
@@ -6221,6 +6319,9 @@ async function answerTool($: any, input: any): Promise<any> {
   let id = a.id
   let shown = a.id
   if (isLocalId(a.id)) {
+    /* a kept go files with the user's mark, so the session records only what their message named */
+    const kept = (await localRead($, await sessionId($))).qs.find((x) => x.label === a.id)
+    if (kept && keptGo(kept) && !userNamed(localCard(kept, ''), a.id)) return { deny: notNamed(a.id, a.id, GO_ASKS) }
     const r = await localAnswer($, a.id, a.letter, a.note, null, a.drop, true)
     if (!r.filed) return r.ok ? { result: r.text } : { deny: 'answer refused: ' + r.text }
     id = r.filed.key || r.filed.id
@@ -6229,16 +6330,14 @@ async function answerTool($: any, input: any): Promise<any> {
   mem.engaged = true
   /* a placement question takes the answer only when the user's own message since it was asked names it */
   const q = await cli($, ['show', id, '--json']).catch(() => null)
-  if (q && q.ok && isPlacement(q.json) && !userNamed(q.json, a.id)) {
-    const n = String(q.json.id || shown).replace(/^Q/, '')
-    return { deny: 'answer refused: ' + (q.json.id || shown) + ' asks ' + nameOf() + ' where found work goes, and no message of theirs since it was asked names it. '
-      + 'Have them press its card or the band, or type its token (' + n + 'a, ' + n + 'b and on) in chat; then record what they typed.' }
+  if (q && q.ok && usersAlone(q.json) && !userNamed(q.json, a.id)) {
+    return { deny: notNamed(String(q.json.id || shown), String(q.json.id || shown).replace(/^Q/, ''), asksWhat(q.json)) }
   }
   const sid = await sessionId($)
   const argv = a.drop ? ['drop', id] : ['answer', id, ...(a.letter ? ['--pick', a.letter] : [])]
   if (a.note) argv.push('--note', a.note)
   /* the board takes a placement answer only with the user's mark, sent once their message named it */
-  const placing = !!(q && q.ok && isPlacement(q.json))
+  const placing = !!(q && q.ok && usersAlone(q.json))
   const r = await queued(() => cli($, [...argv, placing ? '--user' : '--session', sid, '--json']))
   if (!r.ok) return { deny: failed((a.drop ? 'Dropping ' : 'Answering ') + shown, r) }
   const label = (r.json && r.json.id) || shown
@@ -6249,7 +6348,7 @@ async function answerTool($: any, input: any): Promise<any> {
   kick($, true)
   const name = r.json && r.json.name ? ' (' + r.json.name + ')' : ''
   /* the inbox line the user mark sends here is not told again, so the result carries what the answer did */
-  const placed = placing ? toolPlaced(label, (r.json && r.json.name) || q.json.name, a.drop ? { outcome: 'drop' } : (r.json && r.json.placement) || {}, q.json.placement) : ''
+  const placed = placing && isPlacement(q.json) ? toolPlaced(label, (r.json && r.json.name) || q.json.name, a.drop ? { outcome: 'drop' } : (r.json && r.json.placement) || {}, q.json.placement) : ''
   if (a.drop) return { result: 'Dropped ' + label + name + (a.note ? ': ' + a.note : '') + '.' + placed }
   return { result: 'Answered ' + label + name + ': ' + (a.letter ? token(label, a.letter) + '.' + (a.note ? ' Note: ' + a.note : '') : a.note) + placed }
 }
@@ -6362,8 +6461,13 @@ function askedOf(r: Run): any {
 
 /* a filing the board asked about keeps its question's card under the call, as ask's does,
    and answers with the block to paste; register returns no options, so the question is read for them */
+/* the go path rides a session's first asked filing */
+const pathTold = new Set<string>()
 async function placementTold($: any, given: any, useId?: string, work = 'it'): Promise<string> {
-  const { wake, ...asked } = given
+  const { wake, path, ...asked } = given
+  const sid = await sessionId($).catch(() => mem.id || '')
+  const way = typeof path === 'string' && path && !pathTold.has(sid) ? path.trim() + ' ' : ''
+  if (way) pathTold.add(sid)
   let q: any = asked
   if (!Array.isArray(q.options)) {
     const s = await cli($, ['show', q.key || q.id, '--json']).catch(() => null)
@@ -6377,7 +6481,7 @@ async function placementTold($: any, given: any, useId?: string, work = 'it'): P
   const letters = (Array.isArray(q.options) ? q.options : []).map((o: any) => o && o.type).filter((t: string) => /^[a-z]$/.test(t || ''))
   return (wake ? work + ' was woken twice in this inbox stay, so the board stored no third wake: ' + nameOf() + ' is asked where it goes, and it waits on their press. '
     : 'Nothing was created: ' + nameOf() + ' is asked where it goes, and their press creates it or not. ')
-    + askResult(q, { letters, pick: q.pick, block: tellBlock(q, letters) })
+    + way + askResult(q, { letters, pick: q.pick, block: tellBlock(q, letters) })
 }
 
 /* each asked step of a close, a move or a handoff keeps its own card, `<tool_use_id>#<step>` */
@@ -8555,8 +8659,12 @@ async function fileAll($: any): Promise<void> {
     let lost = ''
     if (q.status !== 'open') {
       const how = q.status === 'dropped' ? ['drop', id] : ['answer', id, ...(q.pick ? ['--pick', q.pick] : [])]
-      const a = await cli($, [...how, ...(q.note ? ['--note', q.note] : []), '--session', sid, '--json'])
+      /* a kept go's answer is the user's (a press, or a message answerTool checked) */
+      const users = q.status === 'answered' && keptGo(q)
+      const a = await cli($, [...how, ...(q.note ? ['--note', q.note] : []), users ? '--user' : '--session', sid, '--json'])
       if (!a.ok) lost = ', though its ' + (q.status === 'dropped' ? 'drop' : 'answer') + ' did not reach the board (' + a.err + ')'
+      /* told already as the kept label, so its inbox line is not told again */
+      else if (users) { toolTold.push({ id, kind: 'answer' }); if (toolTold.length > 20) toolTold.shift() }
     }
     e.qs.shift()
     e.filed[q.label] = { id, ...(r.json.key ? { key: r.json.key } : {}) }
@@ -8565,10 +8673,11 @@ async function fileAll($: any): Promise<void> {
       await loadTold($)
       const t = told.get(q.use)
       if (t) {
-        const { local: _l, ...rest } = t
+        /* an answer the board refused leaves the card open, to be answered there */
+        const { local: _l, answered: _a, ended: _e, ...rest } = t
         const now: any = { ...rest, id, key: r.json.key, name: r.json.name || t.name, ask: r.json.ask || t.ask, boardUrl: r.json.boardUrl, workstream: r.json.workstream || t.workstream, was: q.label }
-        if (q.status === 'answered') now.answered = q.pick ? token(id, q.pick) : String(q.note || '').slice(0, 80)
-        if (q.status === 'dropped') now.ended = 'Dropped ' + id + (q.note ? ': ' + q.note : '') + '.'
+        if (q.status === 'answered' && !lost) now.answered = q.pick ? token(id, q.pick) : String(q.note || '').slice(0, 80)
+        if (q.status === 'dropped' && !lost) now.ended = 'Dropped ' + id + (q.note ? ': ' + q.note : '') + '.'
         await keepTold($, q.use, now)
       }
     }
@@ -9383,7 +9492,7 @@ const forgedDeny = (how: string) => how === 'override' ? 'refused: an override p
   : how === 'session' ? 'this filing names another session (--session); a session files as itself'
   : 'this filing clears or sets CLAUDE_CODE_SESSION_ID, so the board would not see the session filing it')
   + '. File found work with the place tool (a close\'s leftovers with task_update): off the track you hold or last on it, the board asks ' + nameOf() + ' where it goes. Carry on with the work in hand.'
-const placementOnly = (id: string) => 'refused: ' + id + ' asks ' + nameOf() + ' where found work goes, so only they answer it: their press on the card or the band, /askerdo with its token, '
+const placementOnly = (id: string, what = 'where found work goes') => 'refused: ' + id + ' asks ' + nameOf() + ' ' + what + ', so only they answer it: their press on the card or the band, /askerdo with its token, '
   + 'or the token they type in chat, which you record with the answer tool. Carry on with the work in hand.'
 /* the /askerdo command and the user's alias, as the Skill tool names them */
 const ownCommand = (skill: any) => { const s = String(skill || '').replace(/^\//, '').replace(/^askerdo:/, ''); return s === COMMAND || (!!alias.name && s === alias.name) }
@@ -9636,6 +9745,7 @@ export const register: Register = (on: any) => {
     void sessionId($).catch(() => {})
     void queueRead($).catch(() => {})
     void sendResume($).catch(() => {})
+    void bypassStart($).catch(() => {})
     startPoll($)
     /* the load reads the guard (and gives an opted-in track its marker) and delivers */
     kick($)
@@ -9644,7 +9754,7 @@ export const register: Register = (on: any) => {
     void decisionRows($).catch(() => {})
     void pruneKept($).catch(() => {})
     where.paneRead = false
-    drift.root = undefined
+    drift.key = undefined
     void readWhere($).then(() => readDrift($)).catch(() => {})
     /* the belt's first read of HEAD */
     void beltCheck($).catch(() => {})
@@ -9905,7 +10015,10 @@ export const register: Register = (on: any) => {
 
 
   on('session.end', async ($: any, e: any, next: any) => {
+    /* first, inside the end's 1.5 s budget */
+    const ending = bypassEnd($, e.sessionId, String(e.reason || ''))
     if (e.reason === 'clear') {
+      try { await $.env.set('ASKERDO_BYPASS_SEEN', '*') } catch {}
       /* the cleared conversation's notes go with it; an undelivered answer is taken again */
       for (const x of takeLater()) { try { if (x.drop) void x.drop() } catch {} }
       mem.clearedFrom = e.sessionId
@@ -9916,6 +10029,7 @@ export const register: Register = (on: any) => {
       runTickStop()
       await endRow($, e.sessionId).catch(() => {})
     }
+    await ending
     return next(e)
   })
 

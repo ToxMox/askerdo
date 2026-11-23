@@ -226,7 +226,7 @@ export function labelText(db, s, memo) {
 export const KEY_ORDERS = Object.freeze({
   question: ['id', 'key', 'name', 'ask', 'topic', 'status', 'blocking', 'created', 'updated', 'asked', 'pick', 'crux',
     'project', 'projectDir', 'projectRepo', 'workstream', 'track', 'gates', 'revisits', 'cites', 'labels', 'refs', 'mission', 'session',
-    'pc', 'placement', 'subscribers', 'snooze', 'wokeBy', 'legacy', 'evidence', 'answered', 'legacyId', 'labelHistory'],
+    'pc', 'placement', 'goOption', 'subscribers', 'snooze', 'wokeBy', 'legacy', 'evidence', 'answered', 'legacyId', 'labelHistory'],
   workstream: ['id', 'key', 'name', 'status', 'outcome', 'projects', 'projectRepos', 'created', 'updated', 'closed', 'labels', 'refs',
     'profiles', 'profileDrops', 'outcomes', 'handoff', 'subscribers', 'legacyId', 'labelHistory'],
   /* plans, threads and a task's plan and ordinal: the raw import reads them until the track merge */
@@ -242,12 +242,12 @@ export const KEY_ORDERS = Object.freeze({
     'workstreams', 'tracks', 'tasks', 'question', 'words', 'confirmed', 'files', 'commands', 'legacy', 'source',
     'created', 'updated', 'closed', 'legacyId', 'labelHistory'],
   procedure: ['id', 'key', 'name', 'status', 'slug', 'project', 'projectRepo', 'doc', 'summary', 'words', 'commands', 'files', 'repos',
-    'paths', 'stale', 'flag', 'verified', 'verifiedAt', 'vouched', 'runs', 'cleanRuns', 'lastRun', 'created', 'updated', 'closed',
+    'paths', 'stale', 'flag', 'verified', 'verifiedAt', 'vouched', 'readCurrent', 'runs', 'cleanRuns', 'lastRun', 'created', 'updated', 'closed',
     'labels', 'refs', 'legacyId', 'labelHistory'],
   track: ['id', 'key', 'name', 'workstream', 'status', 'goal', 'origin', 'parkReason', 'outcome', 'created', 'updated', 'closed',
     'labels', 'refs', 'profiles', 'profileDrops', 'legacyId', 'labelHistory'],
 });
-export const KEY_MAPS = Object.freeze({ workstream: ['outcomes'], plan: ['steps', 'stepTasks', 'stepCloses'], procedure: ['repos', 'verified', 'vouched'], knowledge: ['source'] });
+export const KEY_MAPS = Object.freeze({ workstream: ['outcomes'], plan: ['steps', 'stepTasks', 'stepCloses'], procedure: ['repos', 'verified', 'vouched', 'readCurrent'], knowledge: ['source'] });
 /* Each kind's list keys (the old store's WORK_KINDS arrays, a question's FRONT_LISTS);
    the plan and thread rows here and in KEY_MAPS serve the raw import until the merge. */
 export const KEY_LISTS = Object.freeze({

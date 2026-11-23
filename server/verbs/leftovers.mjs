@@ -105,7 +105,7 @@ export function layLeftovers(db, home, steps, actor) {
     const same = Boolean(track) && on.key === track.key;
     const step = home.follows && same && !stays && one.after === undefined ? { ...one, after: [home.follows] } : one;
     try {
-      const laid = layOut(db, { track: on.key, steps: [step], session, nextSession: next, [LAID]: true, skip: [...skip()] }, actor).steps[0];
+      const laid = layOut(db, { track: on.key, steps: [step], session, nextSession: next, [LAID]: { bypass: Boolean(lad && lad.bypass) }, skip: [...skip()] }, actor).steps[0];
       const settled = stays ? {} : settlePlace(db, laid.key, { ...(lad || { tier: landedTier(db, laid.key, session) }), ...(next ? { nextSession: true } : {}) }, actor, session ? { defaulted: laid.default || null } : {});
       out.push(same ? { ...laid, ...settled, step: i + 1 } : { ...laid, ...settled, step: i + 1, track: on.fields.id });
     } catch (e) {

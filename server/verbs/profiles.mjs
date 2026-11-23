@@ -25,6 +25,12 @@ export { UsageError };
 const SUBS = 'profile.subscriptions';
 const WORK_KINDS = Object.keys(KIND_LEVEL);
 
+/* A `press` setting changes only by the user's own act, through any verb that would move it. */
+function pressOnly(keys, actor) {
+  const k = keys.find((x) => Object.hasOwn(SETTINGS, x) && SETTINGS[x].press);
+  if (k && !/^user(?::|$)/.test(actorOf(actor).by)) throw new UsageError(SETTINGS[k].label + " changes by the user's press in the Settings tab (" + k + ')');
+}
+
 /* ---- the stored data ---------------------------------------------------- */
 
 /* Today's readProfiles shape, { profiles, subscriptions }: what resolveChain
@@ -234,6 +240,7 @@ export function profileAdd(db, { record, name, repo, repos } = {}, actor) {
     const wasDropped = sub.drop.includes(n);
     sub.drop = sub.drop.filter((x) => x !== n);
     if (sub.add.includes(n) && !wasDropped) return { record: h.shown, profile: n, added: false, travels: h.travels };
+    pressOnly(Object.keys(settingsOf(profileOf(data, n))), actor);
     const bad = clashes(data, sub.add.filter((x) => x !== n).concat(n));
     if (bad.length) {
       throw new UsageError('refused: on ' + h.shown + ', two profiles would set ' + bad.join(', ')
@@ -269,6 +276,7 @@ export function profileRemove(db, { record, name, project, repo, repos } = {}, a
       sub.drop.push(n);
       how = 'dropped';
     }
+    pressOnly(Object.keys(settingsOf(profileOf(data, n))), actor);
     const c = actorOf(actor);
     const { at } = c;
     h.save(sub, at);
@@ -289,6 +297,8 @@ export function profileDefine(db, { name, set = [], unset = [], description, mad
     changes[key] = parseValue(key, pair.slice(i + 1));
   }
   for (const key of unset) if (!SETTINGS[key] && !Object.hasOwn(RETIRED, key)) throw new UsageError('unknown setting ' + key);
+  /* only the keys this call moves: the same profile's other settings stay any caller's */
+  pressOnly([...Object.keys(changes), ...unset], actor);
   return tx(db, () => {
     const data = loadProfiles(db);
     const before = data.profiles[n];
@@ -402,6 +412,9 @@ function settingsName(rec, repo) {
   return 'settings-' + (slug || 'project');
 }
 
+/* a setting the board reads at the default layer alone: a save anywhere narrower would do nothing */
+const defaultOnlyWords = (k) => SETTINGS[k].label + ' is one list for every session, so it is set at the default layer only (' + k + ')';
+
 /* one setting into a profile, in one transaction. With `at`, into the
    profile held there that sets it, else the one held there, else a new one named
    for the record; with neither `at` nor `profile`, into the profile that sets it
@@ -411,10 +424,13 @@ export function settingsSet(db, { key, value, at, record, profile, project, repo
   const k = String(key ?? '').trim();
   if (Object.hasOwn(PC_SETTINGS, k)) throw new UsageError(k + " lives in each PC's config.json, never on the board");
   if (Object.hasOwn(SETTINGS, k) && SETTINGS[k].list) throw new UsageError(k + ' is set with profile rule-add, rule-drop and rule-clear');
+  pressOnly([k], actor);
   const v = checkSetting(k, value);
   const contract = SETTINGS[k].contract === true;
   if (at !== undefined && at !== null && at !== '' && !LEVELS.includes(at)) throw new UsageError('--at takes ' + LEVELS.join(', ') + ': ' + at);
   if (contract && at && at !== 'default') throw new UsageError(k + ' is set at default only: the contract is read from the profiles held on default');
+  const only = SETTINGS[k].defaultOnly === true;
+  if (only && at && at !== 'default') throw new UsageError(defaultOnlyWords(k));
   return tx(db, () => {
     const data = loadProfiles(db);
     let name = profile ? checkName(profile) : null;
@@ -434,9 +450,10 @@ export function settingsSet(db, { key, value, at, record, profile, project, repo
       target = { word: rec.level === 'default' ? 'default' : rec.key, repo: rec.repo, holds: h.sub.add.includes(name) && !h.sub.drop.includes(name) };
     } else if (name) {
       if (!data.profiles[name]) throw new UsageError('no profile named ' + name + '; --at names where a new one goes');
+      if (only && !(data.subscriptions.default || noSub()).add.includes(name)) throw new UsageError(defaultOnlyWords(k));
     } else {
       const now = contract ? (contractHeld(data)[k] || {}).profile
-        : resolveChain(data, chainOver(lookupFor(db), recordWord(db, record || 'default', repo, repos), { project, repo, repos })).settings[k].profile;
+        : resolveChain(data, chainOver(lookupFor(db), recordWord(db, only ? 'default' : record || 'default', repo, repos), only ? {} : { project, repo, repos })).settings[k].profile;
       if (now) name = now;
       else {
         name = contractHome(data).profile || HOME;
@@ -464,6 +481,7 @@ export function settingsUnset(db, { key, at, record, project, repo, repos } = {}
   const k = String(key ?? '').trim();
   if (Object.hasOwn(PC_SETTINGS, k)) throw new UsageError(k + " lives in each PC's config.json, never on the board");
   if (!Object.hasOwn(SETTINGS, k)) throw new UsageError('unknown setting ' + k + ' (one of ' + Object.keys(SETTINGS).join(', ') + ')');
+  pressOnly([k], actor);
   const spec = SETTINGS[k];
   if (spec.list) throw new UsageError(spec.label + ' are set with profile rule-add, rule-drop and rule-clear (' + k + ')');
   if (at !== undefined && at !== null && at !== '' && !LEVELS.includes(at)) throw new UsageError('--at takes ' + LEVELS.join(', ') + ': ' + at);
@@ -473,12 +491,12 @@ export function settingsUnset(db, { key, at, record, project, repo, repos } = {}
     const r = settingsSet(db, { key: k, value: spec.def, at: 'default' }, actor);
     return { key: k, value: r.value, profile: r.profile, removed: true, from: 'default', now: { value: r.value, layer: 'default', record: 'default', profile: r.profile } };
   }
-  const word = at ? (at === 'default' ? 'default' : record) : record || 'default';
+  const word = at ? (at === 'default' ? 'default' : record) : spec.defaultOnly ? 'default' : record || 'default';
   if (!word) throw new UsageError('--at ' + at + ' needs the record: ' + (at === 'project' ? 'a project directory' : 'its id'));
   return tx(db, () => {
     const data = loadProfiles(db);
     const rec = recordWord(db, word, repo, repos);
-    const chainOf = () => chainOver(lookupFor(db), rec, { project: at ? undefined : project, repo, repos });
+    const chainOf = () => chainOver(lookupFor(db), rec, { project: at || spec.defaultOnly ? undefined : project, repo, repos });
     let name;
     let where;
     if (at) {
@@ -548,6 +566,7 @@ export function profileDelete(db, { name } = {}, actor) {
   return tx(db, () => {
     const data = loadProfiles(db);
     if (!data.profiles[n]) throw new UsageError('no profile named ' + n + ' (profile list shows them)');
+    pressOnly(Object.keys(settingsOf(data.profiles[n])), actor);
     const on = holdings(db, data).filter((h) => h.sub.add.includes(n)).map((h) => h.shown);
     if (on.length) throw new UsageError('refused: ' + on.join(', ') + (on.length === 1 ? ' holds ' : ' hold ') + n + '; profile remove takes it off each first');
     dropProfile(db, data, n, actorOf(actor));

@@ -23,9 +23,10 @@ import {
 import { search } from './search.mjs';
 import { activity } from './activity.mjs';
 import {
-  effective, profileAdd, profileDefine, profileDelete, profileGuard, profileList, profileRemove, profileRule, resolveSession, rulesFor, settings, settingsRule, settingsSet, settingsUnset,
+  effective, profileAdd, profileDefine, profileDelete, profileGuard, profileList, profileRemove, profileRule, resolveSession, settings, settingsRule, settingsSet, settingsUnset,
 } from './profiles.mjs';
-import { procDrafts, procedureCards, recordRun, scanProject, triggerCards } from './procedures.mjs';
+import { bypassEnded, bypassPress, bypassRead, rulesWithBypass } from './bypass.mjs';
+import { procDrafts, procedureCards, recordRead, recordRun, scanProject, triggerCards } from './procedures.mjs';
 import { decide, decisionTriggers, decisionsFor, decisionsSince } from './decisions.mjs';
 import { markRead, recordHistory } from './history.mjs';
 import { bandCalls, bandKeep, upkeepDryRun, upkeepSwitch } from './upkeep.mjs';
@@ -58,8 +59,8 @@ const GROUPS = [
   },
   { writeHandoff, updateHandoff, resumeTrack, trackKickoff, trackHandoffs, readHandoff, shelf, resumeCutoff },
   { search, activity },
-  { effective, resolveSession, rulesFor, profileList, profileAdd, profileRemove, profileDefine, profileDelete, profileRule, profileGuard, settings, settingsSet, settingsUnset, settingsRule },
-  { scanProject, recordRun, procDrafts, procedureCards, triggerCards },
+  { effective, resolveSession, rulesFor: rulesWithBypass, profileList, profileAdd, profileRemove, profileDefine, profileDelete, profileRule, profileGuard, settings, settingsSet, settingsUnset, settingsRule },
+  { scanProject, recordRun, recordRead, procDrafts, procedureCards, triggerCards },
   { decide, decisionsFor, decisionsSince, decisionTriggers },
   { resolveLabel, resolveLegacy },
   { boardSnapshot, workingSet },
@@ -83,6 +84,8 @@ const GROUPS = [
   { pcMap },
   /* what a task holds now, for a dispatch or any reader */
   { taskBlock },
+  /* the placement bypass: the tray's presses, and a session's end or start */
+  { bypassPress, bypassRead, bypassEnded },
 ];
 
 /* two groups adding the same name would shadow one verb silently */

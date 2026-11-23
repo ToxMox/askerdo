@@ -19,8 +19,9 @@ import {
 } from './graph.mjs';
 import { endTask, openSteps, runsHolding } from './ending.mjs';
 import { endSessionRuns, heldWords, openRunSql, renewRuns } from './runs.mjs';
-import { APPROVED, PLACEMENT_LABEL } from './placement-seam.mjs';
+import { APPROVED, GO_PATH, PLACEMENT_LABEL } from './placement-seam.mjs';
 import { askPlacement, draftOf, placementLacks } from './placement-ask.mjs';
+import { bypassFor } from './bypass.mjs';
 
 /* A new kind: its own key order, written by these verbs alone. */
 export const TRACK_KEYS = KEY_ORDERS.track;
@@ -170,7 +171,7 @@ export function askFiling(db, f, c, item, from, skip = new Set()) {
   const moved = item.task ? resolveRecord(db, String(item.task).trim(), { kinds: ['task'] }) : null;
   const lastAt = isGiven(asked.last) && asked.track === heldRec.fields.id && !isNextSession(asked.wake) ? lastPlace(db, heldRec.key, moved ? moved.key : null) : null;
   const lastWords = lastAt ? { after: lastAt.ends.map((e) => e.id), ...(lastAt.tail ? { before: lastAt.tail.id } : {}) } : null;
-  return askPlacement(db, { track: heldRec.fields.id, ...(item.task ? { task: item.task } : { draft: draftOf(item.draft) }), here, asked, from, ...(lastWords ? { lastAt: lastWords } : {}) }, c);
+  return { ...askPlacement(db, { track: heldRec.fields.id, ...(item.task ? { task: item.task } : { draft: draftOf(item.draft) }), here, asked, from, ...(lastWords ? { lastAt: lastWords } : {}) }, c), path: GO_PATH };
 }
 /* The talk filing: a filing naming a placement question settled in talk, with the user's words, is let
    through once; null when none is named. Refused for any other question. */
@@ -584,8 +585,9 @@ export function placeTask(db, taskKey, place, actor) {
     const no = inboxLacks(hasWhy ? why : '', place.wake, at) || ownTrackLacks(db, place.wake, c.session, at);
     if (no) throw new TrackRefusal(no);
     const wake = wakeOf(db, place.wake, c.day, task.fields.id);
-    /* a third wake this inbox stay is stored as none: the user is asked where it goes */
-    const held = was ? null : thirdWake(db, task, c, why);
+    /* a third wake this inbox stay is stored as none: the user is asked where it goes;
+       under a bypass the wake named lands */
+    const held = was ? null : thirdWake(db, task, c, why, Boolean(bypassFor(db, c, policedHeld(db, c))));
     if (held) return { ...held, wake: wakeWords(db, task.fields.wake) || null };
     if (was) {
       db.stmt('DELETE FROM track_items WHERE task = ?').run(taskKey);
@@ -640,9 +642,9 @@ const fieldWords = (o) => ['tier ' + o.tier, ...['track', 'workstream', 'unparkW
 const offerWords = (o) => (o.call === 'ask' ? "ask the user, since no open track here shares the work's words"
   : 'tier ' + o.tier + (o.track ? ' with track ' + o.track : '') + (o.workstream && !o.track ? ' in ' + o.workstream : '') + (o.unparkWhen ? ' with unparkWhen ' + o.unparkWhen : '')
     + (o.wake ? ' with wake ' + o.wake : '') + (o.before ? ' with before ' + o.before : '') + (o.last ? ' with last, a last resort' : '') + (o.whyElsewhere ? ' with the line on why the held track does not cover it' : '') + ' (' + (o.step ? "the step's fields: " + fieldWords(o) : o.flags) + ')');
-function ladderRefusal(cause, offers, step = false) {
+function ladderRefusal(cause, offers, step = false, tail = '') {
   const list = offers.map((o) => offerOf(step && o.call === 'place' ? { ...o, step: true } : o));
-  return new TrackRefusal(cause + ". The board's answer: " + list.map(offerWords).join('; or ') + '.', { offer: list[0], offers: list });
+  return new TrackRefusal(cause + ". The board's answer: " + list.map(offerWords).join('; or ') + '.' + (tail ? ' ' + tail : ''), { offer: list[0], offers: list, ...(tail ? { path: tail } : {}) });
 }
 
 /* The board's hint as the call that fits (found.mjs offersOfHint). */
@@ -699,6 +701,8 @@ export function ladderPlace(db, f, c, at = {}) {
   const stub = Boolean(given) && unfilled(given);
   const line = stub ? '' : given;
   const free = Boolean(f[APPROVED]) || Boolean(at.free);
+  /* read only where a question would be asked */
+  const switched = () => (free ? null : bypassFor(db, c, heldRec));
   const onHeld = lad.track && lad.track.key === heldRec.key && !lad.nextSession;
   /* a move inside the held track is no filing */
   if (onHeld && at.task) {
@@ -710,6 +714,8 @@ export function ladderPlace(db, f, c, at = {}) {
     if (free) return { ...lad, approved: true };
     /* a last the caller sends stays its ask of the user, at the end too */
     if (real || nothingElseOpen(db, heldRec.key, at.skip) || (!isGiven(f.last) && endOfTrack(db, heldRec.key, taskKeysOf(db, at.chain || f.after), at.skip))) return lad;
+    const held = switched();
+    if (held) return { ...lad, approved: true, bypass: true };
     const said = typeof f.last === 'string' ? oneLineOf(f.last) : '';
     if (said && !unfilled(said)) return { ...lad, ask: { reason: said } };
     /* a blank before and blank last stays refused; a before of the closing review alone is last */
@@ -720,6 +726,8 @@ export function ladderPlace(db, f, c, at = {}) {
     heldNext(id, undefined), at.via === 'leftover');
   }
   if (free) return { ...lad, approved: true, ...(line ? { whyElsewhere: line } : {}) };
+  const off = switched();
+  if (off) return { ...lad, approved: true, bypass: true, ...(line ? { whyElsewhere: line } : {}) };
   /* a later session on the held track is asked; its reason is last's line or the why line, and a blank keeps the pair */
   if (lad.nextSession && lad.track && lad.track.key === heldRec.key) {
     const said = typeof f.last === 'string' ? oneLineOf(f.last) : '';
@@ -735,7 +743,7 @@ export function ladderPlace(db, f, c, at = {}) {
   const reason = line || (lad.inbox && lad.tier === 2 ? oneLineOf(lad.inbox.unplaced) : '');
   if (!reason) {
     throw ladderRefusal(id + ' is ' + youHold(heldRec) + ', and a filing past it' + (lad.tier >= 3 ? ' at tier ' + lad.tier : '') + ' says in one line why ' + id
-      + ' does not cover the work' + (stub ? TEMPLATE_WORDS : '') + '; work ' + id + ' covers goes on it', fits('<why ' + id + ' does not cover it>'), at.via === 'leftover');
+      + ' does not cover the work' + (stub ? TEMPLATE_WORDS : '') + '; work ' + id + ' covers goes on it', fits('<why ' + id + ' does not cover it>'), at.via === 'leftover', GO_PATH);
   }
   const when = lad.park ? lad.park.when : lad.inbox && !DAY_WAKE.test(String(lad.inbox.wake)) ? lad.inbox.wake : null;
   const own = when ? ownEvent(db, when, heldRec, at) : null;
@@ -1125,9 +1133,10 @@ function carriesOff(db, tasks, c, verb) {
   if (!heldRec || !Array.isArray(tasks) || !tasks.length) return;
   const off = tasks.map((t) => recordOf(db, t, 'task')).filter((t) => db.stmt('SELECT 1 FROM track_items WHERE track = ? AND task = ?').get(heldRec.key, t.key));
   if (!off.length) return;
+  if (bypassFor(db, c, heldRec)) return;
   const id = heldRec.fields.id;
   throw new TrackRefusal(verb + ' would carry ' + off.map((t) => t.fields.id).join(', ') + ' off ' + id + ', ' + youHold(heldRec) + ', and work leaves it only by the user\'s answer: make the track without --task, then place each, which asks the user ('
-    + off.map((t) => '`' + CLI + ' task edit ' + t.fields.id + ' --tier 3 --track <the new TR-n> --why-elsewhere "<why ' + id + ' does not cover it>" --here-before <T-n on ' + id + '>`').join('; ') + ')',
+    + off.map((t) => '`' + CLI + ' task edit ' + t.fields.id + ' --tier 3 --track <the new TR-n> --why-elsewhere "<why ' + id + ' does not cover it>" --here-before <T-n on ' + id + '>`').join('; ') + '). ' + GO_PATH,
   { tasks: off.map((t) => t.fields.id) });
 }
 
@@ -1371,7 +1380,8 @@ export function layOut(db, input, actor) {
   return tx(db, () => {
     const c = ctx(actor);
     const track = openTrack(db, input.track);
-    const asked = placeLayout(db, track, steps, input, c);
+    const { asked, bypass } = placeLayout(db, track, steps, input, c);
+    const laidFree = Boolean(input[LAID] && input[LAID].bypass);
     const out = [];
     const landed = [];
     steps.forEach((s, i) => stepped(i, s, () => {
@@ -1406,7 +1416,7 @@ export function layOut(db, input, actor) {
     /* the default before, once the call's own edges are laid, for each step this call put on the track */
     if (c.session) {
       steps.forEach((s, i) => stepped(i, s, () => {
-        const d = landed[i] && !(s.before || []).length ? defaultBefore(db, track.key, out[i].key, actor, { last: s.last, step: true, nextSession: Boolean(input.nextSession), skip: [...((input[LAID] && input.skip) || []), ...out.filter((o) => o && o.key).map((o) => o.key)] }) : null;
+        const d = landed[i] && !(s.before || []).length ? defaultBefore(db, track.key, out[i].key, actor, { last: s.last, step: true, approved: laidFree || Boolean(bypass[i]), nextSession: Boolean(input.nextSession), skip: [...((input[LAID] && input.skip) || []), ...out.filter((o) => o && o.key).map((o) => o.key)] }) : null;
         if (d) out[i].default = d;
         if (!d || !d.last) return;
         const task = loadRecord(db, out[i].key);
@@ -1419,17 +1429,20 @@ export function layOut(db, input, actor) {
   });
 }
 
-/* A layout from layLeftovers, which classified its one step already: never a request body's. */
+/* A layout from layLeftovers, which classified its one step already: never a request body's.
+   Its value is { bypass }: whether a switch let that step through. */
 export const LAID = Symbol('laid by leftovers');
 
 /* For a layout: onto the held track with nothing else open it is laid whole; with work open there a step that
    lands is free at a real place and asked when last; onto another track each such step is asked. The questions by
-   step index; a later step that waits on an asked one is refused, since nothing is made for it. */
+   step index; a later step that waits on an asked one is refused, since nothing is made for it.
+   `bypass`: whether a switch let a step through, by step index. */
 function placeLayout(db, track, steps, input, c) {
+  const none = { asked: [], bypass: [] };
   const heldRec = input[LAID] ? null : policedHeld(db, c);
-  if (!heldRec) return [];
+  if (!heldRec) return none;
   const held = heldRec.key === track.key;
-  if (held && nothingElseOpen(db, track.key)) return [];
+  if (held && nothingElseOpen(db, track.key)) return none;
   const keyOfStep = (s) => (s.task !== undefined ? keyOf(db, s.task.trim(), 'task') : openNamed(db, track.key, s.name));
   const lands = steps.map((s) => {
     const k = keyOfStep(s);
@@ -1449,14 +1462,16 @@ function placeLayout(db, track, steps, input, c) {
   const chain = [];
   steps.forEach((s, i) => { chain[i] = (s.after || []).flatMap((a) => (typeof a === 'string' ? [a] : Number.isInteger(a) && a >= 1 && a <= i ? chain[a - 1] : [])); });
   const asked = [];
+  const bypass = [];
   steps.forEach((s, i) => stepped(i, s, () => {
     for (const a of s.after || []) if (Number.isInteger(a) && asked[a - 1]) throw new TrackRefusal('after names step ' + a + ', which is asked of the user (' + asked[a - 1].id + '), so nothing is made for it yet');
     if (!lands[i]) return;
     const f = { ...s, tier, track: track.fields.id, after: (s.after || []).filter((a) => typeof a === 'string') };
-    const lad = ladderPlace(db, f, c, { via: 'layout', laterReal: real[i], chain: chain[i] });
+    const lad = ladderPlace(db, f, c, { via: 'layout', laterReal: real[i], chain: chain[i], ...(s.task !== undefined ? { task: s.task.trim() } : {}) });
     if (lad && lad.ask) asked[i] = askFiling(db, f, c, s.task !== undefined ? { task: s.task.trim() } : { draft: s }, { via: 'layout', step: i + 1 });
+    else if (lad && lad.bypass) bypass[i] = true;
   }));
-  return asked;
+  return { asked, bypass };
 }
 
 /* a refusal names its step by number and name, never by an id the rollback frees */
@@ -1620,9 +1635,10 @@ function closeTrack(db, input, actor, status) {
     throw new TrackRefusal(rec.fields.id + ' still waits on the user about where its work goes: ' + waits.join(', ') + (waits.length === 1 ? ' is' : ' are')
       + ' open. Leave the track open until ' + (waits.length === 1 ? 'it is' : 'they are') + ' answered', { placements: waits });
   }
-  if (input.leftovers === 'inbox' && c.session && !isUserCall(c)) {
+  const sw = input.leftovers === 'inbox' && c.session && !isUserCall(c) ? bypassFor(db, c, policedHeld(db, c) || rec) : null;
+  if (input.leftovers === 'inbox' && c.session && !isUserCall(c) && !sw) {
     throw new TrackRefusal("leftovers inbox moves every open task off the track, which is the user's own command: finish, drop or place each open task (a place off "
-      + rec.fields.id + ' is asked of the user), then ' + (status === 'dropped' ? 'drop' : 'finish') + ' it');
+      + rec.fields.id + ' is asked of the user), then ' + (status === 'dropped' ? 'drop' : 'finish') + ' it. ' + GO_PATH);
   }
   const why = status === 'dropped' ? needText(input.reason, 'dropping a track') : input.outcome ? needText(input.outcome, 'an outcome') : undefined;
   /* at full depth a finish waits for a review of its finished code, or a waiver */

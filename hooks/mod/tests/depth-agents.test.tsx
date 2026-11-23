@@ -772,6 +772,29 @@ describe('the agent guard', () => {
       .toEqual(['handed_on', [['sess-0', 'handed_on']], undefined, true, 'sess-1'])
   })
 
+  /* the board hears a real start and every end for a one-session bypass; a hot reload runs
+     session.start again in the same process and must not clear a live switch */
+  test('a bypass hears a real start and each end, never a reload', HEAVY, async ($: any, on: any) => {
+    const w = world(on)
+    const heard = () => w.bypassEnds.map((i: any) => [i.session, i.reason])
+    const again = async () => { await $.session.start({ cwd: w.cwd, surface: null, isInteractive: false }); await w.clock.settle() }
+    await start($, w)
+    expect(heard()).toEqual([['sess-1', 'start']])
+    await again()
+    expect(heard().length).toBe(1)
+    await $.session.end({ reason: 'clear', sessionId: 'sess-1', resume: { id: 'sess-1' } })
+    w.sid = 'sess-2'
+    await w.clock.settle()
+    /* a reload after a /clear, the same process under the new id */
+    await again()
+    expect(heard()).toEqual([['sess-1', 'start'], ['sess-1', 'clear']])
+    await $.session.end({ reason: 'other', sessionId: 'sess-2', resume: { id: 'sess-2' } })
+    /* a reopen is a new process, whose environment holds no mark */
+    delete w.env.ASKERDO_BYPASS_SEEN
+    await again()
+    expect(heard().slice(2)).toEqual([['sess-2', 'other'], ['sess-2', 'start']])
+  })
+
   /* a hot reload empties the module; the load rebuilds from the store's copy and the
      engine's list, so the agent still running counts, its own helper under it, and its end lands.
      The board's open runs are matched against the list: the listed live one renewed, the listed

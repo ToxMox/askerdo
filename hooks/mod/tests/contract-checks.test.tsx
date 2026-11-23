@@ -99,7 +99,7 @@ describe('the reply checks (flag, never rewrite)', () => {
       if (p.track) {
         const last = '<why nothing on TR-3 needs it sooner>'
         const offers = [{ call: 'place', tier: 2, before: 'T-n', flags: '--tier 2 --before T-n' }, { call: 'place', tier: 2, last, flags: '--tier 2 --last "' + last + '"' }]
-        const refused = { refused: "TR-3 is the track you hold, so the step is tier 2. The board's answer: tier 2 with before T-n (--tier 2 --before T-n); or tier 2 with last, a last resort (--tier 2 --last \"" + last + '").', offer: offers[0], offers }
+        const refused = { refused: "TR-3 is the track you hold, so the step is tier 2. The board's answer: tier 2 with before T-n (--tier 2 --before T-n); or tier 2 with last, a last resort (--tier 2 --last \"" + last + '").', offer: offers[0], offers, path: 'One go question carries the plan.' }
         return { exitCode: 1, stdout: JSON.stringify(refused) + '\n', stderr: 'AskerDo: ' + refused.refused + '\n' }
       }
       return { exitCode: 0, stdout: JSON.stringify({ id: 'T-77', track: 'TR-3', tier: p.tier, ladder: { where: 'on TR-3 before T-50', filled: ['track', 'before'] } }) + '\n', stderr: '' }
@@ -123,7 +123,7 @@ describe('the reply checks (flag, never rewrite)', () => {
     const ok = await w.call($, { tool: 'mcp__askerdo__place', name: 'Fix the gap', description: 'Found by the lane.', tier: 2 })
     expect([JSON.parse(creates()[0].stdin).tier, String(ok.result).includes('Tier 2')]).toEqual([2, true])
     const no = await w.call($, { tool: 'mcp__askerdo__place', name: 'Tidy the docs', description: 'Seen in passing.', tier: 3, track: 'TR-3' })
-    expect(String(no.deny)).toContain('place with tier 2')
+    expect([String(no.deny).includes('place with tier 2'), String(no.deny).includes('One go question')]).toEqual([true, true])
     await $.turn.complete({ answer: OK + ' **Filed** the gap.', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
     const first = await notes($, w)
     const said = first.join('\n')

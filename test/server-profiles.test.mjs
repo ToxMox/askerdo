@@ -247,3 +247,16 @@ test('an invalid setting is refused and nothing is written', () => {
   }
   assert.equal(JSON.stringify(pf.loadProfiles(db)), before);
 });
+
+test('placement.mode changes only by the user, and the narrower layer wins', () => {
+  const db = tree();
+  const user = { user: 'pane' };
+  const mode = (track) => pf.resolveSession(db, { track }).settings['placement.mode'].value;
+  for (const by of [actor, { session: 's1' }]) assert.throws(() => pf.settingsSet(db, { key: 'placement.mode', value: 'model', at: 'default' }, by), /press/);
+  assert.throws(() => pf.profileDefine(db, { name: 'sneak', set: ['placement.mode=model'] }, actor), /press/);
+  assert.equal(mode('TR-1'), 'ask');
+  pf.settingsSet(db, { key: 'placement.mode', value: 'model', at: 'default' }, user);
+  assert.equal(mode('TR-1'), 'model');
+  pf.settingsSet(db, { key: 'placement.mode', value: 'ask', at: 'track', record: 'TR-1' }, user);
+  assert.equal(mode('TR-1'), 'ask');
+});

@@ -179,7 +179,7 @@ function picker(m, row, target) {
   }
   parts.push('</ul>');
   if (row.key.startsWith('contract.')) parts.push('<p class="dim">Your reply options are one set for every session, so they live on your default profile, which every PC reads.</p>');
-  else if (m.scope.kind === 'everywhere') parts.push('<p class="dim">Pick a project, workstream or track above to set it narrower.</p>');
+  else if (m.scope.kind === 'everywhere' && !row.defaultOnly) parts.push('<p class="dim">Pick a project, workstream or track above to set it narrower.</p>');
   return '<div class="pick"' + attr('id', 'p-' + row.key) + '>' + parts.join('') + '</div>';
 }
 

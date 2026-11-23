@@ -112,7 +112,7 @@ const WRITE_KEYS = ['track', 'focus', 'state', 'whereWeWere', 'rulings', 'waitin
 
 /* the board never learns the caller's version, so a name a release stopped
    sending is what says the caller is older: name, first release without it */
-const RETIRED_KEYS = { waitingOnUser: '0.8.13' };
+const RETIRED_KEYS = {};
 
 function checkPayload(input) {
   const e = [];

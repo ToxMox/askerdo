@@ -9,6 +9,9 @@ export const FOLD_CELLS = 4
 const PX = 24
 /* a desktop cell in px (14 px Anthropic Sans, desktop-capabilities) */
 export const CELL = 8.453
+/* 1ch of the narrowest of the app's fonts (Segoe UI, desktop-capabilities): what must fit in
+   cells whatever font the user picks counts them at this */
+export const CELL_NARROW = 7.547
 export const OPEN = '▾', SHUT = '▸'
 /* light then dark: the ring the badge's sky, the chevron the pane's sky; lit, the light theme's pale
    sky tint and the dark theme's grey (a sky tint read teal on near black) */
@@ -72,10 +75,12 @@ export function fitWords(s: string, cells: number, weight = 400): string {
   return fits(cut(lo)) ? cut(lo) : ''
 }
 
-/* the ring's width left empty, so a grid's rows without one keep their columns under the ones with one */
+/* the ring's width left empty, so a grid's rows without one keep their columns under the ones with one;
+   an empty Svg, since the ring's 24 px is a different count of cells in each font */
+const GAP_SOURCE = '<svg xmlns="http://www.w3.org/2000/svg" width="' + PX + '" height="1"/>'
 export function foldGap(els: any, key: string): any {
-  const { Box } = els
-  return <Box key={key} flexShrink={0} width={Math.round((PX / CELL) * 1000) / 1000} />
+  const { Box, Svg } = els
+  return <Box key={key} flexShrink={0}><Svg source={GAP_SOURCE} alt="" width={PX} height={1} /></Box>
 }
 
 /* B's ring ends its row one cell past what comes before, whatever the row's own gap. Unkeyed, so

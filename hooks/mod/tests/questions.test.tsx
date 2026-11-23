@@ -332,13 +332,13 @@ describe('the Questions pane', () => {
     expect([tabAsleep[1], await ui.find({ key: 'asleep-Q110' })]).toEqual([false, undefined])
     await ui.press({ key: 'asleep-fold' })
     const rested = (await ui.find({ key: 'asleep-Q110' }))?.text
-    expect(rested).toContain('nap one')
+    expect(rested).toContain('Q110 nap one')
     /* a failed Wake says so on the row with no id or address, and the words go once the row leaves and returns */
     await ui.press({ key: 'wake-Q110' })
     await w.clock.settle()
     await ui.redraw()
     const said = String((await ui.find({ key: 'asleep-Q110' }))?.text)
-    expect([said !== rested, /Q110|127\.0\.0\.1/.test(said)]).toEqual([true, false])
+    expect([said !== rested, /Q110|127\.0\.0\.1/.test(said.replace('Q110 nap one', ''))]).toEqual([true, false])
     const reread = async (list: any[]) => { nap = list; w.change(); await w.clock.settle(); await ui.redraw() }
     await reread([])
     expect(await tabWith()).toEqual(tabAsleep)
@@ -663,8 +663,24 @@ describe('the ask tool\'s decision fields', () => {
     expect(sent.options).toEqual(options)
     const schema = w.tools.find((t: any) => t.name === 'ask').inputSchema
     expect(Object.keys(schema.properties.options.items.properties)).toEqual(
-      ['type', 'option', 'getsYou', 'costsYou', 'headline', 'whyPick', 'whyNot', 'undo'])
+      ['type', 'option', 'getsYou', 'costsYou', 'headline', 'whyPick', 'whyNot', 'undo', 'go'])
     expect(schema.properties.crux.type).toBe('string')
+  })
+
+  /* the one question that frees a planned set of moves is the user's alone to answer */
+  test('a go option needs gates and reaches register, and a session records its answer only from a message of the user', async ($: any, on: any) => {
+    const w = world(on)
+    await start($, w)
+    const options = [{ type: 'a', option: 'move them', go: true }, { type: 'b', option: 'ask each' }]
+    const ask = { tool: 'mcp__askerdo__ask', name: 'the moves', ask: ASKED, gist: 'Six moves.', blocking: true, options, pick: 'a' }
+    expect((await $.tool.call(ask)).deny).toContain('needs gates')
+    await $.tool.call({ ...ask, gates: ['T-42'] })
+    expect(JSON.parse(w.last('register').stdin).options[0].go).toBe(true)
+    w.questions.push({ id: 'Q600', name: 'the moves', blocking: true, goOption: 'a', created: new Date(Date.now() - 1000).toISOString(), options })
+    const early = await w.call($, { tool: 'mcp__askerdo__answer', id: 'Q600', pick: 'a' })
+    await $.prompt.submit({ text: 'Q600 a' })
+    const named = await w.call($, { tool: 'mcp__askerdo__answer', id: 'Q600', pick: 'a' })
+    expect([String(early.deny).includes('press its card'), String(named.result).includes('600a'), w.last('answer').args.includes('--user')]).toEqual([true, true, true])
   })
 
   test('a slot that is not text is refused before the CLI', async ($: any, on: any) => {

@@ -11,6 +11,7 @@ import {
 } from './labels.mjs';
 import { reopenQuestion, wakeLinked } from './questions.mjs';
 import { APPROVED } from './placement-seam.mjs';
+import { bypassFor } from './bypass.mjs';
 import { TrackRefusal, addItem, itemsOf, loadRecord, readiness, settleChecks, shownWorkers } from './graph.mjs';
 import { decisionsFor } from './decisions.mjs';
 import { addHistory, historyRef, inUseRefusal, noteRead, usedBy } from './history.mjs';
@@ -653,7 +654,9 @@ export function editRecord(db, input = {}, actor) {
     /* a next-session wake alone sets the wait on the track the task is on, no filing; on the held track a later session is asked */
     if (isNextSession(wake) && [track, tier, unplaced, newTrack, unparkWhen, before, after, rest.workstream].every((v) => v === undefined)) {
       const heldRec = free ? null : policedHeld(db, c);
-      if (heldRec && db.stmt('SELECT 1 FROM track_items WHERE track = ? AND task = ?').get(heldRec.key, e.key)) return askMove();
+      const onHeld = heldRec && db.stmt('SELECT 1 FROM track_items WHERE track = ? AND task = ?').get(heldRec.key, e.key);
+      const sw = onHeld ? bypassFor(db, c, heldRec) : null;
+      if (onHeld && !sw) return askMove();
       const placed = waitNextSession(db, e.key, actor);
       const left = leaving ? leaveOnClose(db, e.key, leftovers, actor) : null;
       return { ...base(), changed: [...(out ? out.changed : []), 'wake'], placed, ...(left ? { leftovers: left, steps: stepsOf(left) } : {}), version: versionNow() };
@@ -925,7 +928,8 @@ function moveSteps(db, id, moves, actor) {
   const offHeld = (t) => heldRec && !db.stmt('SELECT 1 FROM track_items WHERE track = ? AND task = ?').get(heldRec.key, t.key);
   const out = plan.map((p, i) => {
     if (p.onto && offHeld(p.onto)) {
-      const draft = { name: p.step.text, description: stepShort(e.front.id, p.n, p.step.text) };
+      if (bypassFor(db, c, heldRec)) return { check: p.n, to: p.onto.label, step: addItem(db, { task: p.onto.key, text: p.step.text }, actor).n };
+      const draft ={ name: p.step.text, description: stepShort(e.front.id, p.n, p.step.text) };
       try {
         return { check: p.n, asked: askFiling(db, { onto: p.onto.label, here: p.here, whyElsewhere: p.whyElsewhere }, c, { draft }, { via: 'moveSteps', task: e.front.id, step: p.n }, new Set([e.key])) };
       } catch (err) {

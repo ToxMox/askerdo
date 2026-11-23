@@ -81,6 +81,17 @@ local (`L1`) until it engages.
   file the settled place with `--question Q-n --words "<the user's
   settling words>"`. A track is not finished while a placement question
   of its work is open. A session that holds no track files as before.
+- **A planned set of moves across tracks is asked once,** as one go
+  question: take the task in hand, then one `ask` with the moves in its
+  gist, its yes option marked `go` (`"go": true`) and that task in
+  `gates`. The user's yes carries every placement under the task until
+  it closes, another session's running task included. Agents write no
+  tasks: they draft the list and the session applies it.
+- **The user can turn the question off:** the tray's Task placement
+  bypass (every session or one, for a time, until that session ends, or
+  until turned off) or the Task placement setting. Both change by the
+  user's press alone; while one covers this session, the rules block
+  says so.
 - `task create --json < payload.json` (`name`, `description`; usual
   `intent`) takes the flags above; a date `--wake` names why that date
   in `--unplaced`. Where the mod runs, its `place` tool takes the same

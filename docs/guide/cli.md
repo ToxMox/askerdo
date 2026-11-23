@@ -43,7 +43,7 @@ This page is built from the CLI's help by `node scripts/build.mjs`, so it matche
 - Conversion map: [conversion](#conversion), [conversion put](#conversion-put), [conversion drop](#conversion-drop), [purge](#purge)
 - Knowledge and decisions: [knowledge new](#knowledge-new), [knowledge supersede](#knowledge-supersede), [knowledge amend](#knowledge-amend), [knowledge edit](#knowledge-edit), [knowledge retire](#knowledge-retire), [knowledge reinstate](#knowledge-reinstate), [decide](#decide), [decisions](#decisions), [decisions triggers](#decisions-triggers)
 - Settings and profiles: [settings](#settings), [settings set](#settings-set), [settings unset](#settings-unset), [settings rule](#settings-rule), [profile add](#profile-add), [profile remove](#profile-remove), [profile show-effective](#profile-show-effective), [profile rule-add](#profile-rule-add), [profile rule-drop](#profile-rule-drop), [profile rule-clear](#profile-rule-clear), [profile define](#profile-define), [profile delete](#profile-delete), [profile list](#profile-list), [profile guard](#profile-guard)
-- Procedures: [proc scan](#proc-scan), [proc ran](#proc-ran), [proc drafts](#proc-drafts), [proc find](#proc-find), [proc triggers](#proc-triggers)
+- Procedures: [proc scan](#proc-scan), [proc ran](#proc-ran), [proc read](#proc-read), [proc drafts](#proc-drafts), [proc find](#proc-find), [proc triggers](#proc-triggers)
 - Overrides: [override request](#override-request), [override decide](#override-decide), [override unscrub](#override-unscrub)
 - This PC and the board: [board](#board), [board here](#board-here), [timings](#timings), [projects](#projects), [projects scan](#projects-scan), [projects forget](#projects-forget), [projects rename](#projects-rename), [login](#login), [join-code](#join-code), [join](#join), [upkeep](#upkeep), [upkeep on](#upkeep-on), [upkeep off](#upkeep-off), [status](#status), [board move](#board-move), [backup](#backup), [restore](#restore), [legacy](#legacy), [help](#help)
 - Other verbs: [check strike](#check-strike), [task block](#task-block)
@@ -1071,6 +1071,7 @@ askerdo proc scan
   --session <value>: your own session id
   --json: print JSON
   --check: parse, judge and lint the docs/procedures files of this checkout (a worktree's branch included) and write nothing to the board; exit 1 when a file has errors
+  --verified: with --check: judge each card from its last clean run or read on the board, not from the last commit of its file
 ```
 
 ### proc ran
@@ -1084,6 +1085,18 @@ askerdo proc ran <name> <clean or deviated>
   --fixed <value>: with deviated: the commit that fixed the card's steps file
   --one-off <value>: with deviated: why the run was a one-off and the steps stand
   --filed <value>: with deviated: the open task you filed for the work, on a track or in an inbox (it holds the flag until it closes)
+  --json: print JSON
+```
+
+### proc read
+
+```text
+askerdo proc read <name>
+  mark a card read against the changes since its last clean run and found current; it counts for staleness apart from a run, and the verified commit and run counts stay
+  --note <value>: what was read
+  --project <value>: the project the name is in (default: the current repo)
+  --session <value>: your own session id
+  --at <value>: the commit the read was made at (default: HEAD)
   --json: print JSON
 ```
 

@@ -2994,7 +2994,9 @@ test('the tray attaches with the server own instance, and a stranger is refused'
      corner, the blocking count, and the cadence the tray times its own
      liveness window against */
   const hello = await es.waitFor(() => es.of('hello')[0]);
-  assert.deepEqual(hello.tray, {
+  const { bypass, ...menu } = hello.tray;
+  assert.deepEqual(bypass.on, [], 'the frame carries the placement bypass block');
+  assert.deepEqual(menu, {
     instance: inst, dot: 'blocking', blocking: 1, beatMs: 4000,
     /* THE MENU'S FIVE, additive beside the four above and ignored by the page
        exactly as those are. THE NAMES ARE THE LITERAL ONES THE FIXTURES REGISTERED:

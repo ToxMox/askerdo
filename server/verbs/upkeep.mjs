@@ -221,12 +221,13 @@ export function settleWakeAsk(db, key, why, c) {
 }
 
 /* A re-wake of an inbox task: null when it may be stored; else the board stores none, and says why.
-   Open question: it waits on it. The user said place or drop: refused with that. Two wakes this stay: the user is asked. */
-export function thirdWake(db, task, c, why) {
+   Open question: it waits on it. The user said place or drop: refused with that. Two wakes this stay: the user is asked.
+   `bypass` asks nothing and waits on nothing; the user's own answer still stands. */
+export function thirdWake(db, task, c, why, bypass = false) {
   const { n, ask } = wakesInStay(db, task.key);
   const id = task.fields.id;
   /* asked is the question as register returns it, the same shape as a placement's */
-  if (ask && ask.open) {
+  if (ask && ask.open && !bypass) {
     const f = loadRecord(db, ask.key).fields;
     return { asked: { id: ask.id, key: ask.key, name: f.name, ask: f.ask }, waits: true };
   }
@@ -234,7 +235,7 @@ export function thirdWake(db, task, c, why) {
     throw new TrackRefusal('the user answered ' + ask.id + ': ' + (ask.pick === ASK_PLACE ? 'put ' + id + ' on a track (`' + CLI + ' task edit ' + id + ' --track TR-n`)'
       : 'drop ' + id + ' (`' + CLI + ' task update ' + id + ' --status dropped --note "<the user\'s words>"`)') + ', so it takes no new wake');
   }
-  if (n < 2) return null;
+  if (bypass || n < 2) return null;
   const ws = task.fields.workstream ? loadRecord(db, task.fields.workstream) : null;
   const repo = ws ? ([].concat(ws.fields.projectRepos || [])[0] || [].concat(ws.fields.projects || [])[0] || ws.fields.name) : 'askerdo';
   const name = String(task.fields.name || '').replace(/\s+/g, ' ').trim();

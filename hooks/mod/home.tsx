@@ -5,7 +5,7 @@
  * alone; index.ts owns the reads and the writes. */
 import { PANE_TABS, PANE_TITLE, UNREAD_WORDS, cellWidth, clampWords, fillGlyph, flightWords, kindPicture, markPicture, paneMeasure, textMeasure } from '../../lib/mod-core.mjs'
 import { AGENTS_LINE, AGENT_LINE, PRESS_LIT, PRESS_RIM, agentRow, linkLine, linkOver, liveClient, pressFace, pressInside, pressOver, wordLink } from './status.tsx'
-import { FOLD_CELLS, fitWords, foldHead, paneCells } from './fold.tsx'
+import { CELL_NARROW, FOLD_CELLS, fitWords, foldHead, paneCells } from './fold.tsx'
 import { HOLD_WORDS } from '../../server/web/draw.mjs'
 
 export type PaneTab = 'home' | 'questions' | 'tracks' | 'settings' | 'guide'
@@ -470,9 +470,10 @@ export function graphTree(els: any, gm: any, press: (a: any) => (() => void) | n
     const p = gm.picture
     /* the ground's press first, so every zone lies over it, and each zone in the order drawn */
     const ground = p.clear && press(p.clear)
-    const zones = [ground ? zoneOver(els, { k: 'ground', x: 0, y: 0, w: p.width, h: p.height }, ground, '') : null,
-      ...(p.zones || []).map((z: any) => zoneOver(els, z, press(z.act), z.act && z.act.href))]
-    parts.push(<Box key="graph-pic" flexShrink={0}><Svg source={p.source} alt={p.alt} width={p.width} height={p.height} />{zones}</Box>)
+    const zones = [ground ? zoneOver(els, { k: 'ground', x: 0, y: 0, w: p.width, h: p.height }, ground, '', p.height) : null,
+      ...(p.zones || []).map((z: any) => zoneOver(els, z, press(z.act), z.act && z.act.href, p.height))]
+    /* the Box is the picture's cells at the app's font; the Svg, past it and given no height, fills it at its own aspect */
+    parts.push(<Box key="graph-pic" flexShrink={0} width={p.width / PX_CELL}><Svg source={p.source} alt={p.alt} width={Math.min(SVG_MAX, p.width * 2)} />{zones}</Box>)
     /* a row, so the column does not stretch the link's rim, whose margins then pass the pane's edge */
     if (gm.more) parts.push(gm.more.href ? <Box key="graph-more" flexDirection="row">{wordLink(els, 'graph-more-link', gm.more.href, gm.more.words + ' ' + OUT, desk)}</Box> : <Box key="graph-more"><Text dimColor>{gm.more.words}</Text></Box>)
     if (gm.inbox) parts.push(inboxTree(els, gm.inbox, fold && fold.inbox, desk, cols))
@@ -602,22 +603,26 @@ function legendTree(els: any, cols: number, legend: any[]): any {
 }
 
 /* a press laid over the picture where a thing is drawn (an Svg takes no press): its act
-   in the pane, else a link to its page; offsets by margins, across in cells, down in the engine's
-   half-line rows (desktop-capabilities: a Box's vertical margin), the height in lines.
-   a thing's zone lights grey on hover as every press does; the ground's clear does not */
-const PX_CELL = 8.453, PX_LINE = 20
-export const PX_ROW = PX_LINE / 2
-function zoneOver(els: any, z: any, go: (() => void) | null, href?: string): any {
+   in the pane, else a link to its page. A thing's zone lights grey on hover as every press does;
+   the ground's clear does not. The app's font sets the px of a cell and the picture scales with
+   it, so down the picture a zone is a share of its height. The engine takes only whole percents, so a
+   zero-width column as tall as the picture shares its height out by flexGrow: above, the zone, below */
+const PX_CELL = 8.453, PX_LINE = 20, PX_ROW = PX_LINE / 2, SVG_MAX = 4096
+function zoneOver(els: any, z: any, go: (() => void) | null, href: string | undefined, height: number): any {
   const { Box } = els
   if (!go && !href) return null
   const cells = z.w / PX_CELL
   const id = z.k + '-' + z.x + '-' + z.y
+  const below = Math.max(0, height - z.y - z.h)
   /* the zone cuts its press itself, so the press needs no cut of its own */
   const face = pressInside(els, (go ? 'gzp-' : 'gzl-') + id, cells, go, href, 'zone')
   const lit = z.k === 'ground' ? {} : { hover: PRESS_LIT.hover }
   return (
-    <Box key={'gz-' + id} position="absolute" top={0} left={0} marginLeft={z.x / PX_CELL} marginTop={z.y / PX_ROW}
-      width={cells} height={z.h / PX_LINE} overflow="hidden" justifyContent="center" {...lit}>{face}</Box>
+    <Box key={'gzc-' + id} position="absolute" top={0} left={0} width={0} height="100%" flexDirection="column">
+      {z.y > 0 ? <Box key={'gza-' + id} height={0} flexGrow={z.y} /> : null}
+      <Box key={'gz-' + id} marginLeft={z.x / PX_CELL} width={cells} height={0} flexGrow={z.h} overflow="hidden" justifyContent="center" {...lit}>{face}</Box>
+      {below > 0 ? <Box key={'gzb-' + id} height={0} flexGrow={below} /> : null}
+    </Box>
   )
 }
 
@@ -714,8 +719,8 @@ function headPx(s: string): number {
   return px
 }
 /* the head's room past its chrome (pads, close and menu: about 96 px of a tile 42 px wider than
-   its body, desktop-capabilities 2f), from the body's 8.453 px columns */
-const titleRoom = (cols: number) => cols * 8.453 + 42 - 96
+   its body, desktop-capabilities 2f), in headPx: its px run 7.74 to a cell at least, in any app font */
+const titleRoom = (cols: number) => (cols - 54 / CELL_NARROW) * 7.74
 
 /* the pane's title, the folder's name with its parent in brackets, then its branch,
    each fact led by its emoji and parted by wide gaps; fitted to `cols`: the brackets drop first,

@@ -463,9 +463,6 @@ test('a handoff written through the launcher keeps its loose-file lists on the P
 
   await assert.rejects(boardCall('writeHandoff', { track: tr.id, focus: 'x', state: 'y', verify: [{ path: repo, files: [] }] }),
     (e) => e.message.includes('files'), 'the board refuses the lists');
-  /* an older AskerDo's renamed key is refused with the update fix, never dropped */
-  await assert.rejects(boardCall('writeHandoff', { track: tr.id, focus: 'x', state: 'y', waitingOnUser: ['a line'] }),
-    (e) => /unknown field "waitingOnUser"/.test(e.message) && /plugin update/.test(e.message) && /new session/.test(e.message), 'the board names the stale key and the fix');
 });
 
 test('a handoff written on one PC resumes on another: each repo verified at its checkout there, the handoff folder found there, a repo it lacks named as not here; one naming its next leg\'s PC is taken elsewhere only with --here; an untaken track with ready work is named at both', async () => {
