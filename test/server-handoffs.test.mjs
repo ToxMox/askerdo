@@ -622,6 +622,42 @@ test('a due review line carries its review step, and the step as printed lays a 
   assert.doesNotMatch(reviewLine({ ...due, planned: made.id }, tr.id), /track layout/, 'a planned review keeps its words');
   /* the handoff write names the same checkpoint the kickoff's step goes before */
   assert.equal((await handoff(tr.id, 'r1')).checkpoint, made.id);
+
+  /* whatever is next on the track, the kickoff's call files the review with nothing asked or edited by hand, and
+     the track's own closing review stays after it; a review the finished work waits on would make a loop */
+  const cases = {
+    'a mid-track review': [{ name: 'The fix' }, { name: 'Wave review', labels: ['review'], after: [0] }, { name: 'The look', after: [1] }],
+    'a look': [{ name: 'The fix' }, { name: 'The look', after: [0], labels: ['look'] }],
+    'the closing review beside other work': [{ name: 'The fix' }, { name: 'Close it', labels: ['review'], after: [0] }],
+    'the closing review alone': [{ name: 'Close it', labels: ['review'] }],
+    'no checkpoint': [{ name: 'The fix' }, { name: 'The ship step', after: [0] }],
+    'a review the finished task waits on': [{ name: 'Wave review', labels: ['review'], holdsDone: true }, { name: 'The ship step', after: [0] }],
+    nothing: [],
+  };
+  let sha = 0;
+  for (const [next, open] of Object.entries(cases)) {
+    const s = 'p ' + next;
+    const on = await line(s);
+    await boardCall('settingsSet', { key: 'review.tasks', value: 1, at: 'track', record: on.id }, { actor: 'cli' });
+    const ids = [];
+    for (const { holdsDone, after = [], ...o } of open) ids.push((await boardCall('createRecord', { description: 'd', track: on.id, ...o, after: after.map((i) => ids[i]) }, { actor: 'cli' })).id);
+    const done = await boardCall('capture', { track: on.id, name: 'built' });
+    for (const [i, o] of open.entries()) if (o.holdsDone) await boardCall('addEdge', { task: done.id, on: ids[i], reason: 'r' });
+    sha += 1;
+    await boardCall('commitLink', { repo: 'r', sha: String(sha).repeat(40), task: done.id, via: 'message', at: new Date().toISOString(), added: 9, removed: 0 }, { actor: 'cli' });
+    await boardCall('taskUpdate', { id: done.id, status: 'done' }, { session: s });
+    await handoff(on.id, s);
+    const cmd = /Run: `(.*)`/.exec((await resume(on.id, s)).kickoff)[1];
+    /* the step is the holder's to lay out; another session reads the count alone */
+    const reads = [await resume(on.id, 'reader', { move: 'read only' }), await boardCall('trackKickoff', { track: on.id }, { session: 'reader' }), await boardCall('trackKickoff', { track: on.id }, { session: s })];
+    assert.deepEqual(reads.map((r) => [r.kickoff.includes('Review due'), r.kickoff.includes('track layout')]), [[true, false], [true, false], [true, true]], next);
+    assert.doesNotMatch(cmd, /<|--session/, next);
+    const [step] = (await boardCall('layOut', { track: on.id, steps: JSON.parse(/echo '(.*)' \|/.exec(cmd)[1]).steps, session: s }, { session: s })).steps;
+    assert.ok(step.id && !step.asked, next + ' ' + JSON.stringify(step));
+    const now = (await boardCall('trackView', { track: on.id })).tasks;
+    const close = now.find((t) => t.name === 'Close it');
+    if (close) assert.ok(close.column > now.find((t) => t.id === step.id).column, next);
+  }
 });
 
 test('a question still open is listed once, though the handoff carried it too', () => {

@@ -181,16 +181,17 @@ export const offerLines = (items, cli = CLI) => (Array.isArray(items) ? items : 
 
 /* a track's review readout in one line, for the kickoff and the handoff:
    due names the count and the tasks, not due one quiet count, none nothing; then the
-   reviews the board's old reopen left open, for the session to close. */
+   reviews the board's old reopen left open, for the session to close.
+   `lay` false, a reader of a track it does not hold: the readout, with no step asked for. */
 export function reviewLine(review, track, opts = {}) {
   const left = review && Array.isArray(review.leftOpen) ? review.leftOpen : [];
   const close = left.length ? 'Reopened by the board before reviews stayed completed, with nothing new to read: '
-    + listWords(left, (t) => t.id + ' ' + flat(t.name)) + '; close ' + (left.length === 1 ? 'it' : 'each') + ' with `'
-    + (opts.cli || CLI) + ' task edit ' + left[0].id + ' --status done --session <own-id>`.' : '';
+    + listWords(left, (t) => t.id + ' ' + flat(t.name)) + (opts.lay === false ? '.' : '; close ' + (left.length === 1 ? 'it' : 'each') + ' with `'
+    + (opts.cli || CLI) + ' task edit ' + left[0].id + ' --status done --session <own-id>`.') : '';
   return [uncoveredLine(review, track, opts), close].filter(Boolean).join(' ');
 }
 
-function uncoveredLine(review, track, { before = null, cli = CLI } = {}) {
+function uncoveredLine(review, track, { before = null, cli = CLI, lay = true } = {}) {
   if (!review || !Array.isArray(review.uncovered) || !review.uncovered.length) return '';
   const n = review.uncovered.length;
   const tasks = n + ' finished code task' + (n === 1 ? '' : 's');
@@ -206,6 +207,7 @@ function uncoveredLine(review, track, { before = null, cli = CLI } = {}) {
     const now = reading.length ? listWords(reading, (r) => r.id + ' is reading ' + r.tasks.join(', ')) + '; ' : '';
     if (!rest.length) return head + now + (reading.length === 1 ? 'it covers them when it completes' : 'they cover them as each completes') + locked;
     if (review.planned) return head + now + review.planned + ' covers ' + them + ' when it completes' + locked;
+    if (!lay) return (head + now.replace(/; $/, '. ') + (review.locked ? 'The track finishes only after one.' : '')).trim();
     /* the step itself, so accepting it is one call in the turn it is reported */
     return head + now + (now ? 'lay' : 'Lay') + ' the review step out now, which covers ' + them + ' when it completes' + locked + ' Run: `' + reviewStepCommand(rest, track, before, cli) + '`';
   }
@@ -213,12 +215,13 @@ function uncoveredLine(review, track, { before = null, cli = CLI } = {}) {
     + (review.locked ? ', and the track finishes only after one.' : '.');
 }
 
-/* One review step after the uncovered tasks and before the track's next checkpoint, ready to run. */
+/* One review step after the uncovered tasks and before the track's next checkpoint, run as printed: with no --session
+   it files as the shell's own session, in Bash and PowerShell alike. */
 export function reviewStepCommand(uncovered, track, before, cli = CLI) {
   const all = uncovered.map((t) => t.id);
   const named = all.length > 5 ? all.slice(0, 5).join(', ') + ' and ' + (all.length - 5) + ' more' : all.slice(0, -1).join(', ') + (all.length > 1 ? ' and ' : '') + all.at(-1);
   const step = { name: 'Review ' + named, reviewScope: 'track', after: all, ...(before ? { before: [before] } : {}), runBy: 'agent:opus' };
-  return "echo '" + JSON.stringify({ steps: [step] }) + "' | " + cli + ' track layout ' + track + ' --session <own-id>';
+  return "echo '" + JSON.stringify({ steps: [step] }) + "' | " + cli + ' track layout ' + track;
 }
 
 /* the user's own captures wake 14 days out; a task stored with no wake reads so too */

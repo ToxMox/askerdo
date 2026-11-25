@@ -8,6 +8,7 @@ import {
   DAY_RE, KEY_ORDERS, addNote, byOf, changesOf, clockOf, dayOf, guardHeadings, isFullStamp, isKey, kebab, labelOf, logVerb,
   mintKey, pcOfCall, putNotes, putRecord, snoozeFlat, stampNow, unguardHeadings,
 } from '../records.mjs';
+import { longAsk } from '../ask-text.mjs';
 import { ENDED, UsageError, canonLabel, pickLabel, refsFor, resolveRecord, shownFront, strList } from './labels.mjs';
 import { noteRead } from './history.mjs';
 import { onEnding } from './upkeep.mjs';
@@ -20,7 +21,6 @@ export { UsageError, byOf, canonLabel, snoozeFlat };
 
 export const ANSWER_PLACEHOLDER = '(filled at close: the choice and its why)';
 export const INBOX_LABEL = 'inbox';
-const ASK_MAX = 400;
 const ASK_SHAPE = 'one plain question ending in "?" that names the options inline by letter'
   + ' with the pick marked, like "(a, my pick)" and "(b)"; the hub adds the question number at registration';
 
@@ -366,11 +366,11 @@ function scopeOf(project, projectRepo) {
 /* a record written before the map keeps its folder, which names it the same way */
 const nameOf = (repo, dir) => (typeof repo === 'string' && repo) || normDir(dir);
 
-function inProject(scope, dir, repo) {
+export function inProject(scope, dir, repo) {
   return !scope || nameOf(repo, dir) === scope;
 }
 
-function wsInProject(front, scope) {
+export function wsInProject(front, scope) {
   return listOf(front, 'projectRepos').includes(scope) || listOf(front, 'projects').some((d) => normDir(d) === scope);
 }
 
@@ -378,6 +378,11 @@ function wsInProject(front, scope) {
 export function sharesProject(a, b) {
   return [...listOf(a, 'projectRepos'), ...listOf(a, 'projects').map(normDir)].some((s) => s && wsInProject(b, s));
 }
+
+/* the knowledge a project's read holds, its own and every global record (as the
+   decision triggers keep them), and a workstream's: its project's and any decision naming it */
+export const knowledgeInProject = (f, scope) => f.scope === 'global' || wsInProject(f, scope);
+export const knowledgeInWs = (f, ws) => f.scope === 'global' || listOf(f, 'workstreams').includes(ws.key) || sharesProject(ws, f);
 
 /* ---- register ---- */
 
@@ -468,7 +473,7 @@ function validatePayload(raw, strict, gated) {
   p.crux = (typeof raw.crux === 'string' && oneLineOf(raw.crux)) || undefined;
   if (raw.ask !== undefined && raw.ask !== null) {
     const ask = typeof raw.ask === 'string' ? oneLineOf(raw.ask) : '';
-    if (!ask.endsWith('?') || ask.length > ASK_MAX) throw new UsageError('ask must be ' + ASK_SHAPE + ', at most ' + ASK_MAX + ' characters');
+    if (!ask.endsWith('?')) throw new UsageError('ask must be ' + ASK_SHAPE);
     p.ask = ask;
   } else if (strict) {
     throw new UsageError('register payload needs an ask: ' + ASK_SHAPE);
@@ -764,6 +769,7 @@ export function register(db, payload, actor, opts = {}) {
     if (relTrack) p.gist = [p.gist.trimEnd(), releaseLine(db, rel, relTrack)].join('\n');
     const key = mintKey(db);
     const id = pickLabel(db, 'question', d);
+    const long = longAsk(id, p.ask);
     p.ask = askWithTokens(id, p.ask, p.options);
     /* no subscribers list: the asking session is `session`, the rest derived */
     const front = ordered({
@@ -782,6 +788,7 @@ export function register(db, payload, actor, opts = {}) {
     if (looks.length) endSessionRuns(db, { session: p.session, tasks: looks, note: 'the look asked the user ' + id + ', which gates it' }, { ...(typeof who === 'object' ? who : { by: who }), now: clockNow(opts) });
     const warnings = inherited.map((t) => id + ' filed under ' + t);
     if (forced) warnings.push(id + ' reverses a ruling, so it is stored blocking');
+    if (long) warnings.push(long);
     const pw = pickWarning(id, p);
     if (pw) warnings.push(pw);
     warnings.push(...headlineWarnings(id, p));
@@ -1380,6 +1387,8 @@ function reword(db, q, raw, at, d, warnings) {
   if (rulings.length) p.blocking = true;
   /* a ruling's quote is frozen at registration: the same rulings keep it */
   p.reverses = sameJson(p.revisits, listOf(f, 'revisits')) ? (q.sections['Reverses'] || '') : rulings.map(reversesBlock).join('\n\n');
+  const long = longAsk(f.id, p.ask);
+  if (long) warnings.push(long);
   p.ask = askWithTokens(f.id, p.ask, p.options);
   const next = { ...f, name: p.name, ask: p.ask, blocking: p.blocking, crux: p.crux, revisits: p.revisits, cites: p.cites, evidence: p.evidence };
   if (p.pick) next.pick = p.pick; else delete next.pick;

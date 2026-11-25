@@ -548,7 +548,7 @@ export function trackKickoff(db, input = {}, actor, opts) {
     const lease = db.stmt('SELECT session, pc, since, seen FROM leases WHERE track = ?').get(rec.key);
     const k = kickoffInput(db, rec.key, h, { ...opts, now: c.date, ...(viewer ? { viewer } : {}) });
     /* the inbox too, which the mod reads again at the end of a turn that closed this track */
-    return { track: rec.fields.id, key: rec.key, handoff: h, holder: lease || null, workstream: k.workstream, inbox: k.inbox, kickoff: kickoffText(k, { mode: 'show' }) };
+    return { track: rec.fields.id, key: rec.key, handoff: h, holder: lease || null, workstream: k.workstream, inbox: k.inbox, kickoff: kickoffText(k, { mode: 'show', holds: !!lease && lease.session === viewer }) };
   });
 }
 

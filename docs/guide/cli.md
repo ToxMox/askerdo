@@ -120,15 +120,15 @@ askerdo surface <question id>
 ```text
 askerdo list
   the open questions (or --kind work records), blockers first then oldest, one head line each
-  --project <value>: the project directory (scopes questions)
+  --project <value>: the project directory (scopes questions and knowledge)
   --session <value>: your own session id
   --kind <value>: workstream, task or knowledge
-  --workstream <value>
+  --workstream <value>: WS-n: its records; with --kind knowledge, its project's, the global ones and the decisions naming it
   --track <value>: TR-n: the questions on that track
   --status <value>
   --priority <value>
   --label <value>
-  --json: questions: { questions, openSetUrl }; work kinds: an array
+  --json: questions: { questions, openSetUrl }; work kinds: an array, a knowledge row with its text as body
   --open
   --all
   --snoozed
@@ -197,11 +197,14 @@ askerdo resolve <label>
 
 ```text
 askerdo search <words>
-  the board's search over every record's title, text and notes and every handoff: each hit's head and the lines that matched, not the records
+  the board's search over every record's title, text and notes and every handoff: each hit holds every word typed, a "quoted phrase" as one (quote it for the shell too: search '"too long"'), and prints its head and the lines that matched, not the record
   --tab <value>: questions, work or both
-  --ws <value>: WS-n
+  --kind <value>: question, workstream, track, task, knowledge, procedure or handoff; knowledge alone searches the current directory's project
+  --project <value>: the project directory: its workstreams' records, its own questions, knowledge and procedure cards, and the global ones
+  --ws <value>: WS-n: its records, its project's knowledge, the global ones and the decisions naming it
   --limit <value>: hits (20; at most 50)
   --json: print JSON
+  --all-projects: with --kind knowledge: every project
 ```
 
 ### activity

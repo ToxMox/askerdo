@@ -445,6 +445,26 @@ test('a filing lands where its tier says, before the closing review, and a tier 
     const left = runVerb(db, 'taskUpdate', { id: fix.id, status: 'done', leftovers: [{ name: 'Tag it', description: 'd', runBy: 'fork', tier: 2, after: [placed.id] }] }, S9).steps[0];
     assert.ok(left.id && !left.asked, JSON.stringify(left));
   }
+  /* a review a look waits on is mid-track, a real place on every filing path; the track's own closing review is
+     last still, and an approved last goes before it though it was filed before the mid-track one */
+  {
+    const db = board();
+    const S6 = { session: 's6' };
+    const two = t.newTrack(db, { workstream: 'WS-1', name: 'Two reviews', session: 's6' }, S6);
+    const mk = (name, p = {}) => runVerb(db, 'createRecord', { name, description: 'd', track: two.id, ...p }, 'cli');
+    const closing = mk('Closing review', { labels: ['review'] });
+    const mid = mk('Wave review', { labels: ['review'] });
+    mk('The look', { after: [mid.id] });
+    const inHand = mk('Work in hand', { before: [closing.id] });
+    const steps = [{ name: 'Another reader', description: 'd', runBy: 'fork', before: [mid.id] }];
+    for (const [via, made] of Object.entries({
+      create: runVerb(db, 'createRecord', { name: 'Found', description: 'd', tier: 2, before: [mid.id] }, S6),
+      layout: runVerb(db, 'layOut', { track: two.id, steps, session: 's6' }, S6).steps[0],
+      close: runVerb(db, 'taskUpdate', { id: inHand.id, status: 'done', leftovers: [{ ...steps[0], name: 'Left by the close', tier: 2 }] }, S6).steps[0],
+    })) assert.ok(made.id && !made.asked && g.readiness(db, mid.key).waitsOn.some((x) => x.includes(made.id)), via + ' ' + JSON.stringify(made));
+    assert.throws(() => runVerb(db, 'createRecord', { name: 'Found late', description: 'd', tier: 2, before: [closing.id] }, S6), (e) => e.data.offers.some((o) => o.last));
+    assert.equal(runVerb(db, 'createRecord', { name: 'Tidy', description: 'd', tier: 2, last, [APPROVED]: 'Q-1' }, S6).ladder.before, closing.id);
+  }
   /* on the held track a marked blank (no before, no last line) is refused on every filing path, writing nothing, with both calls */
   const count = () => db.prepare("SELECT count(*) AS n FROM records WHERE kind = 'task'").get().n;
   const edges = () => db.prepare('SELECT count(*) AS n FROM depends').get().n;
@@ -831,7 +851,11 @@ test('at full depth a commit after a completed review leaves it completed and co
   /* a review the board reopened before the ruling is listed for the session to close, and closing it reads nothing new */
   runVerb(db, 'editRecord', { id: review.id, status: 'open' }, { by: 'board:review', now: at(14).now });
   assert.deepEqual([view().review.leftOpen.map((x) => x.id), view().review.planned], [[review.id], null]);
-  assert.ok(runVerb(db, 'trackKickoff', { track: line.id }, 'cli').kickoff.includes('task edit ' + review.id + ' --status done'));
+  /* its reader is told of it; the close is the holder's */
+  const closing = (session) => runVerb(db, 'trackKickoff', { track: line.id, session }, 'cli').kickoff.split('\n').filter((l) => l.includes(review.id) && /Reopened/.test(l)).map((l) => l.includes('task edit ' + review.id + ' --status done'));
+  const lone = closing('s9');
+  runVerb(db, 'resumeTrack', { track: line.id, session: 's1' }, at(14));
+  assert.deepEqual([lone, closing('s9'), closing('s1')], [[false], [false], [true]]);
   runVerb(db, 'editRecord', { id: review.id, status: 'done' }, at(15));
   assert.deepEqual([view().review.held, view().review.leftOpen], [[one.id, two.id], undefined]);
   /* the next station reads them */

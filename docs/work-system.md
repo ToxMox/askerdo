@@ -97,7 +97,7 @@ The verbs, in one table:
 | `projects forget <name>` | drops one entry from this PC's map; nothing is dropped on its own, since a folder on an unplugged drive comes back |
 | `projects rename <old name> <new name>` | on the board, in one transaction: every question, workstream, knowledge record, procedure card and profile holding of the old shared name moves to the new one; `--folder <old dir>=<new dir>` (repeatable) moves the folders they name; `--dry-run` prints the counts; a new name that holds records is refused; this PC's map then drops the old name |
 | `profile ...` | depth settings and rules in force (Profiles, below) |
-| `list --kind workstream\|task\|knowledge` | the open set of one kind; `--workstream`, `--status`, `--priority`, `--label`, `--open`, `--all` |
+| `list --kind workstream\|task\|knowledge` | the open set of one kind; `--workstream` (for knowledge, its project's, the global ones and the decisions naming it), `--project <dir>` (knowledge only), `--status`, `--priority`, `--label`, `--open`, `--all`; `--json` gives a knowledge row its text as `body` |
 | `show <id>` | one record at a read level (Listing and showing, below) |
 | `resolve`, `activity`, `search` | as in question-hub.md |
 
@@ -215,9 +215,11 @@ question gates it (`gates` at registration, or `question edit Q60
 session that holds a track lands at once when at least one open task on
 that track, other than its closing review, waits on the new work:
 directly (`before`, `--before`) or through a later step of the same
-call that itself has a real place. Every id in `before` must be an open
-task on the held track and every id in `after` must exist; a wrong id is
-refused, naming it. A step whose `after` reaches open work on the held
+call that itself has a real place. The closing review is an open review
+no open task on the track waits on; one a look or a fix waits on is
+mid-track, so `before` naming it is a real place. Every id in
+`before` must be an open task on the held track and every id in
+`after` must exist; a wrong id is refused, naming it. A step whose `after` reaches open work on the held
 track that nothing there follows but the closing review is the track's
 end: there is no order to be last in, so it lands at once with no
 `before` (a `last` sent with it is still asked). When the held track has
@@ -936,7 +938,10 @@ id; `commit move <sha> --to T-14 --reason "..."` relinks one by hand.
   reads review due on the Tracks tab, in the kickoff and the handoff.
   `coverage TR-4` (`WS-n` for a workstream; the mod's `coverage` tool;
   load it first with ToolSearch, query `select:mcp__askerdo__coverage`)
-  lists each code task with the review covering it.
+  lists each code task with the review covering it. The line's `track
+  layout` call runs as printed, as the shell's own session: the step
+  goes after the unreviewed tasks and before the track's first mid-track
+  review or look, else its last work in order, else its closing review.
 - **After a review:** a done review stays done. A
   commit on a task it read, or a task before it finishing after it,
   leaves that task unreviewed: it counts on the review-due line, and the
@@ -1065,15 +1070,15 @@ work. It is private and cross-project.
   Once it is used, `knowledge amend` appends a dated clarification and
   `knowledge supersede` replaces it.
 - No inbox line and no subscribers. `note`, `show`, `list --kind
-  knowledge` (`--all` brings back superseded records) and `search` serve
-  it; the generic `edit`, `close` and `reopen` refuse it.
+  knowledge` (`--all` brings back superseded records) and `search --kind
+  knowledge` (question-hub.md, The activity log) serve it; the generic `edit`, `close` and `reopen` refuse it.
 - Migration only: `--legacy <slug>:<id>` (refused when that id already
   has a record) and `--created <date>`.
 
 ```bash
 node ~/.claude/askerdo/cli.mjs knowledge new --type gotcha --title "..." --project C:/Demo/tidewatch < body.md
 node ~/.claude/askerdo/cli.mjs knowledge supersede K-12 --title "..." < body.md
-node ~/.claude/askerdo/cli.mjs search cleartype
+node ~/.claude/askerdo/cli.mjs search cleartype --kind knowledge
 ```
 
 Old brain ids (`G-0071`, `D-0002`, `T-0013`, qualified as

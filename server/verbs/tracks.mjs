@@ -92,23 +92,24 @@ const lastHeld = (rec, lease) => (rec && lease && lease.released ? Object.define
 const youHold = (held) => (held && held.released ? 'the track you last held' : 'the track you hold');
 const openOn = (db, trackKey) => db.stmt(`SELECT ti.task AS key, r.label AS id, r.fields FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ?
   AND coalesce(r.status, '') NOT IN ('done', 'dropped') ORDER BY ti.position`).all(trackKey).map((r) => ({ key: r.key, id: r.id, f: JSON.parse(r.fields) }));
-/* the closing review: an open review no other open review waits on */
+/* the closing review: an open review no task in `open` waits on; one a look or a fix waits on is mid-track */
 function closingKeys(db, open) {
-  const reviews = open.filter((r) => isReview(r.f));
-  return new Set(reviews.filter((r) => !reviews.some((o) => o !== r && pathBetween(db, o.key, r.key))).map((r) => r.key));
+  const keys = new Set(open.map((r) => r.key));
+  const after = `WITH RECURSIVE c(k) AS (SELECT task FROM depends WHERE "on" = ? UNION SELECT d.task FROM c JOIN depends d ON d."on" = c.k) SELECT k FROM c`;
+  return new Set(open.filter((r) => isReview(r.f) && !db.stmt(after).all(r.key).some((x) => keys.has(x.k))).map((r) => r.key));
 }
+export const closingReviews = (db, trackKey) => closingKeys(db, openOn(db, trackKey));
 /* Nothing else open: no open task on the track but those skipped (the one closing, the call's own) and the closing review. */
 export function nothingElseOpen(db, trackKey, skip = new Set()) {
-  const open = openOn(db, trackKey);
+  const open = openOn(db, trackKey).filter((r) => !skip.has(r.key));
   const closing = closingKeys(db, open);
-  return !open.some((r) => !closing.has(r.key) && !skip.has(r.key));
+  return !open.some((r) => !closing.has(r.key));
 }
 /* a step that waits (through `seeds`, task keys) on open work on the track with nothing there but the closing
    review sitting after that work is the track's end: there is no order to be last in, so it files at once. */
 export function endOfTrack(db, trackKey, seeds, skip = new Set()) {
-  const all = openOn(db, trackKey);
-  const closing = closingKeys(db, all);
-  const open = all.filter((r) => !skip.has(r.key));
+  const open = openOn(db, trackKey).filter((r) => !skip.has(r.key));
+  const closing = closingKeys(db, open);
   const reached = open.filter((r) => seeds.some((s) => pathBetween(db, s, r.key)));
   const front = reached.filter((r) => !reached.some((o) => o !== r && pathBetween(db, o.key, r.key)));
   return front.length > 0 && !open.some((o) => !reached.includes(o) && !closing.has(o.key) && front.some((f) => pathBetween(db, o.key, f.key)));
@@ -988,8 +989,8 @@ function lastLine(db, trackKey, ask, actor, taskKey) {
   heldNext(id, ask.nextSession ? NEXT_SESSION : undefined), ask.step);
 }
 
-/* The default before (tier 2's answer is at least the closing review): the open review no other
-   open review waits on, or once it has started or the step waits on it, the first open step after it. A wave's
+/* The default before (tier 2's answer is at least the closing review): the closing review (closingOf),
+   or once it has started or the step waits on it, the first open step after it. A wave's
    review holds it up like any step. None for a step an open task already waits on; `end` when nothing is left.
    `ask`: last (its line) and nextSession, which lastLine reads; a last goes behind the chain's ends (fileLast). */
 export function defaultBefore(db, trackKey, taskKey, actor, ask = {}) {
@@ -1008,14 +1009,15 @@ export function defaultBefore(db, trackKey, taskKey, actor, ask = {}) {
   return { before: target.id, closing: closing.id, stations, ...lastOf };
 }
 
-/* The open tasks on a track but `taskKey`, its closing review (the open review no other open review waits on;
-   a station the task comes after is never it while another is left) and the other reviews. */
+/* The open tasks on a track but `taskKey`, its closing review (closingKeys; when work follows every review, the one no
+   other review waits on; a station the task comes after is never it while another is left) and the other reviews. */
 function closingOf(db, trackKey, taskKey) {
   const open = db.stmt(`SELECT ti.task AS key, r.label AS id, ${openRunSql('r.key')} AS running, r.fields FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ?
     AND ti.task <> ? AND coalesce(r.status, '') NOT IN ('done', 'dropped') ORDER BY ti.position`).all(trackKey, taskKey || '').map((r) => ({ ...r, f: JSON.parse(r.fields) }));
   const reviews = open.filter((r) => isReview(r.f));
   const waits = (a, b) => Boolean(a && b && pathBetween(db, a, b));
-  const last = reviews.filter((r) => !reviews.some((o) => o !== r && pathBetween(db, o.key, r.key)));
+  const tails = closingKeys(db, open);
+  const last = tails.size ? reviews.filter((r) => tails.has(r.key)) : reviews.filter((r) => !reviews.some((o) => o !== r && pathBetween(db, o.key, r.key)));
   const closing = last.filter((r) => !waits(taskKey, r.key)).pop() || last.pop() || null;
   return { open, closing, stations: closing ? reviews.filter((r) => r !== closing).map((r) => r.id) : [], waits };
 }

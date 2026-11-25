@@ -126,6 +126,15 @@ test('an answer to a question that moved amends it with the first answer beneath
   const now = q.show(db, 'Q2', null, at('2026-10-25T13:05:00'));
   assert.deepEqual([now.key, edit.key, edit.ask, now.status, now.options.length, now.pick, questionCount(db)], [second.key, second.key, now.ask, 'open', 3, 'c', count]);
   assert.ok(now.version > v2 && now.reworded.version === now.version, 'the rewording moves the version and stamps it');
+  /* an ask of any length is stored whole, the result naming its length and the edit that shortens it; a short one says nothing */
+  const long = 'One file (a), a file per question (b) or a table (c, my pick), ' + 'x'.repeat(338) + '?';
+  for (const [r, id] of [[q.register(freshBoard(), reworded({ ask: long }), null, at('2026-10-25T13:05:10')), 'Q1'],
+    [q.editQuestion(db, { id: 'Q2', payload: reworded({ ask: long }) }, null, at('2026-10-25T13:05:20')), 'Q2']]) {
+    const n = id.slice(1);
+    assert.equal(r.ask, long.replace('(a)', '(' + n + 'a)').replace('(b)', '(' + n + 'b)').replace('(c,', '(' + n + 'c,'));
+    assert.ok(['402', 'edits: "' + id + '"', 'question edit ' + id].every((x) => r.warnings.join(' ').includes(x)), r.warnings.join(' '));
+  }
+  assert.equal(q.editQuestion(db, { id: 'Q2', payload: reworded() }, null, at('2026-10-25T13:05:30')).warnings, undefined);
   /* the backstop: a press on the card drawn before the rewording is refused and writes nothing */
   const rowsBefore = lines(db).length;
   assert.throws(() => q.answer(db, { id: 'Q2', pick: 'a', shown: v2 }, pressed, at('2026-10-25T13:06:00')), refused(/reworded/));

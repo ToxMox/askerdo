@@ -357,7 +357,7 @@ typed or pasted.
 | `show <id>` | one record at a read level: the brief form by default, which is NOT the full record (work-system.md, Listing and showing) | `--head`, `--section <name>`, `--journal`, `--journal-tail N`, `--since-resume`, `--full`; `--json` alone is the whole record |
 | `resolve <label>` | the record a label names now and every earlier holder | `--at <day>` |
 | `activity` | the board's activity log, newest first (below) | `--limit`, `--before`, `--month`, `--id`, `--kind`, `--search`, `--project`, `--places` |
-| `search <words>` | the board's search, each hit's head and the lines that matched (below) | `--tab questions\|work\|both`, `--ws WS-n`, `--limit <n>` |
+| `search <words>` | the board's search, each hit's head and the lines that matched (below) | `--tab questions\|work\|both`, `--kind`, `--ws WS-n`, `--project <dir>`, `--all-projects`, `--limit <n>` |
 | `board` | start this PC's local server through its scheduled task, or adopt the one already answering, and print its URL | |
 | `login` | open a single-use login link to the board's web pages | `--print`, `--next <page>` |
 | `join-code` | mint a code that lets one new PC onto the board, once, within ten minutes, and print the board address, the code and a line the new PC can run; minting another replaces it, and so does a new token for this PC. A code without `--device` never takes a name already on the board | `--device <name>`: the only name the code takes, and the one way to rejoin (replace) a device already on the board; `--json` |
@@ -398,17 +398,30 @@ THE SEARCH is the board's full-text index (FTS5, the `unicode61` word
 splitter) over every record's title and body, its journal notes and
 answer paragraphs, and every handoff's focus, state and where we were,
 kept current by the database itself. A READ: nothing is touched. Every
-word of the query must match as a whole word, case aside; hits come best
-match first. Each hit prints its record's head line and up to three of
-its lines that hold a query word, each cut at 200 characters, and a last
-line saying the records themselves were not shown. `--tab questions`,
-`work` or `both` (the default), `--ws WS-n` keeps one workstream, and
-`--limit` is 20 by default, 50 at most. `--json` is `{text, hits, total}`,
-each hit `{id, key, kind, name, status, lines}`. The activity log is not
-searched here: `activity --search` reads it.
+word of the query must match as a whole word, case aside, somewhere in
+the record, and a `"quoted phrase"` matches its words side by side. Hits
+come best match first, a record holding every word in one text (its title
+and body, or one note) before one holding them across several. Each hit
+prints its record's head line and up to three of its lines that hold a
+query word, those holding the most first, each cut at 200 characters, and
+a last line saying the records themselves were not shown. `--tab
+questions`, `work` or `both` (the default), and `--kind` one kind
+(question, workstream, track, task, knowledge, procedure or handoff).
+`--ws WS-n` keeps a workstream, its records and the knowledge of its
+project; `--project <dir>` keeps a project: its workstreams' records and
+its own questions, knowledge and procedure cards. Both keep the global
+knowledge records, which hold in every project, each marked `global`.
+`--kind knowledge` alone searches the current directory's project;
+`--all-projects` searches every one. `--limit` is 20 by default, 50 at
+most. `--json` is `{text, hits, total}` (plus `project` when one narrowed
+it), each hit `{id, key, kind, name, status, lines}`, a global record's
+with `scope`. The activity log is not searched here: `activity --search`
+reads it.
 
 ```bash
 node ~/.claude/askerdo/cli.mjs search "activity log"          # both words, anywhere in a record
+node ~/.claude/askerdo/cli.mjs search '"activity log"'        # the phrase
+node ~/.claude/askerdo/cli.mjs search cache --kind knowledge  # this project's knowledge and the global records
 node ~/.claude/askerdo/cli.mjs search board --ws WS-4         # narrowed to one workstream
 node ~/.claude/askerdo/cli.mjs search board --tab questions --limit 5 --json
 ```

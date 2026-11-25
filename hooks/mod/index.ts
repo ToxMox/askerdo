@@ -24,7 +24,7 @@ import { withColumns } from '../../lib/mod-core.mjs'
 import { bandDropFacts, cutFact } from '../../lib/mod-core.mjs'
 import { ageText } from '../../lib/mod-core.mjs'
 import { receiptRow, receiptsOf } from '../../lib/mod-core.mjs'
-import { changedStub, rewordResult, rewordedSince } from '../../lib/mod-core.mjs'
+import { changedStub, longAsk, rewordResult, rewordedSince } from '../../lib/mod-core.mjs'
 import { agentsBlockFor, briefPaths, dispatchRoles, withRules } from '../../lib/mod-core.mjs'
 import { dispatchMissed, handedOn, laneNote, latestLane, tasksOfDispatch } from '../../lib/mod-core.mjs'
 import { commandSuggestions } from '../../lib/mod-core.mjs'
@@ -48,7 +48,7 @@ import type { PaneTab } from './home.tsx'
 import type { FlightCut } from './home.tsx'
 import { DRAW_CEILING, DRAW_NEAR, countsUnder, pageCounts } from '../../lib/mod-core.mjs'
 import { overrideTellingTree, underReply } from './questions.tsx'
-import { heldTrack, homeGraph, localUrl, mineOf, statusModel, versionWords } from '../../lib/mod-core.mjs'
+import { heldTrack, heldViews, homeGraph, localUrl, mineOf, statusModel, versionWords } from '../../lib/mod-core.mjs'
 import { answeringOf } from '../../lib/mod-core.mjs'
 import { actLabel, callPressText, parseOverride } from '../../lib/mod-core.mjs'
 import { briefDecisionIds, forgedFiling, hubAnswers, namesQuestion, placedRelay, userMarked, isHubFactWrite, isHubOverride, isHubTaskWrite, overrideArgs, overrideCard, overrideOn, overrideResult, overrideTold } from '../../lib/mod-core.mjs'
@@ -4263,12 +4263,14 @@ function paneBuild($: any, tab: PaneTab, cols: any, surface: string, now: number
   /* drawn for the width this draw reports, so a pane dragged wider draws more columns */
   let gm: any
   const heldId = band.mine && band.mine.held ? band.mine.track : undefined
-  if (view.picOf !== heldId) { view.picOf = heldId; view.pic = null }
+  if (view.picOf !== heldId) { view.picOf = heldId; view.pic = null; picPressed += 1 }
   try {
     gm = homeGraphKept({ graph: band.graph, overview: paneOverview($, foldOpen($, 'graph')), far: farGraph($), mine: band.mine, local: band.near ? band.local || true : false, view: view.pic,
       looks: picLooks.got, icons: picIcons, boardUrl: band.views && band.views.home, columns: cols, draw: surface === 'desktop', pc: hereNow().pc })
   } catch {
-    gm = { lines: [], why: 'The picture could not be drawn from what the local board holds.' }
+    /* the view that failed keeps the way back to the held track */
+    gm = { lines: [], why: 'The picture could not be drawn from what the local board holds.',
+      views: heldId ? heldViews({ held: heldId, ws: band.mine.workstream || '', V: view.pic }) : [] }
   }
   /* a view gone stale draws where homeGraph fell back to, and stays there */
   if (view.pic && gm.view) view.pic = gm.view
@@ -4403,7 +4405,7 @@ function paneTreeOf($: any, e: any, m: any): any {
     const picPress = (a: any): (() => void) | null => {
       if (!a) return null
       if (a.kind === 'zoom' && a.read) return () => { void zoomFar($, a).catch(() => {}) }
-      if (a.kind === 'select' || a.kind === 'zoom') return () => { drawCause('zoom', a.kind); view.pic = a.view; qpaneRedraw($, PANE_ONLY) }
+      if (a.kind === 'select' || a.kind === 'zoom') return () => { picPressed += 1; drawCause('zoom', a.kind); view.pic = a.view; qpaneRedraw($, PANE_ONLY) }
       if ((a.kind === 'open' || a.kind === 'answer') && openQ.has(a.id)) return () => { void openPane($, 'questions', a.id).catch(() => {}) }
       return null
     }
@@ -4777,9 +4779,13 @@ function shelfGraphs($: any): any[] {
 /* another workstream the Overview zooms into, read from the local board at the press,
    again once per store change, and kept while the view stays on it or on the Overview */
 const picFar: { ws?: string; graph?: any; mark?: string; loading?: boolean } = {}
+/* counts the picture's presses (view.pic is replaced on every redraw), so a read that lands after another is dropped */
+let picPressed = 0
 const farOf = (ws: string, g: any) => (g && g.view ? { workstream: ws, view: g.view, picture: g.picture || null } : null)
 async function zoomFar($: any, a: any): Promise<void> {
+  const at = ++picPressed
   const g = farOf(a.read, await localGet($, 'graph/' + encodeURIComponent(a.read)))
+  if (at !== picPressed) return
   if (!g) { paneNote($, 'The local board has no picture of ' + a.read + ' yet; the board has its page.'); return }
   Object.assign(picFar, { ws: a.read, graph: g, mark: String(band.marker) })
   drawCause('zoom', 'far')
@@ -6958,8 +6964,8 @@ const agents = new Map<string, { last: number; tokens: number; deny?: boolean }>
    start and end stamp its running time, in Date.now()'s ms as the draws read it */
 type Flight = { id: string; job: string; model: string; calls: number; tool?: string; tokens: number; done?: boolean; start?: number; end?: number
   /* the agent that spawned it; wf, a workflow's, which $.agent.list() never names; g, the guard's stamps;
-     bg, run in the background, so TaskStop takes it; call and run, a workflow's: its Workflow call and run, which join its row */
-  parent?: string; wf?: boolean; bg?: boolean; call?: string; run?: string; g?: { last: number }; tasks?: string[] }
+     call and run, a workflow's: its Workflow call and run, which join its row */
+  parent?: string; wf?: boolean; call?: string; run?: string; g?: { last: number }; tasks?: string[] }
 /* the session's background shells, monitors and workflows (mod-core bgRebuilt), saved with the flights */
 type Bg = { id: string; kind: string; job: string; command?: string; call?: string; run?: string; start?: number; end?: number; done?: boolean; status?: string; guessed?: boolean
   /* fg, a foreground shell call the mod wraps; reloaded, one kept over a reload, which the next list settles */
@@ -7077,6 +7083,7 @@ async function flightRebuild($: any): Promise<void> {
   const bg = gone ? bgRebuilt(kb, [], Date.now()) : kb
   for (const b of bg) if (b && b.id && !bgTasks.has(b.id)) { bgTasks.set(b.id, b); added++ }
   flightKeep()
+  endWatchArm($)
   if (added) flightRedraw($, true)
   if (added || kept.length) flightSave($)
 }
@@ -7287,7 +7294,7 @@ function flightStart($: any, e: any, res: any, wake = false): void {
     const parent = e.parentAgentId || (was && was.parent)
     flight.set(id, { id, job: String(e.description || e.subagentType || ''), model: String(res.model || e.model || e.parentModel || ''),
       calls: was ? was.calls : 0, tokens: was ? was.tokens : 0, start: was && !was.done && Number.isFinite(was.start) ? was.start : Date.now(),
-      ...(parent ? { parent: String(parent) } : {}), ...(was && was.tasks ? { tasks: was.tasks } : {}), ...(e.workflow || (was && was.wf) ? { wf: true } : {}), ...(e.background || (was && was.bg) ? { bg: true } : {}),
+      ...(parent ? { parent: String(parent) } : {}), ...(was && was.tasks ? { tasks: was.tasks } : {}), ...(e.workflow || (was && was.wf) ? { wf: true } : {}),
       ...(e.workflow && e.tool_use_id ? { call: String(e.tool_use_id) } : was && was.call ? { call: was.call } : {}),
       ...(e.workflow && e.workflow.runId ? { run: String(e.workflow.runId) } : was && was.run ? { run: was.run } : {}) })
     if (e.name) agentNames.set(String(e.name), String(id))
@@ -7299,6 +7306,8 @@ function flightStart($: any, e: any, res: any, wake = false): void {
       boundEnded.delete(String(id))
     }
     if (e.background) { bgSpawned.add(String(id)); if (bgSpawned.size > 200) bgSpawned.delete(bgSpawned.values().next().value as string) }
+    endSeen.delete(String(id))
+    endWatchArm($)
     flightRedraw($, true)
     flightSave($)
   } catch {}
@@ -7315,21 +7324,41 @@ function flightEnd($: any, agentId: string): void {
   flightSave($)
   landedCheck()
 }
-/* an agent the engine ended with no turn.complete (killed, failed) leaves at the main loop's next turn
-   and at the run timer's tick, which hands in the list it read */
-async function flightSweep($: any, listed?: any): Promise<void> {
+/* an agent the engine ended with no turn.complete (killed, failed) leaves at the main loop's next turn,
+   at the run timer's tick, which hands in the list it read, and at the end watch. The watch ends it at its
+   second read, since its own turn's end, which brings the report, may land behind the engine's status */
+async function flightSweep($: any, listed?: any, watch = false): Promise<void> {
   if (!flight.size) return
   const list = listed === undefined ? await $.agent.list() : listed
   if (!Array.isArray(list)) return
   const live = new Map(list.map((a: any) => [a && a.id, a && a.status]))
   for (const f of flight.values()) {
     const st = live.get(f.id)
-    if (f.done || !st || LIVE_AGENT.includes(String(st))) continue
-    endLogged({ x: 'end', a: f.id, e: String(st), o: 'ended', p: 'sweep' })
+    if (f.done || !st || LIVE_AGENT.includes(String(st))) { endSeen.delete(f.id); continue }
+    if (watch && (runEnding.get(f.id)?.turn || !endSeen.has(f.id))) { endSeen.add(f.id); continue }
+    endSeen.delete(f.id)
+    endLogged({ x: 'end', a: f.id, e: String(st), o: 'ended', p: watch ? 'watch' : 'sweep' })
     agentGone($, f.id, '', String(st))
   }
+  /* a read every two seconds saves nothing of its own */
+  if (watch) return
   /* the calls and depth since the last start or end, for the next load */
   flightSave($)
+}
+
+/* an idle main loop has no turn to sweep at, so while an agent runs the engine's list is read here:
+   a row it ended leaves within four seconds, not at the minute's tick */
+const END_WATCH_MS = 2000
+const endWatch: { timer?: { cancel: () => void } } = {}
+const endSeen = new Set<string>()
+function endWatchArm($: any): void {
+  if (endWatch.timer) return
+  if (!flightList().some((f) => !f.done && !f.wf)) { endSeen.clear(); return }
+  try {
+    endWatch.timer = $.clock.after(END_WATCH_MS, ran('agent end watch', () => {
+      void flightSweep($, undefined, true).catch(() => {}).finally(() => { endWatch.timer = undefined; endWatchArm($) })
+    }))
+  } catch { endWatch.timer = undefined }
 }
 
 /* an agent's turn end is its end only once the engine's list no longer runs it: one
@@ -7461,9 +7490,9 @@ function agentGone($: any, agentId: string, answer: string, word?: string): void
   if (agentsGone.has(agentId)) { rowEnd($, agentId); goneSettle(agentId); return }
   agentsGone.add(agentId)
   agentTurns.delete(agentId)
+  /* a handed back or held turn's report, for an end that carries none (the sweep, a stop, the bound) */
+  const said = answer || handedBack.get(agentId) || heldTurns.get(agentId)?.answer || ''
   handedBack.delete(agentId)
-  /* a held turn's report, for an end that carries none (the sweep, a stop, the bound) */
-  const said = answer || heldTurns.get(agentId)?.answer || ''
   heldTurns.delete(agentId)
   try { flightEnd($, agentId) } catch {}
   void endPending(agentId)
@@ -8585,7 +8614,8 @@ async function localReword($: any, sid: string, raw: any, useId?: string): Promi
   }
   laterRedraw($)
   const letters = (payload.options || []).map((o: any) => o.type).filter((t: string) => /^[a-z]$/.test(t))
-  return { result: rewordResult({ id: q.label, name: payload.name, reworded: out.changed }, { letters, pick: payload.pick, block: tellBlock({ ...payload, id: q.label }, letters) }) }
+  const long = longAsk(q.label, payload.ask)
+  return { result: rewordResult({ id: q.label, name: payload.name, reworded: out.changed, ...(long ? { warnings: [long] } : {}) }, { letters, pick: payload.pick, block: tellBlock({ ...payload, id: q.label }, letters) }) }
 }
 
 /* An answer (or a drop) of the user's to a kept question, recorded in the store and told as

@@ -259,7 +259,8 @@ describe('the agent guard', () => {
   /* an agent the main loop's sweep finds killed and one stopped from its row each get the lane note
      and their run's end once (handed on, by agent id), and a turn end after the stop adds neither. Its
      own case, so the minute tick it waits on comes soon after the session starts (the kit's clock holds each
-     timer's hook call open until its next fire, which the engine skips past 10 s) */
+     timer's hook call open until its next fire, which the engine skips past 10 s). One the engine ends while
+     the main loop is idle, with no turn, ends at the watch, a hand-back it gave first riding its run's end */
   test('a swept and a stopped lane each end their run and note their task once', HEAVY, async ($: any, on: any) => {
     const w = world(on)
     guardOn(w)
@@ -268,25 +269,30 @@ describe('the agent guard', () => {
     on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'ag-' + ++n }))
     on('tool.call', { tool: 'Agent' }, () => ({ result: 'spawned' }))
     on('tool.call', { tool: 'TaskStop' }, ($: any, e: any) => ({ result: { message: 'stopped', task_id: e.task_id, task_type: 'local_agent' } }))
+    on('tool.call', { tool: 'SubagentHandback' }, () => ({ result: 'handed back' }))
     const goneList: any[] = []
     on('agent.list', () => ({ value: goneList }))
     /* rules in force, none injected, so a dispatch naming a task keeps its lane */
     w.rules = { record: 'TR-3', inject: false, revision: 'r1', text: '', values: {} }
     await start($, w)
-    for (const [job, tu, task] of [['swept-lane', 'tu-sw', 'T-41'], ['stopped-lane', 'tu-st', 'T-42']]) {
+    for (const [job, tu, task] of [['swept-lane', 'tu-sw', 'T-41'], ['stopped-lane', 'tu-st', 'T-42'], ['idle-lane', 'tu-id', 'T-43']]) {
       const brief = { description: job, name: job, prompt: task + ': go.', tool_use_id: tu, background: true }
       await $.tool.call({ tool: 'Agent', ...brief })
       await $.agent.spawn(brief)
     }
-    for (const id of ['ag-7', 'ag-8']) { goneList.push({ id, type: 'general-purpose', status: 'running' }); await step($, w, id, 90000) }
+    for (const id of ['ag-7', 'ag-8', 'ag-9']) { goneList.push({ id, type: 'general-purpose', status: 'running' }); await step($, w, id, 90000) }
     /* each dispatch naming a task opened one run with the engine's id; a minute renews the live ids in one write */
     const opened = w.verbs.filter((v: any) => v.name === 'openRun' && v.body.input.tasks).map((v: any) => [v.body.input.job, v.body.input.agentId, v.body.input.tasks])
     const renews = () => w.verbs.filter((v: any) => v.name === 'renewLease')
     const renewsWas = renews().length
     await w.clock.advance(60000)
     await w.clock.settle()
-    expect([opened.slice(-2), renews().length - renewsWas, renews().at(-1).body.input.agentIds, w.boardRuns.filter((r: any) => r.agentId === 'ag-7').length])
-      .toEqual([[['swept-lane', 'ag-7', ['T-41']], ['stopped-lane', 'ag-8', ['T-42']]], 1, ['ag-7', 'ag-8'], 1])
+    expect([opened.slice(0, 2), renews().length - renewsWas, renews().at(-1).body.input.agentIds, w.boardRuns.filter((r: any) => r.agentId === 'ag-7').length])
+      .toEqual([[['swept-lane', 'ag-7', ['T-41']], ['stopped-lane', 'ag-8', ['T-42']]], 1, ['ag-7', 'ag-8', 'ag-9'], 1])
+    await $.tool.call({ tool: 'SubagentHandback', message: 'Built the idle lane.', agentId: 'ag-9' })
+    goneList[2].status = 'failed'
+    for (let i = 0; i < 3; i++) { await w.clock.advance(2000); await w.clock.settle() }
+    expect(w.verbs.filter((v: any) => v.name === 'endRun').map((v: any) => [v.body.input.agentId, v.body.input.report])).toEqual([['ag-9', 'Built the idle lane.']])
     goneList[0].status = 'killed'
     await $.turn.start({ text: 'work', turnId: 't-main-sweep' })
     await w.clock.settle()
@@ -323,7 +329,7 @@ describe('the agent guard', () => {
     const stops: any[] = []
     on('tool.call', { tool: 'TaskStop' }, ($: any, e: any) => {
       stops.push([e.task_id, e.consent])
-      return stops.length === 1 ? { deny: 'No task found with ID: ' + e.task_id + '; it may have ended or moved, so the stop had nothing left to end' } : { result: { message: 'stopped', task_id: e.task_id, task_type: 'local_bash' } }
+      return stops.length === 1 || e.task_id === 'ag-5' ? { deny: 'No task found with ID: ' + e.task_id + '; it may have ended or moved, so the stop had nothing left to end' } : { result: { message: 'stopped', task_id: e.task_id, task_type: 'local_bash' } }
     })
     await start($, w)
     await $.tool.call({ tool: 'Bash', command: 'npm run watch', description: 'Watch the build', run_in_background: true })
@@ -466,6 +472,24 @@ describe('the agent guard', () => {
     const pad = async (id: string) => { const r = await pane.find({ key: 'agent-' + id }); return r ? Number(r.props.paddingLeft) || 0 : -1 }
     expect([shut, await pad('w1'), await pad('ag-2') > 0, await pad('ag-3') > 0, await live(ui, 'status-agents-count')])
       .toEqual([expect.stringMatching(/1 done\s*Two lookups\s*$/), 0, true, true, '1'])
+    /* an agent another agent started, foreground in its parent's turn, stops by its own id */
+    await $.agent.spawn({ description: 'Nested review', prompt: 'x', tool_use_id: 'tu-n', parentAgentId: 'ag-1' })
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    for (let i = 0; i < 2; i++) await pressAgain(pane, 'agent-stop-ag-4')
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    expect([stops.at(-1)[0], (await pane.find({ key: 'agent-ag-4' }))?.text, await pane.find({ key: 'agent-stopface-ag-4' })])
+      .toEqual(['ag-4', expect.stringMatching(/done in/), undefined])
+    /* the session's own foreground agent has one too, and a refusal says why on its row */
+    await $.agent.spawn({ description: 'Own lookup', prompt: 'x', tool_use_id: 'tu-own' })
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    for (let i = 0; i < 2; i++) await pressAgain(pane, 'agent-stop-ag-5')
+    await w.clock.settle()
+    expect([stops.at(-1)[0], await live(pane, 'agent-line-ag-5')]).toEqual(['ag-5', expect.stringMatching(/not stopped.*No task found/)])
+    await $.turn.complete({ answer: 'x', durationMs: 5, isAborted: false, turnId: 't-ag-5', reason: 'answer', agentId: 'ag-5' })
+    await w.clock.settle()
     /* at 238 px a finished agent's detail keeps to two lines as a running one's, its depth's limit going first */
     const wide = (await pane.find({ key: 'agent-ag-2' }))?.text
     await pane.unmount()

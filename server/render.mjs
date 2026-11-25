@@ -162,12 +162,23 @@ export function* storeFiles(db) {
   }
 }
 
+/* Windows refuses to rename or remove a folder while a scanner holds a file in it: retried for up to a second. */
+function retried(fn) {
+  for (let i = 0; ; i++) {
+    try { return fn(); } catch (e) {
+      if (i >= 20 || !['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY'].includes(e.code)) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+}
+const removed = (path) => { try { retried(() => rmSync(path, { recursive: true, force: true })); return true; } catch { return false; } };
+
 /* Written beside `dir` and swapped in, so a reader never sees half an export.
    One read transaction: a write landing mid-export cannot split the snapshot. */
-export function exportStore(db, dir) {
+export function exportStore(db, dir, rename = renameSync) {
   const tmp = dir + '.tmp-' + process.pid;
-  const old = dir + '.old-' + process.pid;
-  rmSync(tmp, { recursive: true, force: true });
+  const olds = [dir + '.old-' + process.pid, dir + '.old-' + process.pid + '-2'];
+  retried(() => rmSync(tmp, { recursive: true, force: true }));
   const counts = readTx(db, () => {
     const n = {};
     for (const f of storeFiles(db)) {
@@ -180,8 +191,22 @@ export function exportStore(db, dir) {
     return n;
   });
   mkdirSync(tmp, { recursive: true });
-  if (existsSync(dir)) renameSync(dir, old);
-  renameSync(tmp, dir);
-  rmSync(old, { recursive: true, force: true });
+  try {
+    const had = existsSync(dir);
+    /* a folder cannot take the name of one still there: a left old export goes first, and one still held leaves the second name */
+    const old = had && (olds.filter(removed)[0] || olds[0]);
+    if (had) retried(() => rename(dir, old));
+    try { retried(() => rename(tmp, dir)); } catch (e) {
+      /* a refused swap puts the last export back */
+      if (had) retried(() => rename(old, dir));
+      throw e;
+    }
+  } catch (e) {
+    /* with no export in place, the new one may be the only whole copy */
+    if (existsSync(dir)) removed(tmp);
+    throw e;
+  }
+  /* the swap is done: an old export still held waits for the next export */
+  olds.forEach(removed);
   return counts;
 }

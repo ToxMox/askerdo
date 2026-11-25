@@ -109,6 +109,11 @@ test('on a board show prints a task block or the brief form by default and names
   const k1 = JSON.parse(k1r.stdout);
   const k2 = await runCommand({ argv: ['knowledge', 'new', '--type', 'gotcha', '--title', 'Formatter levels again', '--global', '--json'], cwd: home, env, stdin: 'two' });
   assert.ok(k2.code === 0 && k2.stderr.includes('close to ' + k1.id), k2.stderr);
+  /* a knowledge search is the caller's project's and the global records unless it names every project */
+  const k3r = await runCommand({ argv: ['knowledge', 'new', '--type', 'gotcha', '--title', 'Drift elsewhere', '--project', join(home, 'elsewhere'), '--json'], cwd: home, env, stdin: 'three' });
+  const k3 = JSON.parse(k3r.stdout);
+  const drift = async (cwd, ...f) => JSON.parse((await runCommand({ argv: ['search', 'drift', '--kind', 'knowledge', '--json', ...f], cwd, env })).stdout).hits.map((h) => h.id).sort();
+  assert.deepEqual([await drift(home), await drift(join(home, 'elsewhere')), await drift(home, '--all-projects')], [[k1.id], [k1.id, k3.id].sort(), [k1.id, k3.id].sort()]);
 
   /* an old knowledge-store id held by two projects: one became the task, the other
      only an archive */

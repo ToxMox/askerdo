@@ -9,7 +9,7 @@ import { pluginRoot } from '../lib/node-helpers.mjs';
 import { childEnv, tempDir } from './helpers/sandbox.mjs';
 import {
   ALIAS_MAX, bandSection, COMMAND, SUBCOMMANDS_LINE, USAGE, alertUrl, checkAlias, parseAskerdo, clampWords, decisionQuestions, decisionRow, tracksView,
-  splitGetsCosts, askResult, bandModel, bandSurfaces, countTip, drawnText, STAR,
+  splitGetsCosts, askResult, localResult, bandModel, bandSurfaces, countTip, drawnText, STAR,
   answerArgs, depthFrom, newlyWaiting, offTrackSlip, openSetText, parseAnswer, parseResume, parseTrack, heldText, NEEDS_TRACK, resumeLine,
   filedWords, projectSlug, shelfText, taskEditArgs, trackAlert, trackText, validateAsk,
   validateHandoff, waitingKeys, waitingToast, OPTION_TEXT, SLOTS, answerLabels, askPrompt, cardHref, recordHref,
@@ -35,8 +35,8 @@ test("the pure half imports only pure modules (the handoff check, the board's dr
   const froms = (f) => (f.match(/^\s*import\s.*$/gm) || []).map((l) => l.replace(/^.*from\s*/, ''));
   const src = read('lib', 'mod-core.mjs');
   const check = read('lib', 'handoff-payload.mjs');
-  const pure = [['server', 'handoff-text.mjs'], ['server', 'web', 'draw.mjs'], ['server', 'web', 'feed.mjs'], ['lib', 'left-undone.mjs'], ['lib', 'proc-match.mjs'], ['lib', 'sender-words.mjs']].map((p) => read(...p));
-  assert.deepEqual(froms(src), ["'./handoff-payload.mjs';", "'../server/web/draw.mjs';", "'../server/web/graph.mjs';", "'../server/web/picture-model.mjs';", "'../server/web/picture-draw.mjs';", "'../server/web/feed.mjs';", "'./left-undone.mjs';", "'./proc-match.mjs';", "'./sender-words.mjs';"]);
+  const pure = [['server', 'handoff-text.mjs'], ['server', 'web', 'draw.mjs'], ['server', 'web', 'feed.mjs'], ['lib', 'left-undone.mjs'], ['lib', 'proc-match.mjs'], ['lib', 'sender-words.mjs'], ['server', 'ask-text.mjs']].map((p) => read(...p));
+  assert.deepEqual(froms(src), ["'./handoff-payload.mjs';", "'../server/web/draw.mjs';", "'../server/web/graph.mjs';", "'../server/web/picture-model.mjs';", "'../server/web/picture-draw.mjs';", "'../server/web/feed.mjs';", "'../server/ask-text.mjs';", "'./left-undone.mjs';", "'./proc-match.mjs';", "'./sender-words.mjs';"]);
   /* the handoff check shares the board's text checks; the picture's two modules the board's drawing */
   assert.deepEqual(froms(check), ["'../server/handoff-text.mjs';"]);
   const picture = [read('server', 'web', 'graph.mjs'), read('server', 'web', 'picture-model.mjs'), read('server', 'web', 'picture-draw.mjs')];
@@ -54,6 +54,10 @@ test('ask: a whole payload passes, an option without a column gets it empty, and
   assert.equal(validateAsk(ask({ pick: '512b' })).payload.pick, 'b');
   assert.equal(validateAsk(ask({ pick: null })).payload.pick, null);
   assert.ok(validateAsk(ask({ options: undefined, pick: undefined })).payload, 'no options, no pick');
+  /* a long ask passes whole, and a kept question's result names its length and the edit */
+  const long = 'x'.repeat(401) + '?';
+  assert.equal(validateAsk(ask({ ask: long })).payload.ask, long);
+  assert.ok(['402', 'edits: "L2"'].every((w) => localResult('L2', ask({ ask: long })).includes(w)) && !localResult('L2', ask()).includes('Note:'));
 });
 
 test('ask: the pick is required with lettered options and must name one', () => {
@@ -1093,6 +1097,21 @@ test('agent checks: none with no rules in force, the state note and size rule by
     'ASKERDO_BOARD_URL=file:/s/b.db ' + cli + 'task create --user S1 --name x',
     'override decide 3 allow --user S1', 'override unscrub K-4 --user=S1', 'override request --json'].map(forged),
     ['user', 'session', 'env', 'env', 'user', 'session', 'user', '', '', '', '', 'override', 'override', '']);
+  /* more of the command after the own filing changes nothing; another's id is found there as before */
+  assert.deepEqual(['S1; cat x', 'S1&& ls', '"$CLAUDE_CODE_SESSION_ID"; ls', 'S2; cat x', 'S1; bash -c "' + cli + 'task create --session S2; ls"', 'S1; bash -c "' + cli + 'task create --session S2\nls"'].map((tail) => forged('track layout TR-1 --session ' + tail)),
+    ['', '', '', 'session', 'session', 'session']);
+  /* a later command's flags are its own; where the text may not split there, they count as the filing's */
+  const own = 'task create --tier 2 --name "a; b" --session "$CLAUDE_CODE_SESSION_ID"';
+  assert.deepEqual(['; ' + cli + 'show T-1 --session S2', ' && systemctl --user status', '; ' + cli + 'track layout TR-2 --session S2', '; bash -c "' + cli + 'task create --session S2"',
+    ' 2>&1 --session S2', ' --why a\\; --session S2', ' --% ; --session S2', ' --why ‘a; b’ --session S2'].map((tail) => forged(own + tail)),
+    ['', '', 'session', 'session', 'session', 'session', 'session', 'session']);
+  /* a text no shell runs forges nothing; one a shell runs is read over its lines, after a read on the line and beside a scratch filing */
+  const told = 'Seen:\n' + cli + 'task create --session S2\nrefused';
+  assert.deepEqual(['git commit -m "' + told + '"; bash x.sh', 'note T-1 --body "' + told + '"', 'node -e "' + told + '"', "cat > x.md <<'EOF'\nIt's: bash -c \"" + told + '"\nEOF',
+    'export ASKERDO_BOARD_URL=memory:; bash -c "' + told + '"'].map(forged), ['', '', '', '', '']);
+  const two = cli + "task create --name 'two\nlines' --session S2";
+  assert.deepEqual(['bash -c "' + two + '"', "pwsh -Command @'\n" + two + "\n'@", 'echo "' + told + '" | sh', 'S="' + told + '"; eval "$S"', 'show T-1; bash -c "' + cli + 'task create --session S2"',
+    'ASKERDO_BOARD_URL=memory: ' + cli + 'task create --session S2; bash -c "' + cli + 'task create --session S2"'].map(forged), Array(6).fill('session'));
   /* a bare number and q5 are read as the board's answer verb reads them */
   assert.deepEqual(hubAnswers(cli + 'answer Q4 --pick b && ' + cli + 'drop --note "no" Q5 && ASKERDO_BOARD_URL=memory: ' + cli + 'answer Q6 --pick a && ' + cli + 'answer 5 --pick b; ' + cli + 'drop q07'),
     ['Q4', 'Q5', 'Q5', 'Q7']);
@@ -1168,6 +1187,10 @@ test('agents: a load rebuilds the flights from the kept copy and the engine list
   assert.deepEqual([m.running, m.done], [2, 1]);
   const at = (id) => m.rows.findIndex((r) => r.id === id);
   assert.deepEqual([at('sp') - at('r5'), m.rows[at('sp')].under, m.rows[at('sp')].ended, m.rows[at('gone')].ended], [1, 1, false, true]);
+  /* every running agent has a stop, whoever started it and foreground or not; a fresh one's bar is filled before its first tokens, an ended one's is not */
+  const wave = agentsModel([{ id: 'p', job: 'Wave', start: now }, { id: 'k', job: 'Reviewer', start: now, parent: 'p' },
+    { id: 'e', job: 'Refused', start: now, end: now, parent: 'p', done: true }, { id: 'fg', job: 'Foreground', start: now }], null, now).rows;
+  assert.deepEqual(wave.map((r) => [r.id, r.stop, r.meter.source.split('<rect').length > 2]), [['p', true, true], ['k', true, true], ['e', false, false], ['fg', true, true]]);
   assert.match(m.rows[at('r5')].detail, /\b1h\b/);
   assert.deepEqual(flightsKept(flightsRebuilt(kept, [{ id: 'r5', status: 'completed' }]), []).flights, []);
   /* a Stop's list: a kept shell it still runs stays, a monitor it no longer runs has ended, a workflow only it names joins; its agents are the flights';
@@ -1249,11 +1272,11 @@ test('the mod reads its contract section and check switches through scripts/mod-
   assert.deepEqual(r.checks, { emdash: false, forecast: true, weather: true, hub: true });
   assert.ok(r.section.startsWith('## Where the AskerDo mod runs'));
   assert.ok(r.section.includes("above the user's prompt") && r.section.includes('`ask` tool') && !('name' in r));
-  assert.ok(r.surfaces.desktop.startsWith('### On the desktop app') && r.surfaces.terminal.startsWith('### On the terminal'), 'T-25: both sections, the mod picks one');
-  assert.ok(r.surfaces.desktop.includes('hides it under the card') && r.surfaces.terminal.includes('full copy'), 'Q84: the mod\'s own asking lines ride');
+  assert.ok(r.surfaces.desktop.startsWith('### On the desktop app') && r.surfaces.terminal.startsWith('### On the terminal'), 'both sections, the mod picks one');
+  assert.ok(r.surfaces.desktop.includes('hides it under the card') && r.surfaces.terminal.includes('full copy'), 'the mod\'s own asking lines ride');
 });
 
-test("Home with no track held draws the project's workstream the band carries, whole, and names the other", async () => {
+test("Home with no track held draws the project's workstream the band carries, whole, and names the other; a held track's two ways back stand at every view", async () => {
   const { putRecord } = await import('../server/records.mjs');
   const t = await import('../server/verbs/tracks.mjs');
   const db = freshBoard();
@@ -1276,6 +1299,24 @@ test("Home with no track held draws the project's workstream the band carries, w
   const zoomed = homeGraph({ graph, mine, local: true, columns: 60, view: { level: 1, ws: 'WS-2', tr: null, sel: null },
     far: { workstream: 'WS-2', view: t.workstreamView(db, { workstream: 'WS-2' }), picture: runVerb(db, 'pictureView', { workstream: 'WS-2' }, 'cli') } });
   assert.deepEqual([zoomed.view.ws, zoomed.picture.zones.some((z) => z.k === 'pill:' + far.id)], ['WS-2', true]);
+  /* with a track held, both ways back to it stand at every level and workstream, on only while in view;
+     with nothing of its workstream to draw they open its board pages */
+  const overview = runVerb(db, 'pictureOverview', {}, 'cli');
+  const farWs = { workstream: 'WS-2', view: t.workstreamView(db, { workstream: 'WS-2' }), picture: runVerb(db, 'pictureView', { workstream: 'WS-2' }, 'cli') };
+  const side = t.newTrack(db, { name: 'Side line', workstream: 'WS-1' }, 'cli');
+  t.capture(db, { track: side.id, name: 'Side step' }, 'cli');
+  const own = { workstream: 'WS-1', view: t.workstreamView(db, { workstream: 'WS-1' }), picture: runVerb(db, 'pictureView', { workstream: 'WS-1' }, 'cli') };
+  const ways = (level, ws, tr, more) => homeGraph({ graph: own, overview, far: farWs, mine: { held: true, track: line.id, key: line.key, workstream: 'WS-1', tracks: [] },
+    local: 'http://localhost:1/' + 'ab'.repeat(16) + '/', columns: 60, view: { level, ws, tr, sel: null }, ...more }).views;
+  const steps = [['mine', 2, 'WS-1', line.id], ['all', 1, 'WS-1', null]];
+  for (const [level, ws, tr, on] of [[0, 'WS-1', null, []], [1, 'WS-1', null, ['all']], [2, 'WS-1', line.id, ['mine']], [2, 'WS-1', side.id, []], [1, 'WS-2', null, []], [2, 'WS-2', far.id, []]]) {
+    const got = ways(level, ws, tr), at = level + ' ' + (tr || ws);
+    assert.deepEqual(got.map((v) => [v.key, v.act.view.level, v.act.view.ws, v.act.view.tr]), steps, at);
+    assert.deepEqual(got.filter((v) => v.on).map((v) => v.key), on, at);
+    assert.deepEqual(got.map((v) => v.act.kind === 'select'), got.map((v) => v.on), at);
+  }
+  const none = ways(0, 'WS-1', null, { graph: null });
+  assert.deepEqual(none.map((v) => [v.key, v.on, v.act.kind, !!v.act.href]), [['mine', false, 'open', true], ['all', false, 'open', true]]);
   /* the workstream's loose tasks under its picture, each with its page; an empty inbox draws none */
   assert.equal(gm.inbox, null);
   const loose = ['Stray idea', 'Another'].map((name) => t.capture(db, { workstream: 'WS-1', name, wake: '2099-01-01' }, 'cli'));
@@ -1322,7 +1363,7 @@ test("Home draws the redrawn picture's three levels inside the pane's Svg limits
   const { pictureMockData } = await import('./helpers/picture-mock-data.mjs');
   const P = pictureMockData();
   const local = 'http://localhost:1/' + 'ab'.repeat(16) + '/';
-  const draw = (V, columns = 51, data = P) => panePicture(data, V, { held: 'TR-12', local, columns });
+  const draw = (V, columns = 51, data = P) => panePicture(data, V, { local, columns });
   const levels = [{ level: 0, ws: 'WS-12', tr: null, sel: 'ws:WS-7' },{ level: 1, ws: 'WS-12', tr: null, sel: 'pill:TR-12' }, { level: 2, ws: 'WS-12', tr: 'TR-12', sel: 'stn:T-675' }];
   for (const columns of [28, 166]) for (const V of levels) {
     const m = draw(V, columns), p = m.picture, at = columns + ' ' + JSON.stringify(V);
@@ -1338,11 +1379,10 @@ test("Home draws the redrawn picture's three levels inside the pane's Svg limits
   assert.ok(again.kind === 'open' && again.id === 'T-675' && /t-675/i.test(again.href), JSON.stringify(again));
   assert.equal(sel.picture.clear.view.sel, null);
   assert.ok(sel.strip.acts[0].primary && sel.strip.acts[0].act.kind === 'open');
-  /* a pill's second press zooms in; the Overview crumb and the views pair step out */
+  /* a pill's second press zooms in; the Overview crumb steps out */
   const pill = zone(draw(levels[1]), 'pill:TR-12');
   assert.deepEqual([pill.kind, pill.view.level, pill.view.tr], ['zoom', 2, 'TR-12']);
   assert.deepEqual([sel.crumbs[0].act.kind, sel.crumbs[0].act.view.level], ['zoom', 0]);
-  assert.deepEqual(sel.views.map((v) => [v.key, v.on, v.act.view.level]), [['mine', true, 2], ['all', false, 1]]);
   /* a workstream the band did not carry zooms from the Overview, the pane reading it first, and "List them" opens the finished list */
   const other = draw(levels[0]);
   assert.deepEqual([zone(other, 'ws:WS-7'), other.strip.acts[0].act].map((a) => [a.kind, a.read, a.view.level, a.view.ws]), [['zoom', 'WS-7', 1, 'WS-7'], ['zoom', 'WS-7', 1, 'WS-7']]);

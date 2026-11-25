@@ -4,7 +4,7 @@
 
 /* Bumped by a release that changes what a PC sends or what the board accepts: the board
    refuses a PC on another protocol (426), so nothing half works. */
-export const PROTOCOL = 5;
+export const PROTOCOL = 6;
 export const PROTOCOL_HEADER = 'x-askerdo-protocol';
 
 /* the loopback admin route takes the per-start secret the board writes beside

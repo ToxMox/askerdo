@@ -9,7 +9,7 @@ import {
 import {
   UsageError, LABEL_KINDS, endingStamps, historyItem, loadEntry, pickLabel, refsFor, relabelIfArchived, resolveRecord, shownFront, strList,
 } from './labels.mjs';
-import { reopenQuestion, wakeLinked } from './questions.mjs';
+import { knowledgeInProject, knowledgeInWs, reopenQuestion, wakeLinked } from './questions.mjs';
 import { APPROVED } from './placement-seam.mjs';
 import { bypassFor } from './bypass.mjs';
 import { TrackRefusal, addItem, itemsOf, loadRecord, readiness, settleChecks, shownWorkers } from './graph.mjs';
@@ -1477,7 +1477,9 @@ export function readRecord(db, input, actor) {
 const terminalOf = (kind) => TERMINAL[kind] || LABEL_KINDS[kind]?.ended || [];
 
 /* Open work by default; `all` or a named status brings the rest. Tasks order by
-   ordinal then label inside the listed scope. */
+   ordinal then label inside the listed scope. A knowledge record carries no
+   workstream: `workstream` and `projectRepo` read its project, and `body`
+   adds its text to the row. */
 export function listWork(db, filters = {}, actor, opts) {
   const kind = String(filters.kind ?? '');
   const k = WORK_KINDS[kind];
@@ -1485,6 +1487,7 @@ export function listWork(db, filters = {}, actor, opts) {
   if (filters.workstream !== undefined && kind === 'workstream') {
     throw new UsageError('a workstream never references a workstream; --workstream filters tasks and questions');
   }
+  if (filters.projectRepo !== undefined && kind !== 'knowledge') throw new UsageError('--project lists questions and knowledge only');
   if (filters.priority !== undefined && kind !== 'task') throw new UsageError('a ' + kind + ' carries no priority');
   if (filters.priority !== undefined && !PRIORITIES.includes(filters.priority)) throw new UsageError('--priority must be one of ' + PRIORITIES.join(', '));
   if (kind === 'task' && filters.status === IN_PROGRESS) {
@@ -1495,10 +1498,11 @@ export function listWork(db, filters = {}, actor, opts) {
     throw new UsageError('--status for a ' + kind + ' must be one of ' + k.statuses.join(', '));
   }
   if (filters.open && filters.status !== undefined) throw new UsageError('--open and --status name different sets; pick one');
-  let ws;
+  let ws, inWs;
   if (filters.workstream !== undefined) {
     const e = resolveRecord(db, filters.workstream);
     ws = e ? e.key : String(filters.workstream);
+    inWs = kind === 'knowledge' ? (f) => Boolean(e) && e.kind === 'workstream' && knowledgeInWs(f, e.front) : (f) => f.workstream === ws;
   }
   const ended = terminalOf(kind);
   const memo = new Map();
@@ -1508,10 +1512,12 @@ export function listWork(db, filters = {}, actor, opts) {
     const f = normalize(k, JSON.parse(r.fields));
     if (filters.status !== undefined) { if (f.status !== filters.status) continue; }
     else if (!filters.all && ended.includes(f.status)) continue;
-    if (ws !== undefined && f.workstream !== ws) continue;
+    if (inWs && !inWs(f)) continue;
+    if (filters.projectRepo !== undefined && !knowledgeInProject(f, filters.projectRepo)) continue;
     if (filters.priority !== undefined && f.priority !== filters.priority) continue;
     if (filters.label !== undefined && !listOf(f, 'labels').includes(filters.label)) continue;
-    rows.push({ ...shownFront(db, f, memo), kind, description: shownSectionsOf(r.body).Description ?? '' });
+    const s = shownSectionsOf(r.body);
+    rows.push({ ...shownFront(db, f, memo), kind, description: s.Description ?? '', ...(kind === 'knowledge' && filters.body ? { body: s.Body ?? '' } : {}) });
     keys.push(r.key);
   }
   if (kind === 'task') {

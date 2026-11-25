@@ -342,8 +342,10 @@ describe('the AskerDo pane', () => {
       }
       /* a status row that fits the pane splits as the band's does */
       expect(await ui.find({ key: 'askerdo-status-left' })).toBeDefined()
-      /* the local board has no picture, so where we stand draws nothing and one line says why */
-      expect([!!(await textOf(ui, 'graph-why')), await ui.find({ key: 'graph-pic' }), await ui.find({ key: 'graph-mine' })]).toEqual([true, undefined, undefined])
+      /* the local board has no picture, so where we stand draws nothing and one line says why;
+         the desktop keeps the held track's two ways back, each its board page's link with nothing to draw */
+      expect([!!(await textOf(ui, 'graph-why')), await ui.find({ key: 'graph-pic' })]).toEqual([true, undefined])
+      for (const key of ['graph-mine', 'graph-all']) expect(/"href":"[^"]+\/r\//.test(JSON.stringify(await ui.find({ key })) || '')).toBe(surface === 'desktop')
       /* the board link follows the tab: Home and Tracks the overview, Questions this project's open set */
       const links = []
       /* a card's and a track's page on a plain-http LAN board go through the same route */
@@ -461,6 +463,11 @@ describe('the AskerDo pane', () => {
     /* the session's first draw asks for this PC's last look at WS-11, which the since line reads */
     const lookAt = (e: any) => ({ status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: true, result: { ws: JSON.parse(e.init.body).ws || 'overview', look: new Date(Date.now() - 3600000).toISOString() } }) })
     w.fetchBy['/local/look'] = lookAt
+    const gives = (result: any) => ({ status: 200, ok: true, headers: {}, text: JSON.stringify({ ok: true, result }) })
+    const far = { workstream: 'WS-12', inbox: 0, tracks: [tv('TR-90', 'far line', 'active', [task('T-90', 'far task', 'running')])] }
+    w.fetchBy['/local/overview'] = () => gives({ ws: [{ id: 'WS-11', name: 'the board', open: 3, running: 1, unconfirmed: 0, ready: 2, tracks: [] },
+      { id: 'WS-12', name: 'far board', open: 1, running: 1, unconfirmed: 0, ready: 0, tracks: far.tracks }] })
+    w.fetchBy['/local/graph/WS-12'] = async () => { await w.clock.sleep(200); return gives({ view: far }) }
     await start($, w)
     const pic = async (ui: any) => (await ui.find({ key: 'graph-pic' }))!.children[0].props
     const has = async (ui: any, id: string) => !!(await ui.find({ key: 'gline-' + id }))
@@ -485,7 +492,7 @@ describe('the AskerDo pane', () => {
         /* the finished review leaves the picture */
         expect(['stn:T-41', 'stn:T-42', 'stn:T-60', 'stn:T-40'].map((k) => p.source.includes('data-k="' + k + '"'))).toEqual([true, true, false, false])
         /* the pair on its own row, the held track's lines the one on */
-        expect([(await ui.find({ key: 'graph-mine' }))!.props.plain, (await ui.find({ key: 'graph-all' }))!.props.plain]).toEqual([undefined, true])
+        expect([(await ui.find({ key: 'graph-mine' }))!.props, (await ui.find({ key: 'graph-all' }))!.props].map((p: any) => [!!p.plain, p.variant])).toEqual([[false, 'primary'], [false, undefined]])
         expect(await textOf(ui, 'graph-crumbs')).toMatch(/WS-11.*TR-3 mod core/)
         expect(await ui.find({ key: 'crumb-hold' })).toBeDefined()
         /* every legend entry leads with its mark as a picture the picture's own code drew, its words in lines beside it */
@@ -537,6 +544,23 @@ describe('the AskerDo pane', () => {
     expect([JSON.stringify(await narrow.find({ key: 'graph-crumbs' })).includes('"wrap":"wrap"'), crumbWords.length > 28,
       crumbWords === wholeCrumb || (crumbWords.endsWith('…') && wholeCrumb.startsWith(cutAt + ' '))]).toEqual([true, true, true])
     await narrow.unmount()
+    /* a far workstream's read that lands after another press leaves the view where that press put it */
+    const ui = await mount($, 'desktop', 'home')
+    await w.clock.settle()
+    const isOn = async (key: string) => (await ui.find({ key }))!.props.variant === 'primary'
+    const zoom = async () => {
+      await ui.press({ key: 'crumbp-0' })
+      for (const _ of [1, 2]) await ui.press({ key: String((await ui.findAll({ type: 'Box' })).map((z: any) => String(z.key)).find((x: string) => x.startsWith('gz-ws:WS-12-'))).replace(/^gz-/, 'gzp-') })
+    }
+    await zoom()
+    await w.clock.advance(300)
+    expect((await pic(ui)).source).toContain('TR-90')
+    await ui.press({ key: 'graph-mine' })
+    await zoom()
+    await ui.press({ key: 'graph-mine' })
+    await w.clock.advance(300)
+    expect([await isOn('graph-mine'), (await pic(ui)).source.includes('TR-90')]).toEqual([true, false])
+    await ui.unmount()
   })
 
   /* the folder and branch in the pane's title, and on the AskerDo button's card;

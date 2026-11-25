@@ -123,6 +123,40 @@ test('a task is created under a workstream that exists, serves its outcomes, and
   assert.ok(find(db, { text: 'Found' }).hits[0].lines.includes('# Found'));
 });
 
+/* a knowledge record carries no workstream, so both workstream filters dropped every one */
+test('search and list reach the knowledge of a project by workstream, project and kind, and a search holds every word or the phrase', async () => {
+  const { search: find } = await import('../server/verbs/search.mjs');
+  const db = freshBoard();
+  const ws = w.createRecord(db, { kind: 'workstream', name: 'App', description: 'd', projects: ['C:/repos/app'] }, on('2026-10-25'));
+  const k = (title, body, over = { projects: ['C:/repos/app'] }) => w.createKnowledge(db, { type: 'gotcha', title, body, ...over }, on('2026-10-25')).id;
+  const row = k('One text', 'a run that takes too long');
+  const apart = k('Two texts', 'only long');
+  w.noteRecord(db, { id: apart, text: 'and too' }, on('2026-10-25'));
+  const one = k('One word', 'long');
+  const glob = k('Everywhere', 'long, too', { global: true });
+  const other = k('Elsewhere', 'too long', { projects: ['C:/repos/other'] });
+  const ruling = decide(db, { title: 'Names the workstream', words: 'x', projects: ['C:/repos/other'], workstreams: [ws.id] }, on('2026-10-25')).id;
+  const task = w.createRecord(db, { name: 'Task', description: 'too long', workstream: ws.id, wake: '2099-01-01' }, on('2026-10-25')).id;
+  const ids = (input) => { const r = find(db, input); assert.equal(r.total, r.hits.length); return r.hits.map((h) => h.id).sort(); };
+  const walked = (input) => find(db, { ...input, count: false }).hits.map((h) => h.id).sort();
+  const scoped = { text: 'too long', kind: 'knowledge', projectRepo: 'c:/repos/app' };
+  for (const get of [ids, walked]) {
+    assert.deepEqual(get(scoped), [row, apart, glob].sort(), 'both words, in one text or two');
+    assert.deepEqual(get({ text: 'too long', workstream: ws.id }), [row, apart, glob, task].sort());
+    assert.deepEqual(get({ text: '"too long"', kind: 'knowledge' }), [row, other].sort(), 'the phrase alone');
+    assert.deepEqual(get({ text: 'too long', projectRepo: 'c:/repos/other' }), [glob, other].sort());
+  }
+  assert.equal(find(db, scoped).hits.at(-1).id, apart, 'words in one text rank first');
+  /* the board's page searches as the CLI does, and says which hit is a journal note's */
+  const { searchModel } = await import('../server/web/data.mjs');
+  for (const text of ['too long', '"too long"']) assert.deepEqual(searchModel(db, text), find(db, { text, limit: 50 }));
+  assert.deepEqual([searchModel(db, 'too and').hits.map((h) => [h.id, h.note]), searchModel(db, ' "" " ').hits, searchModel(db, '').hits], [[[apart, true]], [], []]);
+  const listed = (more) => w.listWork(db, { kind: 'knowledge', ...more }).map((e) => e.id);
+  assert.deepEqual(listed({ workstream: ws.id }), [row, apart, one, glob, ruling]);
+  assert.deepEqual(listed({ projectRepo: 'c:/repos/app' }), [row, apart, one, glob]);
+  assert.equal(w.listWork(db, { kind: 'knowledge', body: true })[0].body, 'a run that takes too long');
+});
+
 /* Edit flips exactly the named fields plus updated, and an edit that changes no value
    writes nothing. */
 test('an edit moves only what it names, a no-op writes nothing, a stale version is refused, and a session holds several tasks in hand', () => {

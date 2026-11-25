@@ -449,12 +449,15 @@ export function graphTree(els: any, gm: any, press: (a: any) => (() => void) | n
   const parts: any[] = [head]
   if (!open) return <Box key="graph" flexDirection="column" rowGap={1}>{parts}</Box>
   const pic = desk && gm.picture
-  /* the mock's row of its own under the heading: the held track's lines, the whole workstream */
-  if (pic && (gm.views || []).length) {
-    parts.push(<Box key="graph-views" flexDirection="row" columnGap={1} rowGap={0.5} flexWrap="wrap" alignItems="center">
+  /* the mock's row of its own under the heading: the held track's lines, the whole workstream; with
+     no picture too, and a view the pane cannot draw is its board page's link */
+  if (desk && (gm.views || []).length) {
+    /* both are buttons, the one shown primary: from the Overview neither is, and dim words read as text. Two cells beside a link, whose press rim reaches past its words */
+    parts.push(<Box key="graph-views" flexDirection="row" columnGap={gm.views.some((v: any) => v.act.kind === 'open') ? 2 : 1} rowGap={0.5} flexWrap="wrap" alignItems="center">
       {gm.views.map((v: any) => {
-        const go = press(v.act) || (() => {})
-        return v.on ? <Button key={'graph-' + v.key} label={v.label} onPress={go} /> : <Button key={'graph-' + v.key} plain dimColor label={v.label} onPress={go} />
+        const go = press(v.act)
+        if (!go) return v.act.href ? wordLink(els, 'graph-' + v.key, v.act.href, v.label + ' ' + OUT, true) : null
+        return <Button key={'graph-' + v.key} label={v.label} onPress={go} {...(v.on ? { variant: 'primary' } : {})} />
       })}
     </Box>)
   }

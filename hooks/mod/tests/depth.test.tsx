@@ -224,13 +224,14 @@ describe('the agent guard', () => {
     await w.clock.settle()
     if (await pane.find({ key: 'agents-done-fold' })) await pane.press({ key: 'agents-done-fold' })
     await w.clock.settle()
-    /* counted apart from the mod's own count: every element and string, and the whole drawing written out */
+    /* counted apart from the mod's own count: every element and string, and every name and string the drawing carries, which is past the page's count */
     const nodes = (n: any): number => (typeof n === 'string' ? 1 : !n || typeof n !== 'object' ? 0 : Array.isArray(n) ? n.reduce((s: number, c: any) => s + nodes(c), 0) : 1 + nodes(n.children))
     const root = await pane.find({ key: 'askerdo-pane' })
     const read = String((await $.tool.call({ tool: 'mcp__askerdo__drawn', part: 'pane' })).result)
     console.log('size guard, kit: ' + read.split('\n').filter((l) => /drawing:|left out/.test(l)).join(' | '))
     const text = (n: any): number => (typeof n === 'string' ? n.length : !n || typeof n !== 'object' ? 0 : Array.isArray(n) ? n.reduce((s: number, c: any) => s + text(c), 0) : text(n.children))
-    expect([nodes(root) < 2000, JSON.stringify(root).length < 262144 && text(root) < 100000, /left out so the drawing stays whole: .*Activity/.test(read), /before it gave way/.test(read)]).toEqual([true, true, true, true])
+    const all = (n: any): number => (typeof n === 'string' ? n.length : !n || typeof n !== 'object' ? 0 : Array.isArray(n) ? n.reduce((s: number, c: any) => s + all(c), 0) : Object.entries(n).reduce((s: number, [k, v]: any) => s + k.length + all(v), 0))
+    expect([nodes(root) < 2000, all(root) < 262144 && text(root) < 100000, /left out so the drawing stays whole: .*Activity/.test(read), /before it gave way/.test(read)]).toEqual([true, true, true, true])
     /* each part that gave way says so on Home itself */
     const said = [await pane.find({ key: 'feed-more' }), await pane.find({ key: 'agents-done-cut' }), await pane.find({ key: 'agents-run-more' })].filter(Boolean)
     expect(said.length > 0 && said.every((n: any) => /\d+ /.test(String(n.text)))).toBe(true)

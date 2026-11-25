@@ -12,6 +12,7 @@ import { growthLines } from '../verbs/kickoff.mjs';
 import { waitingOf } from '../handoff-text.mjs';
 import { cardsCited, procedureCards, tasksCiting } from '../verbs/procedures.mjs';
 import { answeredPick, parseOptions, questionSections } from '../verbs/questions.mjs';
+import { HITS_MAX, search, termsOf } from '../verbs/search.mjs';
 import { lastSeq } from '../verbs/snapshot.mjs';
 import { NEWEST_FIRST, stallDays, trackView, workstreamView } from '../verbs/tracks.mjs';
 import { closeText, unparkWords, whenText } from '../verbs/upkeep.mjs';
@@ -446,26 +447,8 @@ export function needsYouModel(db, { repo, project } = {}, opts = {}) {
   });
 }
 
-/* FTS5 over titles, bodies, notes and handoffs; every word a quoted term, so nothing the user types is syntax. */
-export function searchModel(db, text, limit = 60) {
-  const terms = String(text || '').split(/\s+/).filter(Boolean).slice(0, 12);
-  if (!terms.length) return { text: '', hits: [] };
-  const match = terms.map((t) => '"' + t.replace(/"/g, '""') + '"').join(' ');
-  return readTx(db, () => {
-    const seen = new Set();
-    const hits = [];
-    for (const r of db.stmt('SELECT key, src FROM search WHERE search MATCH ? ORDER BY rank LIMIT ?').all(match, limit * 2)) {
-      if (seen.has(r.key)) continue;
-      seen.add(r.key);
-      const rec = db.stmt('SELECT label, kind, title, status FROM records WHERE key = ?').get(r.key);
-      const h = rec ? null : db.stmt('SELECT label, focus, status FROM handoffs WHERE key = ?').get(r.key);
-      if (rec) hits.push({ id: rec.label, key: r.key, kind: rec.kind, name: rec.title || '', status: rec.status || '', note: r.src === 'note' });
-      else if (h) hits.push({ id: h.label, key: r.key, kind: 'handoff', name: h.focus || '', status: h.status || '' });
-      if (hits.length >= limit) break;
-    }
-    return { text: terms.join(' '), hits };
-  });
-}
+/* The CLI's search (server/verbs/search.mjs), for the page: the most hits it gives. */
+export const searchModel = (db, text) => (termsOf(text).length ? search(db, { text, limit: HITS_MAX }) : { text: '', hits: [], total: 0 });
 
 export const workstreamKey = (db, label) => {
   const e = resolveRecord(db, label, { kinds: ['workstream'] });

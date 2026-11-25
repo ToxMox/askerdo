@@ -2,8 +2,8 @@
    runner, and the import-export round trip against a store the old writers made. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { copyFileSync, existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { tempDir } from './helpers/sandbox.mjs';
 import { oldStore } from './helpers/old-store.mjs';
 
@@ -44,6 +44,28 @@ test('the migration runner refuses a database newer than itself', () => {
 
 const walk = (dir, rel = '') => (existsSync(join(dir, rel)) ? readdirSync(join(dir, rel), { withFileTypes: true }).flatMap((e) => (e.isDirectory()
   ? walk(dir, rel + e.name + '/') : [rel + e.name])) : []);
+
+test('an export rides out a rename Windows refuses once, one refused for good keeps the last export, and an old export still held fails none', () => {
+  const db = board();
+  const out = join(tempDir('askerdo-store-'), 'export');
+  const refuse = () => { throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' }); };
+  exportStore(db, out);
+  let calls = 0;
+  exportStore(db, out, (from, to) => (calls++ % 2 ? renameSync(from, to) : refuse()));
+  assert.equal(calls, 4, 'both renames were refused once');
+  writeFileSync(join(out, 'mark'), 'the last export');
+  assert.throws(() => exportStore(db, out, (from, to) => (from.includes('.tmp-') ? refuse() : renameSync(from, to))), /EPERM/);
+  assert.equal(readFileSync(join(out, 'mark'), 'utf8'), 'the last export');
+  assert.deepEqual(readdirSync(dirname(out)), ['export'], 'the refused export is not left beside it');
+  /* Windows refuses to remove a process's working folder, as one a scanner holds: the swap is done, and the next export clears it */
+  const home = process.cwd();
+  try {
+    exportStore(db, out, (from, to) => { renameSync(from, to); if (from === out) process.chdir(to); });
+  } finally { process.chdir(home); }
+  assert.ok(!existsSync(join(out, 'mark')), 'the swap was made');
+  exportStore(db, out);
+  assert.deepEqual(readdirSync(dirname(out)), ['export']);
+});
 
 /* the old writers made the store (test/fixtures/old-store/make.mjs) */
 test('every kind today\'s writers made imports and exports back byte for byte', () => {

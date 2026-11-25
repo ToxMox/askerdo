@@ -3,11 +3,11 @@
    task list always comes from the tables: a handoff adds the thinking and
    never retells the list. */
 import { clockOf, dayOf, labelOf, stampNow, unguardHeadings } from '../records.mjs';
-import { ENDED_TASK, loadRecord, trackGraph } from './graph.mjs';
+import { ENDED_TASK, loadRecord, pathBetween, trackGraph } from './graph.mjs';
 import { inboxOffers, pastWords, placeOf, whereWords, withOffers } from './found.mjs';
 import { noteRead } from './history.mjs';
 import { labelGates } from './labels.mjs';
-import { NEWEST_FIRST, goalRestatedOf, isStalled, openLeaves, projectInbox, stateOf, taskWake, trackView } from './tracks.mjs';
+import { NEWEST_FIRST, closingReviews, goalRestatedOf, isStalled, openLeaves, projectInbox, stateOf, taskWake, trackView } from './tracks.mjs';
 import { addedLine, growthLine, servesView } from './outcomes.mjs';
 import { decisionsSince } from './decisions.mjs';
 import { cardsCited } from './procedures.mjs';
@@ -219,13 +219,21 @@ function notesSinceHandoff(db, trackKey) {
     .filter((r) => (since === null || (ms(r.at) ?? -Infinity) >= since) && r.body !== own);
 }
 
-/* The track's next checkpoint, its first open review or look (a task labelled look), which a due
-   review's step goes before; the handoff write reads it as the kickoff does. */
+/* The task a due review's step goes before, for the kickoff and the handoff write, so the printed call is at a real
+   place: the track's first mid-track review or look, else its last work in dependency order, else its closing
+   review. Work not started comes first; a task the unreviewed work already waits on would close a loop. */
 export function checkpointOf(db, trackKey, view = trackView(db, { track: trackKey })) {
   if (!view.tasks.length) return null;
   const looks = new Set(db.stmt(`SELECT label FROM records WHERE key IN (SELECT value FROM json_each(?)) AND EXISTS (SELECT 1 FROM json_each(fields, '$.labels') WHERE value = 'look')`)
     .all(JSON.stringify(view.tasks.map((t) => t.key))).map((r) => r.label));
-  const t = view.tasks.find((x) => x.review || looks.has(x.id));
+  const late = db.stmt('SELECT r.key FROM track_items ti JOIN records r ON r.key = ti.task WHERE ti.track = ? AND r.label IN (SELECT value FROM json_each(?))')
+    .all(trackKey, JSON.stringify(((view.review && view.review.uncovered) || []).map((t) => t.id)));
+  const closing = closingReviews(db, trackKey);
+  const free = view.tasks.filter((t) => !late.some((r) => pathBetween(db, r.key, t.key)));
+  const work = free.filter((t) => !closing.has(t.key));
+  const idle = work.filter((t) => !['running', 'unconfirmed'].includes(t.word.is));
+  const from = idle.length ? idle : work;
+  const t = from.find((x) => x.review || looks.has(x.id)) || from.at(-1) || (view.tasks.every((x) => closing.has(x.key)) ? free[0] : null);
   return t ? t.id : null;
 }
 
@@ -266,13 +274,11 @@ export function kickoffInput(db, trackKey, h, opts) {
   /* who runs each open task, read in one go by key; the procedure cards its refs name */
   const runBy = {};
   const procs = {};
-  const looks = new Set();
   if (view.tasks.length) {
     /* refs as a JSON text always, so a bare string is a one item list, as tasksCiting's json_each reads it */
-    for (const r of db.stmt(`SELECT label, json_extract(fields, '$.runBy') AS runBy, EXISTS (SELECT 1 FROM json_each(fields, '$.labels') WHERE value = 'look') AS look, json_array(fields -> '$.refs') AS refs
+    for (const r of db.stmt(`SELECT label, json_extract(fields, '$.runBy') AS runBy, json_array(fields -> '$.refs') AS refs
         FROM records WHERE key IN (SELECT value FROM json_each(?))`).all(JSON.stringify(view.tasks.map((t) => t.key)))) {
       runBy[r.label] = r.runBy || null;
-      if (r.look) looks.add(r.label);
       /* refs stored in any shape must not fail the whole kickoff */
       let refs = [];
       try { const [v] = JSON.parse(r.refs); refs = Array.isArray(v) ? v : v === null || v === undefined ? [] : [v]; } catch { refs = []; }
@@ -280,13 +286,11 @@ export function kickoffInput(db, trackKey, h, opts) {
       if (cited.length) procs[r.label] = cited;
     }
   }
-  /* a due review's step goes before the track's next checkpoint: its first open review or look */
-  const checkpoint = view.tasks.find((t) => t.review || looks.has(t.id));
   /* each due item owed here carries the board's call */
   const inbox = inboxOffers(db, projectInbox(db, wsKey, dayOf(new Date(nowMs))), { held: trackKey, wsKey });
   return {
     view, handoff: h, waits, carried, answers, stalls, decisions, legBegan: leg.since, runBy, procs, reader, now: nowMs, lastHandoff: last ? { id: last.label, status: last.status } : null,
-    goal: goalOf(rec), goalRestated: goalRestatedOf(db, rec), notes: notesSinceHandoff(db, trackKey), checkpoint: checkpoint ? checkpoint.id : null,
+    goal: goalOf(rec), goalRestated: goalRestatedOf(db, rec), notes: notesSinceHandoff(db, trackKey), checkpoint: checkpointOf(db, trackKey, view),
     growth: h ? growthLines(db, h.growth, { held: trackKey, day: dayOf(new Date(nowMs)), inbox }) : [],
     inbox, leaves: openLeaves(db, trackKey, view), untaken: untakenTracks(db, wsKey, trackKey, null, nowMs),
     workstream: workstreamHead(wsRec, db),
@@ -369,8 +373,8 @@ const NOTE_MAX = 600;
 const NOTES_MAX = 10;
 
 /* The kickoff's text. `mode`: 'show' (how to resume it), 'resumed' (this session
-   holds it now) or 'read only' (another session holds it). */
-export function kickoffText(k, { mode = 'show', holder = null, who = '', away = null } = {}) {
+   holds it now) or 'read only' (another session holds it); `holds`, a `track show` by its holder. */
+export function kickoffText(k, { mode = 'show', holder = null, who = '', away = null, holds = false } = {}) {
   const v = k.view;
   const h = k.handoff;
   const name = one(v.name);
@@ -434,12 +438,12 @@ export function kickoffText(k, { mode = 'show', holder = null, who = '', away = 
     lines.push(head + ' (' + list.length + (each ? ', each ' + each : '') + '): ' + list.map((t) => indexRow(k, t, shared)).join('; '));
   }
   if (!sets.length && v.tasks.length) lines.push('Nothing is running or ready: every open task waits on something.');
-  /* the track's review readout, after Ready */
-  const review = reviewLine(v.review, v.id, { before: k.checkpoint || null });
+  /* the track's review readout, after Ready; its step is the holder's to lay out */
+  const own = mode === 'resumed' || (mode === 'show' && Boolean(holder));
+  const review = reviewLine(v.review, v.id, { before: k.checkpoint || null, lay: own || holds });
   if (review) lines.push(review);
   /* a held track's work is laid out before it starts; told only to its holder
      (resumed, or reading its own), never in a read-only kickoff of another's track */
-  const own = mode === 'resumed' || (mode === 'show' && Boolean(holder));
   if (v.holder && !v.tasks.length && own) {
     lines.push('Nothing is laid out on ' + v.id + ': put its steps on it first, each with what it waits on (`' + CLI + ' track layout ' + v.id
       + ' --session <own-id> --json` reads { "steps": [...] } on stdin).');
